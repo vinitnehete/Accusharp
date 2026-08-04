@@ -1,0 +1,195 @@
+package com.accusharp.hrms.service;
+
+import com.accusharp.hrms.dto.EmployeeRequest;
+import com.accusharp.hrms.dto.EmployeeResponse;
+import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.entity.SalaryRule;
+import com.accusharp.hrms.enums.RecordStatus;
+import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.exception.BusinessRuleException;
+import com.accusharp.hrms.exception.ConflictException;
+import com.accusharp.hrms.exception.NotFoundException;
+import com.accusharp.hrms.mapper.EmployeeMapper;
+import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * Employee master. Owns two rules worth calling out:
+ * <ul>
+ *   <li>the derived salary components are recalculated on every write, so they
+ *       can never drift from the current {@link SalaryRule};</li>
+ *   <li>supervisor mapping is validated to stay a tree - no employee may end up
+ *       reporting to themselves through any chain.</li>
+ * </ul>
+ */
+@Service
+@RequiredArgsConstructor
+public class EmployeeService {
+
+    private final EmployeeRepository employeeRepository;
+    private final CompanyService companyService;
+    private final DepartmentService departmentService;
+    private final DesignationService designationService;
+    private final SalaryRuleService salaryRuleService;
+    private final SalaryCalculationService salaryCalculationService;
+    private final EmployeeMapper employeeMapper;
+
+    @Transactional
+    public EmployeeResponse create(EmployeeRequest request) {
+        if (employeeRepository.existsByUserId(request.getUserId())) {
+            throw new ConflictException("Employee already exists with userId " + request.getUserId());
+        }
+        if (employeeRepository.existsByEmployeeCode(request.getEmployeeCode())) {
+            throw new ConflictException("Employee already exists with code " + request.getEmployeeCode());
+        }
+
+        Employee employee = new Employee();
+        apply(employee, request);
+        recalculate(employee);
+        return employeeMapper.toResponse(employeeRepository.save(employee));
+    }
+
+    @Transactional
+    public EmployeeResponse update(Long id, EmployeeRequest request) {
+        Employee employee = getEntityById(id);
+
+        employeeRepository.findByUserId(request.getUserId())
+                .filter(other -> !other.getId().equals(id))
+                .ifPresent(other -> {
+                    throw new ConflictException("Another employee already uses userId " + request.getUserId());
+                });
+        employeeRepository.findByEmployeeCode(request.getEmployeeCode())
+                .filter(other -> !other.getId().equals(id))
+                .ifPresent(other -> {
+                    throw new ConflictException("Another employee already uses code " + request.getEmployeeCode());
+                });
+
+        apply(employee, request);
+        recalculate(employee);
+        return employeeMapper.toResponse(employeeRepository.save(employee));
+    }
+
+    @Transactional(readOnly = true)
+    public EmployeeResponse getById(Long id) {
+        return employeeMapper.toResponse(getEntityById(id));
+    }
+
+    @Transactional(readOnly = true)
+    public EmployeeResponse getByUserId(String userId) {
+        return employeeMapper.toResponse(getEntityByUserId(userId));
+    }
+
+    @Transactional(readOnly = true)
+    public List<EmployeeResponse> getAll() {
+        return employeeMapper.toResponses(employeeRepository.findAll());
+    }
+
+    /** The team reporting to a supervisor - the basis of every approval flow. */
+    @Transactional(readOnly = true)
+    public List<EmployeeResponse> getTeamOf(String supervisorUserId) {
+        getEntityByUserId(supervisorUserId);
+        return employeeMapper.toResponses(employeeRepository.findBySupervisorUserId(supervisorUserId));
+    }
+
+    @Transactional
+    public EmployeeResponse assignSupervisor(String userId, String supervisorUserId) {
+        Employee employee = getEntityByUserId(userId);
+        Employee supervisor = supervisorUserId == null ? null : getEntityByUserId(supervisorUserId);
+        validateSupervisorChain(employee, supervisor);
+        employee.setSupervisor(supervisor);
+        return employeeMapper.toResponse(employeeRepository.save(employee));
+    }
+
+    /** Deactivates rather than deletes - payroll history must keep resolving. */
+    @Transactional
+    public EmployeeResponse deactivate(Long id) {
+        Employee employee = getEntityById(id);
+        employee.setRecordStatus(RecordStatus.INACTIVE);
+        return employeeMapper.toResponse(employeeRepository.save(employee));
+    }
+
+    @Transactional(readOnly = true)
+    public Employee getEntityById(Long id) {
+        return employeeRepository.findById(id).orElseThrow(() -> NotFoundException.of("Employee", id));
+    }
+
+    @Transactional(readOnly = true)
+    public Employee getEntityByUserId(String userId) {
+        return employeeRepository.findByUserId(userId)
+                .orElseThrow(() -> NotFoundException.of("Employee", "userId " + userId));
+    }
+
+    @Transactional(readOnly = true)
+    public List<Employee> getActiveEntities() {
+        return employeeRepository.findByRecordStatus(RecordStatus.ACTIVE);
+    }
+
+    /** True when the supervisor may act on this employee's requests. */
+    @Transactional(readOnly = true)
+    public boolean supervises(String supervisorUserId, String userId) {
+        Employee employee = getEntityByUserId(userId);
+        return employee.getSupervisor() != null
+                && employee.getSupervisor().getUserId().equals(supervisorUserId);
+    }
+
+    private void recalculate(Employee employee) {
+        salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());
+    }
+
+    private void apply(Employee employee, EmployeeRequest request) {
+        employee.setUserId(request.getUserId());
+        employee.setEmployeeCode(request.getEmployeeCode());
+        employee.setEmployeeName(request.getEmployeeName());
+        employee.setCompany(request.getCompanyId() == null ? null : companyService.getById(request.getCompanyId()));
+        employee.setDepartment(request.getDepartmentId() == null ? null
+                : departmentService.getById(request.getDepartmentId()));
+        employee.setDesignation(request.getDesignationId() == null ? null
+                : designationService.getById(request.getDesignationId()));
+
+        Employee supervisor = request.getSupervisorUserId() == null ? null
+                : getEntityByUserId(request.getSupervisorUserId());
+        validateSupervisorChain(employee, supervisor);
+        employee.setSupervisor(supervisor);
+
+        employee.setJoiningDate(request.getJoiningDate());
+        employee.setDateOfBirth(request.getDateOfBirth());
+        employee.setStatus(request.getStatus());
+        employee.setRecordStatus(request.getRecordStatus() == null ? RecordStatus.ACTIVE : request.getRecordStatus());
+        employee.setRole(request.getRole() == null ? Role.EMPLOYEE : request.getRole());
+        employee.setEmail(request.getEmail());
+        employee.setPhone(request.getPhone());
+        employee.setGrossSalary(request.getGrossSalary());
+        employee.setPfBasic(request.getPfBasic());
+        employee.setMedicalAllowance(request.getMedicalAllowance());
+        employee.setOtherAllowance(request.getOtherAllowance());
+        employee.setOvertimeEligible(request.isOvertimeEligible());
+    }
+
+    /** Walks up the proposed chain and rejects any cycle. */
+    private void validateSupervisorChain(Employee employee, Employee supervisor) {
+        if (supervisor == null) {
+            return;
+        }
+        if (employee.getUserId() != null && employee.getUserId().equals(supervisor.getUserId())) {
+            throw new BusinessRuleException("An employee cannot be their own supervisor");
+        }
+        Set<Long> seen = new HashSet<>();
+        Employee current = supervisor;
+        while (current != null) {
+            if (current.getId() != null && !seen.add(current.getId())) {
+                break;
+            }
+            if (employee.getId() != null && employee.getId().equals(current.getId())) {
+                throw new BusinessRuleException("Supervisor mapping would create a reporting cycle");
+            }
+            current = current.getSupervisor();
+        }
+    }
+}
