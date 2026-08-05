@@ -46,9 +46,15 @@ public class LeaveCalculationService {
      */
     @Transactional(readOnly = true)
     public Map<LocalDate, LeaveDay> approvedLeaveDaysInMonth(String userId, YearMonth month) {
-        LocalDate first = month.atDay(1);
-        LocalDate last = month.atEndOfMonth();
+        return approvedLeaveDaysBetween(userId, month.atDay(1), month.atEndOfMonth());
+    }
 
+    /**
+     * The same mapping over an arbitrary window. A range that crosses a month
+     * boundary must not lose the leave on the far side of it.
+     */
+    @Transactional(readOnly = true)
+    public Map<LocalDate, LeaveDay> approvedLeaveDaysBetween(String userId, LocalDate first, LocalDate last) {
         List<LeaveRequest> approved = leaveRequestRepository
                 .findAllByUserIdAndStatusInAndFromDateLessThanEqualAndToDateGreaterThanEqual(
                         userId, List.of(LeaveStatus.APPROVED), last, first);

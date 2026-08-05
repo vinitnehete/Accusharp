@@ -60,8 +60,8 @@ public class DataSeeder {
 
     /** The four shifts from the specification; admins may add custom ones. */
     private void seedShifts() {
-        createShift("MORNING", "Morning", LocalTime.of(6, 0), LocalTime.of(15, 0));
-        createShift("GENERAL", "General", LocalTime.of(9, 0), LocalTime.of(18, 0));
+        createShift("MORNING", "Morning", LocalTime.of(6, 0), LocalTime.of(19, 0));
+        createShift("GENERAL", "General", LocalTime.of(9, 0), LocalTime.of(19, 0));
         createShift("EVENING", "Evening", LocalTime.of(14, 0), LocalTime.of(23, 0));
         // Ends before it starts, so the engine treats it as crossing midnight.
         createShift("NIGHT", "Night", LocalTime.of(18, 0), LocalTime.of(8, 0));
@@ -78,7 +78,7 @@ public class DataSeeder {
                 .endTime(end)
                 .workingHours(8)
                 .breakMinutes(60)
-                .graceMinutes(15)
+                .graceMinutes(120)
                 .overtimeWindowMinutes(240)
                 .build());
         log.info("seed.shift code={}", code);

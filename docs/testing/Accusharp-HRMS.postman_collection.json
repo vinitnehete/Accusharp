@@ -1,2091 +1,2984 @@
 {
-  "info": {
-    "name": "Accusharp HRMS - Full Walkthrough",
-    "description": "One complete payroll cycle for one employee (EMP005, Priya Kulkarni, September 2026).\n\nRUN THE FOLDERS IN ORDER 00 -> 08. Between folder 02 and 03 you must load the punch SQL into device_logs - there is no API for punches.\n\nSet the `baseUrl` variable if the app is not on http://localhost:8080.\n\nOnly POST/PUT/PATCH need a header, and only ever `Content-Type: application/json`. There is no authentication.",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+ "info": {
+  "name": "Accusharp HRMS - Full Walkthrough",
+  "description": "One complete payroll cycle for one employee (EMP005, Priya Kulkarni, September 2026).\n\nRUN THE FOLDERS IN ORDER 00 -> 08. Between folder 02 and 03 you must load the punch SQL into device_logs - there is no API for punches.\n\nSet the `baseUrl` variable if the app is not on http://localhost:8080.\n\nOnly POST/PUT/PATCH need a header, and only ever `Content-Type: application/json`. There is no authentication.",
+  "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+ },
+ "variable": [
+  {
+   "key": "baseUrl",
+   "value": "http://localhost:8080",
+   "type": "string"
   },
-  "variable": [
+  {
+   "key": "userId",
+   "value": "EMP005",
+   "type": "string"
+  },
+  {
+   "key": "supervisorId",
+   "value": "SUP001",
+   "type": "string"
+  },
+  {
+   "key": "hrId",
+   "value": "HR001",
+   "type": "string"
+  },
+  {
+   "key": "month",
+   "value": "9",
+   "type": "string"
+  },
+  {
+   "key": "year",
+   "value": "2026",
+   "type": "string"
+  },
+  {
+   "key": "isoMonth",
+   "value": "2026-09",
+   "type": "string"
+  },
+  {
+   "key": "leaveId",
+   "value": "",
+   "type": "string"
+  },
+  {
+   "key": "correctionDate",
+   "value": "2026-09-25",
+   "type": "string"
+  },
+  {
+   "key": "absentDate",
+   "value": "2026-09-29",
+   "type": "string"
+  }
+ ],
+ "item": [
+  {
+   "name": "00 - Look around",
+   "description": "Read-only. Note the ids you get back - you need them when creating an employee.",
+   "item": [
     {
-      "key": "baseUrl",
-      "value": "http://localhost:8080",
-      "type": "string"
+     "name": "Salary rules (check BEFORE adding employees)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/salary-rules",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "salary-rules"
+       ]
+      },
+      "description": "The salary breakup is calculated when an employee is saved. Change these percentages before adding people, not after."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "key": "userId",
-      "value": "EMP005",
-      "type": "string"
+     "name": "Shifts",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/shifts",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "shifts"
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "key": "supervisorId",
-      "value": "SUP001",
-      "type": "string"
+     "name": "Companies",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/companies",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "companies"
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "key": "hrId",
-      "value": "HR001",
-      "type": "string"
+     "name": "Departments",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/departments",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "departments"
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "key": "month",
-      "value": "9",
-      "type": "string"
+     "name": "Designations",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/designations",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "designations"
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "key": "year",
-      "value": "2026",
-      "type": "string"
-    },
-    {
-      "key": "isoMonth",
-      "value": "2026-09",
-      "type": "string"
-    },
-    {
-      "key": "leaveId",
-      "value": "",
-      "type": "string"
+     "name": "Employees (who can approve what)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/employees",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "employees"
+       ]
+      },
+      "description": "HR001=HR, SUP001=SUPERVISOR, EMP001/EMP002=EMPLOYEE."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
     }
-  ],
-  "item": [
+   ]
+  },
+  {
+   "name": "01 - Set up master data",
+   "description": "Create the designation, the employee and the month's holiday.",
+   "item": [
     {
-      "name": "00 - Look around",
-      "description": "Read-only. Note the ids you get back - you need them when creating an employee.",
-      "item": [
-        {
-          "name": "Salary rules (check BEFORE adding employees)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/salary-rules",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "salary-rules"
-              ]
-            },
-            "description": "The salary breakup is calculated when an employee is saved. Change these percentages before adding people, not after."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Shifts",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/shifts",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "shifts"
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Companies",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/companies",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "companies"
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Departments",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/departments",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "departments"
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Designations",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/designations",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "designations"
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Employees (who can approve what)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/employees",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "employees"
-              ]
-            },
-            "description": "HR001=HR, SUP001=SUPERVISOR, EMP001/EMP002=EMPLOYEE."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
+     "name": "Create designation SR-OPR",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/designations",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "designations"
+       ]
+      },
+      "description": "Note the returned id - pass it as designationId next.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"designationCode\": \"SR-OPR\",\n  \"designationName\": \"Senior Operator\",\n  \"description\": \"Senior grade\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
         }
-      ]
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 201', () => pm.response.to.have.status(201));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "name": "01 - Set up master data",
-      "description": "Create the designation, the employee and the month's holiday.",
-      "item": [
-        {
-          "name": "Create designation SR-OPR",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/designations",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "designations"
-              ]
-            },
-            "description": "Note the returned id - pass it as designationId next.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"designationCode\": \"SR-OPR\",\n  \"designationName\": \"Senior Operator\",\n  \"description\": \"Senior grade\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Create employee EMP005",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/employees",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "employees"
-              ]
-            },
-            "description": "userId MUST equal the biometric device's user_id.\nYou send 4 money fields; basicDA / hra / conveyance / education / grossSalaryWage come back derived and cannot be sent.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"userId\": \"EMP005\",\n  \"employeeCode\": \"EMP-005\",\n  \"employeeName\": \"Priya Kulkarni\",\n  \"companyId\": 1,\n  \"departmentId\": 1,\n  \"designationId\": 3,\n  \"supervisorUserId\": \"SUP001\",\n  \"joiningDate\": \"2024-02-12\",\n  \"dateOfBirth\": \"1996-09-20\",\n  \"status\": \"PERMANENT\",\n  \"role\": \"EMPLOYEE\",\n  \"email\": \"priya@accusharp.example\",\n  \"phone\": \"9822001122\",\n  \"grossSalary\": 26000,\n  \"pfBasic\": 9000,\n  \"medicalAllowance\": 1250,\n  \"otherAllowance\": 0,\n  \"overtimeEligible\": true\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "pm.test('salary derived', () => pm.expect(pm.response.json().basicDA).to.eql(13000.0));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Create holiday",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/holidays",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "holidays"
-              ]
-            },
-            "description": "Mandatory holidays are removed from working days so they can never become LOP.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"companyId\": 1,\n  \"holidayName\": \"Ganesh Chaturthi\",\n  \"holidayDate\": \"2026-09-14\",\n  \"optionalHoliday\": false\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));"
-                ]
-              }
-            }
-          ]
+     "name": "Create employee EMP005",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/employees",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "employees"
+       ]
+      },
+      "description": "userId MUST equal the biometric device's user_id.\nYou send 4 money fields; basicDA / hra / conveyance / education / grossSalaryWage come back derived and cannot be sent.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"userId\": \"EMP005\",\n  \"employeeCode\": \"EMP-005\",\n  \"employeeName\": \"Priya Kulkarni\",\n  \"companyId\": 1,\n  \"departmentId\": 1,\n  \"designationId\": 3,\n  \"supervisorUserId\": \"SUP001\",\n  \"joiningDate\": \"2024-02-12\",\n  \"dateOfBirth\": \"1996-09-20\",\n  \"status\": \"PERMANENT\",\n  \"role\": \"EMPLOYEE\",\n  \"email\": \"priya@accusharp.example\",\n  \"phone\": \"9822001122\",\n  \"grossSalary\": 26000,\n  \"pfBasic\": 9000,\n  \"medicalAllowance\": 1250,\n  \"otherAllowance\": 0,\n  \"overtimeEligible\": true\n}",
+       "options": {
+        "raw": {
+         "language": "json"
         }
-      ]
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 201', () => pm.response.to.have.status(201));",
+         "pm.test('salary derived', () => pm.expect(pm.response.json().basicDA).to.eql(13000.0));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "name": "02 - Roster the month",
-      "description": "Without this there are no expected working days and the whole month becomes LOP.",
-      "item": [
-        {
-          "name": "Bulk assign MORNING shift, Sundays off",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/shift-schedules/bulk",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "shift-schedules",
-                "bulk"
-              ]
-            },
-            "description": "Returns 29 rows: 30 days - 1 holiday. Four of them are flagged weekOff. Leaves 25 working days.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"userIds\": [\n    \"EMP005\"\n  ],\n  \"fromDate\": \"2026-09-01\",\n  \"toDate\": \"2026-09-30\",\n  \"shiftCode\": \"MORNING\",\n  \"weekOffDays\": [\n    \"SUNDAY\"\n  ],\n  \"skipHolidays\": true,\n  \"overwriteExisting\": true,\n  \"assignedBy\": \"SUP001\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('29 days', () => pm.expect(pm.response.json().length).to.eql(29));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Monthly planner (visual check)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/shift-schedules/planner?month={{isoMonth}}&supervisorUserId={{supervisorId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "shift-schedules",
-                "planner"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{isoMonth}}"
-                },
-                {
-                  "key": "supervisorUserId",
-                  "value": "{{supervisorId}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Roster for one employee",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/shift-schedules/{{userId}}?fromDate=2026-09-01&toDate=2026-09-30",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "shift-schedules",
-                "{{userId}}"
-              ],
-              "query": [
-                {
-                  "key": "fromDate",
-                  "value": "2026-09-01"
-                },
-                {
-                  "key": "toDate",
-                  "value": "2026-09-30"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
+     "name": "Create holiday",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/holidays",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "holidays"
+       ]
+      },
+      "description": "Mandatory holidays are removed from working days so they can never become LOP.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"companyId\": 1,\n  \"holidayName\": \"Ganesh Chaturthi\",\n  \"holidayDate\": \"2026-09-14\",\n  \"optionalHoliday\": false\n}",
+       "options": {
+        "raw": {
+         "language": "json"
         }
-      ]
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 201', () => pm.response.to.have.status(201));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "02 - Roster the month",
+   "description": "Without this there are no expected working days and the whole month becomes LOP.",
+   "item": [
+    {
+     "name": "Bulk assign MORNING shift, Sundays off",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/shift-schedules/bulk",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "shift-schedules",
+        "bulk"
+       ]
+      },
+      "description": "Returns 29 rows: 30 days - 1 holiday. Four of them are flagged weekOff. Leaves 25 working days.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"userIds\": [\n    \"EMP005\"\n  ],\n  \"fromDate\": \"2026-09-01\",\n  \"toDate\": \"2026-09-30\",\n  \"shiftCode\": \"MORNING\",\n  \"weekOffDays\": [\n    \"SUNDAY\"\n  ],\n  \"skipHolidays\": true,\n  \"overwriteExisting\": true,\n  \"assignedBy\": \"SUP001\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('29 days', () => pm.expect(pm.response.json().length).to.eql(29));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "name": "03 - Attendance BEFORE leave",
-      "description": "Run the punch SQL first! See docs/testing/device_logs_EMP005_2026-09.sql",
-      "item": [
+     "name": "Monthly planner (visual check)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/shift-schedules/planner?month={{isoMonth}}&supervisorUserId={{supervisorId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "shift-schedules",
+        "planner"
+       ],
+       "query": [
         {
-          "name": "Monthly attendance",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/attendance/{{userId}}/monthly?month={{isoMonth}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "attendance",
-                "{{userId}}",
-                "monthly"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{isoMonth}}"
-                }
-              ]
-            },
-            "description": "Expect workingDays 25, presentDays 22, absentDays 3, lopDays 3, overtimeHours 3.5, invalidPunches 0.\nAll three absences are unpaid right now because the leave is not approved yet."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('lop is 3 before approval', () => pm.expect(pm.response.json().lopDays).to.eql(3.0));"
-                ]
-              }
-            }
-          ]
+         "key": "month",
+         "value": "{{isoMonth}}"
         },
         {
-          "name": "Day range detail",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/attendance/{{userId}}?fromDate=2026-09-15&toDate=2026-09-18",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "attendance",
-                "{{userId}}"
-              ],
-              "query": [
-                {
-                  "key": "fromDate",
-                  "value": "2026-09-15"
-                },
-                {
-                  "key": "toDate",
-                  "value": "2026-09-18"
-                }
-              ]
-            },
-            "description": "The 17th shows 11.5 worked hours and 3.5 overtime."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
+         "key": "supervisorUserId",
+         "value": "{{supervisorId}}"
         }
-      ]
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "name": "04 - Leave workflow",
-      "description": "Employee applies -> supervisor endorses -> HR approves. Only the last step moves balance.",
-      "item": [
+     "name": "Roster for one employee",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/shift-schedules/{{userId}}?fromDate=2026-09-01&toDate=2026-09-30",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "shift-schedules",
+        "{{userId}}"
+       ],
+       "query": [
         {
-          "name": "Balances before",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/leave-balances/{{userId}}?year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leave-balances",
-                "{{userId}}"
-              ],
-              "query": [
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": "Quotas are seeded on first read: casual 12, sick 8."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
+         "key": "fromDate",
+         "value": "2026-09-01"
         },
         {
-          "name": "1. Apply for leave",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/leaves",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leaves"
-              ]
-            },
-            "description": "Saves the returned id into the leaveId variable for the next two requests.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"userId\": \"EMP005\",\n  \"leaveType\": \"CASUAL_LEAVE\",\n  \"fromDate\": \"2026-09-22\",\n  \"toDate\": \"2026-09-23\",\n  \"duration\": \"FULL_DAY\",\n  \"reason\": \"Family function\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "pm.collectionVariables.set('leaveId', pm.response.json().id);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Supervisor's pending queue",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/leaves/pending/{{supervisorId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leaves",
-                "pending",
-                "{{supervisorId}}"
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "2. Supervisor endorses",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/leaves/{{leaveId}}/supervisor-approve",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leaves",
-                "{{leaveId}}",
-                "supervisor-approve"
-              ]
-            },
-            "description": "Status becomes SUPERVISOR_APPROVED. Balance has NOT moved yet.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"approverId\": \"SUP001\",\n  \"comments\": \"Cover arranged\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('endorsed', () => pm.expect(pm.response.json().status).to.eql('SUPERVISOR_APPROVED'));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "3. HR approves (consumes balance)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/leaves/{{leaveId}}/approve",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leaves",
-                "{{leaveId}}",
-                "approve"
-              ]
-            },
-            "description": "Only HR or ADMIN may do this. THIS is the step that consumes balance and offsets LOP.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"approverId\": \"HR001\",\n  \"comments\": \"Approved\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('approved', () => pm.expect(pm.response.json().status).to.eql('APPROVED'));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Balances after (12 -> 10)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/leave-balances/{{userId}}?year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leave-balances",
-                "{{userId}}"
-              ],
-              "query": [
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Leave calendar",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/leaves/calendar?fromDate=2026-09-01&toDate=2026-09-30",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leaves",
-                "calendar"
-              ],
-              "query": [
-                {
-                  "key": "fromDate",
-                  "value": "2026-09-01"
-                },
-                {
-                  "key": "toDate",
-                  "value": "2026-09-30"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Leave history",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/leaves/employee/{{userId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leaves",
-                "employee",
-                "{{userId}}"
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
+         "key": "toDate",
+         "value": "2026-09-30"
         }
-      ]
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "03 - Attendance BEFORE leave",
+   "description": "Run the punch SQL first! See docs/testing/device_logs_EMP005_2026-09.sql",
+   "item": [
+    {
+     "name": "Monthly attendance",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/monthly?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "monthly"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": "Expect workingDays 25, presentDays 22, absentDays 3, lopDays 3, overtimeHours 3.5, invalidPunches 0.\nAll three absences are unpaid right now because the leave is not approved yet."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('lop is 3 before approval', () => pm.expect(pm.response.json().lopDays).to.eql(3.0));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "name": "05 - Attendance AFTER approval",
-      "description": "The same call as folder 03 - watch LOP fall from 3 to 1.",
-      "item": [
+     "name": "Day range detail",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}?fromDate=2026-09-15&toDate=2026-09-18",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}"
+       ],
+       "query": [
         {
-          "name": "Monthly attendance",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/attendance/{{userId}}/monthly?month={{isoMonth}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "attendance",
-                "{{userId}}",
-                "monthly"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{isoMonth}}"
-                }
-              ]
-            },
-            "description": "leaveDays is now 2 and lopDays is 1 - only the 29th, where no leave was applied for."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('lop is 1 after approval', () => pm.expect(pm.response.json().lopDays).to.eql(1.0));"
-                ]
-              }
-            }
-          ]
+         "key": "fromDate",
+         "value": "2026-09-15"
+        },
+        {
+         "key": "toDate",
+         "value": "2026-09-18"
         }
-      ]
+       ]
+      },
+      "description": "The 17th shows 11.5 worked hours and 3.5 overtime."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "04 - Leave workflow",
+   "description": "Employee applies -> supervisor endorses -> HR approves. Only the last step moves balance.",
+   "item": [
+    {
+     "name": "Balances before",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/leave-balances/{{userId}}?year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leave-balances",
+        "{{userId}}"
+       ],
+       "query": [
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": "Quotas are seeded on first read: casual 12, sick 8."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "name": "06 - Payroll",
-      "description": "You supply only the manual amounts; everything else is derived.",
-      "item": [
-        {
-          "name": "Generate payroll",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/payroll/generate",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "payroll",
-                "generate"
-              ]
-            },
-            "description": "payableDays 24 (25 working - 1 LOP). netSalary 18936.20.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"employeeId\": \"EMP005\",\n  \"month\": 9,\n  \"year\": 2026,\n  \"advanceDeduction\": 2000,\n  \"loanDeduction\": 0,\n  \"tds\": 0,\n  \"canteen\": 450,\n  \"bonus\": 1000,\n  \"incentive\": 0,\n  \"generatedBy\": \"HR001\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "pm.test('net salary', () => pm.expect(pm.response.json().netSalary).to.eql(18936.20));",
-                  "pm.test('payable days', () => pm.expect(pm.response.json().payableDays).to.eql(24.0));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Generate again -> 409 on purpose",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/payroll/generate",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "payroll",
-                "generate"
-              ]
-            },
-            "description": "A period is generated once. Use regenerate to correct it.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"employeeId\": \"EMP005\",\n  \"month\": 9,\n  \"year\": 2026\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 409', () => pm.response.to.have.status(409));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Regenerate with corrected canteen",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/payroll/regenerate",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "payroll",
-                "regenerate"
-              ]
-            },
-            "description": "Writes revision 2 and marks revision 1 SUPERSEDED - the old figure is never overwritten.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"employeeId\": \"EMP005\",\n  \"month\": 9,\n  \"year\": 2026,\n  \"advanceDeduction\": 2000,\n  \"canteen\": 300,\n  \"bonus\": 1000,\n  \"generatedBy\": \"HR001\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('revision 2', () => pm.expect(pm.response.json().revision).to.eql(2));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "All revisions (audit trail)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/payroll/employee/{{userId}}/revisions?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "payroll",
-                "employee",
-                "{{userId}}",
-                "revisions"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": "rev 2 GENERATED net 19086.20, rev 1 SUPERSEDED net 18936.20."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Current payroll for the period",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/payroll/employee/{{userId}}/period?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "payroll",
-                "employee",
-                "{{userId}}",
-                "period"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Whole company for the period",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/payroll?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "payroll"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Generate for everyone",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/payroll/generate-all?month={{month}}&year={{year}}&generatedBy={{hrId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "payroll",
-                "generate-all"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                },
-                {
-                  "key": "generatedBy",
-                  "value": "{{hrId}}"
-                }
-              ]
-            },
-            "description": "Skips anyone already generated. Uses zero for all manual deductions."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));"
-                ]
-              }
-            }
-          ]
+     "name": "1. Apply for leave",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/leaves",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leaves"
+       ]
+      },
+      "description": "Saves the returned id into the leaveId variable for the next two requests.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"userId\": \"EMP005\",\n  \"leaveType\": \"CASUAL_LEAVE\",\n  \"fromDate\": \"2026-09-22\",\n  \"toDate\": \"2026-09-23\",\n  \"duration\": \"FULL_DAY\",\n  \"reason\": \"Family function\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
         }
-      ]
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 201', () => pm.response.to.have.status(201));",
+         "pm.collectionVariables.set('leaveId', pm.response.json().id);"
+        ]
+       }
+      }
+     ]
     },
     {
-      "name": "07 - Slips and reports",
+     "name": "Supervisor's pending queue",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/leaves/pending/{{supervisorId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leaves",
+        "pending",
+        "{{supervisorId}}"
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "2. Supervisor endorses",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/leaves/{{leaveId}}/supervisor-approve",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leaves",
+        "{{leaveId}}",
+        "supervisor-approve"
+       ]
+      },
+      "description": "Status becomes SUPERVISOR_APPROVED. Balance has NOT moved yet.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"approverId\": \"SUP001\",\n  \"comments\": \"Cover arranged\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('endorsed', () => pm.expect(pm.response.json().status).to.eql('SUPERVISOR_APPROVED'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "3. HR approves (consumes balance)",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/leaves/{{leaveId}}/approve",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leaves",
+        "{{leaveId}}",
+        "approve"
+       ]
+      },
+      "description": "Only HR or ADMIN may do this. THIS is the step that consumes balance and offsets LOP.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"approverId\": \"HR001\",\n  \"comments\": \"Approved\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('approved', () => pm.expect(pm.response.json().status).to.eql('APPROVED'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Balances after (12 -> 10)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/leave-balances/{{userId}}?year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leave-balances",
+        "{{userId}}"
+       ],
+       "query": [
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Leave calendar",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/leaves/calendar?fromDate=2026-09-01&toDate=2026-09-30",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leaves",
+        "calendar"
+       ],
+       "query": [
+        {
+         "key": "fromDate",
+         "value": "2026-09-01"
+        },
+        {
+         "key": "toDate",
+         "value": "2026-09-30"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Leave history",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/leaves/employee/{{userId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leaves",
+        "employee",
+        "{{userId}}"
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "05 - Attendance AFTER approval",
+   "description": "The same call as folder 03 - watch LOP fall from 3 to 1.",
+   "item": [
+    {
+     "name": "Monthly attendance",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/monthly?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "monthly"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": "leaveDays is now 2 and lopDays is 1 - only the 29th, where no leave was applied for."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('lop is 1 after approval', () => pm.expect(pm.response.json().lopDays).to.eql(1.0));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "06 - Generate & correct attendance",
+   "description": "Attendance is a stored, reviewable artifact - not a view recomputed on every read.\n\n  generate -> review -> correct -> pay\n\nTwo rules make corrections stick: a regeneration preserves MANUAL rows unless you explicitly ask it not to, and a read never writes. Payroll refuses to run until the period has been generated.\n\nSteps 5-9 need docs/testing/device_logs_EMP005_missing_out_punch.sql - run it where the folder says so.",
+   "item": [
+    {
+     "name": "1. Preview before generating (nothing is stored)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/monthly?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "monthly"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": "Nothing has been generated yet, so this is a transient preview computed from raw punches. Crucially it persists nothing - a read can never overwrite a correction."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('preview shows 25 working days', () => pm.expect(pm.response.json().workingDays).to.eql(25));",
+         "pm.test('lop is 1 - only the 29th', () => pm.expect(pm.response.json().lopDays).to.eql(1.0));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "2. Generate attendance for one employee",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/generate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "generate"
+       ]
+      },
+      "description": "Writes one emp_daily_attendance row per rostered day. 29 rows: 30 days minus the holiday on the 14th, which was never rostered. Omit userIds to run the whole company.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"month\": \"{{isoMonth}}\",\n  \"userIds\": [\n    \"{{userId}}\"\n  ],\n  \"generatedBy\": \"{{hrId}}\",\n  \"overwriteManual\": false\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('29 rostered days generated', () => pm.expect(pm.response.json().daysGenerated).to.eql(29));",
+         "pm.test('nothing manual to preserve yet', () => pm.expect(pm.response.json().manualPreserved).to.eql(0));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "3. Stored records with provenance",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/records?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "records"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": "recordStatus says where each row came from, locked whether payroll has frozen it. A UI badge is: locked ? 'LOCKED' : recordStatus."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "const rows = pm.response.json();",
+         "pm.test('29 stored rows', () => pm.expect(rows.length).to.eql(29));",
+         "pm.test('all GENERATED', () => pm.expect(rows.every(r => r.recordStatus === 'GENERATED')).to.be.true);",
+         "pm.test('none locked', () => pm.expect(rows.every(r => r.locked === false)).to.be.true);"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "4. Monthly now reads the stored rows",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/monthly?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "monthly"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": "Same figures as the preview in step 1, but now sourced from the stored days rather than recomputed from punches."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('lop still 1', () => pm.expect(pm.response.json().lopDays).to.eql(1.0));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "5. RUN THE SQL FIRST - regenerate to pick up the device change",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/generate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "generate"
+       ]
+      },
+      "description": "Run docs/testing/device_logs_EMP005_missing_out_punch.sql now - it deletes the exit punch on the 25th, the way a real device drops one.\n\nRerunning generation is safe and is how late-arriving or corrected device data gets picked up. The 25th now has a single punch, so it becomes INVALID_PUNCH and a day actually worked turns into loss of pay. That is the bug this folder exists to fix.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"month\": \"{{isoMonth}}\",\n  \"userIds\": [\n    \"{{userId}}\"\n  ],\n  \"generatedBy\": \"{{hrId}}\",\n  \"overwriteManual\": false\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('all 29 regenerated', () => pm.expect(pm.response.json().daysGenerated).to.eql(29));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "6. The broken day",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}?fromDate=2026-09-25&toDate=2026-09-25",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}"
+       ],
+       "query": [
+        {
+         "key": "fromDate",
+         "value": "2026-09-25"
+        },
+        {
+         "key": "toDate",
+         "value": "2026-09-25"
+        }
+       ]
+      },
+      "description": "One punch in, none out. status INVALID_PUNCH, invalidPunch true, and the day is worth nothing towards pay."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('the 25th is an invalid punch', () => pm.expect(pm.response.json()[0].status).to.eql('INVALID_PUNCH'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "7. Correct the missed out-punch",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/{{correctionDate}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "{{correctionDate}}"
+       ]
+      },
+      "description": "Supply the exit the device missed. The times are run back through the same calculation service a device punch takes, so a hand-fixed day cannot obey different rules from a machine-read one: 9 hours punch to punch, less the shift's 1 hour unpaid break, gives 8.00 working hours.\n\nremarks is mandatory - a correction without a reason is not auditable.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"firstIn\": \"2026-09-25T06:00:00\",\n  \"lastOut\": \"2026-09-25T15:00:00\",\n  \"remarks\": \"Device missed the exit punch - confirmed with the supervisor\",\n  \"updatedBy\": \"{{hrId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "const r = pm.response.json();",
+         "pm.test('now MANUAL', () => pm.expect(r.recordStatus).to.eql('MANUAL'));",
+         "pm.test('now PRESENT', () => pm.expect(r.status).to.eql('PRESENT'));",
+         "pm.test('8 working hours', () => pm.expect(r.workingHours).to.eql(8.00));",
+         "pm.test('audit trail kept', () => pm.expect(r.updatedBy).to.eql(pm.variables.get('hrId')));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "8. The month picks the correction up",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/monthly?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "monthly"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": "presentDays back to 22 and lopDays back to 1. LOP and payroll inherit corrections automatically because the summary is now a rollup of the stored days."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('present back to 22', () => pm.expect(pm.response.json().presentDays).to.eql(22.0));",
+         "pm.test('lop back to 1', () => pm.expect(pm.response.json().lopDays).to.eql(1.0));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "9. Regenerating does NOT undo the correction",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/generate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "generate"
+       ]
+      },
+      "description": "The load-bearing guarantee. The 25th is MANUAL, so it is preserved and reported as manualPreserved rather than recomputed back into an invalid punch. Send overwriteManual true only when you deliberately want to discard corrections.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"month\": \"{{isoMonth}}\",\n  \"userIds\": [\n    \"{{userId}}\"\n  ],\n  \"generatedBy\": \"{{hrId}}\",\n  \"overwriteManual\": false\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('the correction survived', () => pm.expect(pm.response.json().manualPreserved).to.eql(1));",
+         "pm.test('other 28 days regenerated', () => pm.expect(pm.response.json().daysGenerated).to.eql(28));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "10. Declare a day that has no punches at all",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/{{absentDate}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "{{absentDate}}"
+       ]
+      },
+      "description": "The 29th has no punch to correct - the device was down, or the employee worked off-site. There are no times to supply, so the day is declared outright and the hours follow the shift. lopDays drops to 0.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"status\": \"PRESENT\",\n  \"remarks\": \"Worked at the client site, device unreachable\",\n  \"updatedBy\": \"{{hrId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('declared PRESENT', () => pm.expect(pm.response.json().status).to.eql('PRESENT'));",
+         "pm.test('hours follow the shift', () => pm.expect(pm.response.json().workingHours).to.eql(8.00));",
+         "pm.test('no punch times', () => pm.expect(pm.response.json().firstIn).to.eql(null));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "11. Generate for the whole company",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/generate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "generate"
+       ]
+      },
+      "description": "Omitting userIds runs every active employee. Anyone with no roster for the month comes back in employeesWithoutRoster rather than failing the run.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"month\": \"{{isoMonth}}\",\n  \"generatedBy\": \"{{hrId}}\",\n  \"overwriteManual\": false\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('EMP005 corrections still preserved', () => pm.expect(pm.response.json().manualPreserved).to.be.at.least(2));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "07 - Payroll",
+   "description": "Payroll now reads the attendance you generated and reviewed - never a fresh recompute, which would discard corrections. Generating locks the month.",
+   "item": [
+    {
+     "name": "Generate payroll",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll/generate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll",
+        "generate"
+       ]
+      },
+      "description": "payableDays 24 (25 working - 1 LOP). netSalary 18936.20.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"employeeId\": \"EMP005\",\n  \"month\": 9,\n  \"year\": 2026,\n  \"advanceDeduction\": 2000,\n  \"loanDeduction\": 0,\n  \"tds\": 0,\n  \"canteen\": 450,\n  \"bonus\": 1000,\n  \"incentive\": 0,\n  \"generatedBy\": \"HR001\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 201', () => pm.response.to.have.status(201));",
+         "pm.test('net salary', () => pm.expect(pm.response.json().netSalary).to.eql(18936.20));",
+         "pm.test('payable days', () => pm.expect(pm.response.json().payableDays).to.eql(24.0));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Generate again -> 409 on purpose",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll/generate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll",
+        "generate"
+       ]
+      },
+      "description": "A period is generated once. Use regenerate to correct it.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"employeeId\": \"EMP005\",\n  \"month\": 9,\n  \"year\": 2026\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 409', () => pm.response.to.have.status(409));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Regenerate with corrected canteen",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll/regenerate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll",
+        "regenerate"
+       ]
+      },
+      "description": "Writes revision 2 and marks revision 1 SUPERSEDED - the old figure is never overwritten.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"employeeId\": \"EMP005\",\n  \"month\": 9,\n  \"year\": 2026,\n  \"advanceDeduction\": 2000,\n  \"canteen\": 300,\n  \"bonus\": 1000,\n  \"generatedBy\": \"HR001\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('revision 2', () => pm.expect(pm.response.json().revision).to.eql(2));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "All revisions (audit trail)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll/employee/{{userId}}/revisions?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll",
+        "employee",
+        "{{userId}}",
+        "revisions"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": "rev 2 GENERATED net 19086.20, rev 1 SUPERSEDED net 18936.20."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Current payroll for the period",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll/employee/{{userId}}/period?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll",
+        "employee",
+        "{{userId}}",
+        "period"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Whole company for the period",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Generate for everyone",
+     "request": {
+      "method": "POST",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll/generate-all?month={{month}}&year={{year}}&generatedBy={{hrId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll",
+        "generate-all"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        },
+        {
+         "key": "generatedBy",
+         "value": "{{hrId}}"
+        }
+       ]
+      },
+      "description": "Skips anyone already generated. Uses zero for all manual deductions."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 201', () => pm.response.to.have.status(201));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Attendance is now locked",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/records?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "records"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": "Generating payroll froze the month so the slip stays reproducible. recordStatus still shows which days a human corrected - locking does not erase that."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('every day locked', () => pm.expect(pm.response.json().every(r => r.locked)).to.be.true);",
+         "pm.test('provenance survived locking', () => pm.expect(pm.response.json().some(r => r.recordStatus === 'MANUAL')).to.be.true);"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Unlock the month to correct it",
+     "request": {
+      "method": "POST",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/unlock?month={{isoMonth}}&actorId={{hrId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "unlock"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        },
+        {
+         "key": "actorId",
+         "value": "{{hrId}}"
+        }
+       ]
+      },
+      "description": "Reopens a paid month. The payroll already generated is untouched - regenerate it afterwards to pick the corrections up."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('29 days unlocked', () => pm.expect(pm.response.json().unlockedDays).to.eql(29));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Correct a day after unlocking",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/2026-09-28",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "2026-09-28"
+       ]
+      },
+      "description": "Any correction after payroll has run needs unlock, fix, regenerate - in that order.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"status\": \"HALF_DAY\",\n  \"remarks\": \"Left at midday for a medical appointment\",\n  \"updatedBy\": \"{{hrId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('now a half day', () => pm.expect(pm.response.json().status).to.eql('HALF_DAY'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Regenerate payroll on the corrected attendance",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll/regenerate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll",
+        "regenerate"
+       ]
+      },
+      "description": "Supersedes the previous revision rather than editing it, and re-locks the month. The old slip stays reproducible exactly as printed.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"employeeId\": \"{{userId}}\",\n  \"month\": \"{{month}}\",\n  \"year\": \"{{year}}\",\n  \"generatedBy\": \"{{hrId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "pm.test('a new revision', () => pm.expect(pm.response.json().revision).to.be.above(1));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "08 - Slips and reports",
+   "description": "",
+   "item": [
+    {
+     "name": "Salary slip (JSON)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/salary-slips/{{userId}}?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "salary-slips",
+        "{{userId}}"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Salary slip (printable HTML)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/salary-slips/{{userId}}/print?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "salary-slips",
+        "{{userId}}",
+        "print"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": "Open in a browser and print or save as PDF."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Export period as CSV",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/salary-slips/export?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "salary-slips",
+        "export"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Monthly attendance report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/attendance/monthly?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "attendance",
+        "monthly"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Overtime report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/attendance/overtime?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "attendance",
+        "overtime"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "LOP report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/attendance/lop?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "attendance",
+        "lop"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Absent report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/attendance/absent?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "attendance",
+        "absent"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Late coming report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/attendance/late-coming?month={{isoMonth}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "attendance",
+        "late-coming"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{isoMonth}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Leave balance report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/leave-balances?year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "leave-balances"
+       ],
+       "query": [
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Payroll report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/payroll?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "payroll"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Payroll by department",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/payroll/by-department?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "payroll",
+        "by-department"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "PF report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/statutory/pf?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "statutory",
+        "pf"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Professional tax report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/statutory/professional-tax?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "statutory",
+        "professional-tax"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "ESIC report",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/reports/statutory/esic?month={{month}}&year={{year}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "reports",
+        "statutory",
+        "esic"
+       ],
+       "query": [
+        {
+         "key": "month",
+         "value": "{{month}}"
+        },
+        {
+         "key": "year",
+         "value": "{{year}}"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Dashboard",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/dashboard?asOf=2026-09-15",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "dashboard"
+       ],
+       "query": [
+        {
+         "key": "asOf",
+         "value": "2026-09-15"
+        }
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "09 - Error cases worth seeing",
+   "description": "Every failure returns the same ApiError shape.",
+   "item": [
+    {
+     "name": "400 - validation",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/employees",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "employees"
+       ]
+      },
+      "description": "Every field failure is listed in one message.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"userId\": \"\",\n  \"grossSalary\": -5\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 400', () => pm.response.to.have.status(400));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "400 - supervisor outside their team",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/shift-schedules",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "shift-schedules"
+       ]
+      },
+      "description": "'Supervisor SUP001 does not manage employee HR001'",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"userId\": \"HR001\",\n  \"shiftDate\": \"2026-09-01\",\n  \"shiftCode\": \"MORNING\",\n  \"assignedBy\": \"SUP001\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 400', () => pm.response.to.have.status(400));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "400 - employee cannot approve leave",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/leaves/{{leaveId}}/approve",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leaves",
+        "{{leaveId}}",
+        "approve"
+       ]
+      },
+      "description": "Final approval needs the HR or ADMIN role.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"approverId\": \"EMP001\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 400', () => pm.response.to.have.status(400));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "400 - overlapping leave",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/leaves",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "leaves"
+       ]
+      },
+      "description": "An open or approved leave already covers part of this range.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"userId\": \"EMP005\",\n  \"leaveType\": \"SICK_LEAVE\",\n  \"fromDate\": \"2026-09-23\",\n  \"toDate\": \"2026-09-24\",\n  \"duration\": \"FULL_DAY\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 400', () => pm.response.to.have.status(400));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "404 - unknown employee",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/employees/by-user-id/NOPE",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "employees",
+        "by-user-id",
+        "NOPE"
+       ]
+      },
+      "description": ""
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 404', () => pm.response.to.have.status(404));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "409 - duplicate code",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/designations",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "designations"
+       ]
+      },
       "description": "",
-      "item": [
-        {
-          "name": "Salary slip (JSON)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/salary-slips/{{userId}}?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "salary-slips",
-                "{{userId}}"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Salary slip (printable HTML)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/salary-slips/{{userId}}/print?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "salary-slips",
-                "{{userId}}",
-                "print"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": "Open in a browser and print or save as PDF."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Export period as CSV",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/salary-slips/export?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "salary-slips",
-                "export"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Monthly attendance report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/attendance/monthly?month={{isoMonth}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "attendance",
-                "monthly"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{isoMonth}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Overtime report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/attendance/overtime?month={{isoMonth}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "attendance",
-                "overtime"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{isoMonth}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "LOP report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/attendance/lop?month={{isoMonth}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "attendance",
-                "lop"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{isoMonth}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Absent report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/attendance/absent?month={{isoMonth}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "attendance",
-                "absent"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{isoMonth}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Late coming report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/attendance/late-coming?month={{isoMonth}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "attendance",
-                "late-coming"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{isoMonth}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Leave balance report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/leave-balances?year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "leave-balances"
-              ],
-              "query": [
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Payroll report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/payroll?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "payroll"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Payroll by department",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/payroll/by-department?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "payroll",
-                "by-department"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "PF report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/statutory/pf?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "statutory",
-                "pf"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Professional tax report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/statutory/professional-tax?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "statutory",
-                "professional-tax"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "ESIC report",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/reports/statutory/esic?month={{month}}&year={{year}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "reports",
-                "statutory",
-                "esic"
-              ],
-              "query": [
-                {
-                  "key": "month",
-                  "value": "{{month}}"
-                },
-                {
-                  "key": "year",
-                  "value": "{{year}}"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Dashboard",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/dashboard?asOf=2026-09-15",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "dashboard"
-              ],
-              "query": [
-                {
-                  "key": "asOf",
-                  "value": "2026-09-15"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"designationCode\": \"SR-OPR\",\n  \"designationName\": \"Duplicate\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
         }
-      ]
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 409', () => pm.response.to.have.status(409));"
+        ]
+       }
+      }
+     ]
     },
     {
-      "name": "08 - Error cases worth seeing",
-      "description": "Every failure returns the same ApiError shape.",
-      "item": [
-        {
-          "name": "400 - validation",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/employees",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "employees"
-              ]
-            },
-            "description": "Every field failure is listed in one message.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"userId\": \"\",\n  \"grossSalary\": -5\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 400', () => pm.response.to.have.status(400));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "400 - supervisor outside their team",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/shift-schedules",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "shift-schedules"
-              ]
-            },
-            "description": "'Supervisor SUP001 does not manage employee HR001'",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"userId\": \"HR001\",\n  \"shiftDate\": \"2026-09-01\",\n  \"shiftCode\": \"MORNING\",\n  \"assignedBy\": \"SUP001\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 400', () => pm.response.to.have.status(400));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "400 - employee cannot approve leave",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/leaves/{{leaveId}}/approve",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leaves",
-                "{{leaveId}}",
-                "approve"
-              ]
-            },
-            "description": "Final approval needs the HR or ADMIN role.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"approverId\": \"EMP001\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 400', () => pm.response.to.have.status(400));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "400 - overlapping leave",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/leaves",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "leaves"
-              ]
-            },
-            "description": "An open or approved leave already covers part of this range.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"userId\": \"EMP005\",\n  \"leaveType\": \"SICK_LEAVE\",\n  \"fromDate\": \"2026-09-23\",\n  \"toDate\": \"2026-09-24\",\n  \"duration\": \"FULL_DAY\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 400', () => pm.response.to.have.status(400));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "404 - unknown employee",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/employees/by-user-id/NOPE",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "employees",
-                "by-user-id",
-                "NOPE"
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 404', () => pm.response.to.have.status(404));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "409 - duplicate code",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/designations",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "designations"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"designationCode\": \"SR-OPR\",\n  \"designationName\": \"Duplicate\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 409', () => pm.response.to.have.status(409));"
-                ]
-              }
-            }
-          ]
+     "name": "400 - payroll before attendance was generated",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/payroll/generate",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "payroll",
+        "generate"
+       ]
+      },
+      "description": "January was never generated, so payroll refuses rather than quietly recomputing from raw punches. This is the guard that stops anyone being paid off numbers nobody reviewed.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"employeeId\": \"{{userId}}\",\n  \"month\": 1,\n  \"year\": \"{{year}}\",\n  \"generatedBy\": \"{{hrId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
         }
-      ]
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 400', () => pm.response.to.have.status(400));",
+         "pm.test('says to generate first', () => pm.expect(pm.response.json().message).to.include('Attendance has not been generated'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "400 - correcting a locked day",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/{{correctionDate}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "{{correctionDate}}"
+       ]
+      },
+      "description": "Run this while the month is locked by payroll. Unlock it first.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"firstIn\": \"2026-09-25T06:00:00\",\n  \"lastOut\": \"2026-09-25T15:00:00\",\n  \"remarks\": \"Trying to edit a paid month\",\n  \"updatedBy\": \"{{hrId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 400', () => pm.response.to.have.status(400));",
+         "pm.test('explains the lock', () => pm.expect(pm.response.json().message).to.include('locked'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "400 - an employee cannot correct their own attendance",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/{{correctionDate}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "{{correctionDate}}"
+       ]
+      },
+      "description": "Correcting attendance moves money, so it is restricted to HR and ADMIN.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"firstIn\": \"2026-09-25T06:00:00\",\n  \"lastOut\": \"2026-09-25T15:00:00\",\n  \"remarks\": \"Marking myself present\",\n  \"updatedBy\": \"{{userId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 400', () => pm.response.to.have.status(400));",
+         "pm.test('role is refused', () => pm.expect(pm.response.json().message).to.include('HR or ADMIN'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "400 - a correction with nothing to apply",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/{{correctionDate}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "{{correctionDate}}"
+       ]
+      },
+      "description": "Give punch times or a status. Neither is not a correction.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"remarks\": \"No idea what happened\",\n  \"updatedBy\": \"{{hrId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 400', () => pm.response.to.have.status(400));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "404 - correcting a day that was never generated",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/attendance/{{userId}}/2026-01-15",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "attendance",
+        "{{userId}}",
+        "2026-01-15"
+       ]
+      },
+      "description": "You can only correct attendance that exists - generate the month first.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"status\": \"PRESENT\",\n  \"remarks\": \"Ungenerated month\",\n  \"updatedBy\": \"{{hrId}}\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 404', () => pm.response.to.have.status(404));"
+        ]
+       }
+      }
+     ]
     }
-  ]
+   ]
+  }
+ ]
 }

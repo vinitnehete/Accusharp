@@ -1,9 +1,14 @@
 package com.accusharp.hrms.controller;
 
+import com.accusharp.hrms.dto.AttendanceCorrectionRequest;
+import com.accusharp.hrms.dto.AttendanceGenerationRequest;
+import com.accusharp.hrms.dto.AttendanceGenerationResponse;
+import com.accusharp.hrms.dto.AttendanceRecordResponse;
 import com.accusharp.hrms.dto.DailyAttendanceResponse;
 import com.accusharp.hrms.dto.MonthlyAttendanceResponse;
 import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
 import com.accusharp.hrms.service.attendance.AttendanceService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
@@ -11,10 +16,13 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Attendance is read-only over the punches the biometric device writes - there
- * is deliberately no endpoint to create or edit a punch.
+ * Punches themselves remain read-only - the device owns {@code device_logs} and
+ * there is still no endpoint to create or edit one. What an admin can change is
+ * the <em>generated attendance</em>: correcting a day records the correction
+ * alongside the original device reading rather than rewriting history.
  */
 @RestController
 @RequestMapping("/api/attendance")
@@ -22,6 +30,39 @@ import java.util.List;
 public class AttendanceController {
 
     private final AttendanceService attendanceService;
+
+    /** Generates the stored attendance for a period - one employee, several, or all. */
+    @PostMapping("/generate")
+    public AttendanceGenerationResponse generate(@Valid @RequestBody AttendanceGenerationRequest request) {
+        return attendanceService.generate(request);
+    }
+
+    /** The stored rows for a month, provenance included. */
+    @GetMapping("/{userId}/records")
+    public List<AttendanceRecordResponse> getRecords(
+            @PathVariable String userId,
+            @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month) {
+        return attendanceService.getRecords(userId, month);
+    }
+
+    /** Corrects one generated day; the row becomes MANUAL. */
+    @PutMapping("/{userId}/{date}")
+    public AttendanceRecordResponse correctDay(
+            @PathVariable String userId,
+            @PathVariable @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @Valid @RequestBody AttendanceCorrectionRequest request) {
+        return attendanceService.correctDay(userId, date, request);
+    }
+
+    /** Reopens a month frozen by payroll. Regenerate payroll afterwards. */
+    @PostMapping("/{userId}/unlock")
+    public Map<String, Object> unlock(
+            @PathVariable String userId,
+            @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month,
+            @RequestParam String actorId) {
+        return Map.of("userId", userId, "month", month.toString(),
+                "unlockedDays", attendanceService.unlockMonth(userId, month, actorId));
+    }
 
     @GetMapping("/{userId}")
     public List<DailyAttendanceResponse> getDaily(
@@ -31,6 +72,7 @@ public class AttendanceController {
         return attendanceService.getDailyAttendance(userId, fromDate, toDate);
     }
 
+    /** Stored attendance once generated; otherwise a preview that persists nothing. */
     @GetMapping("/{userId}/monthly")
     public MonthlyAttendanceResponse getMonthly(
             @PathVariable String userId,
@@ -38,10 +80,10 @@ public class AttendanceController {
         return attendanceService.getMonthlyAttendance(userId, month);
     }
 
-    /** Recomputes the cached summaries payroll consumes. */
+    /** Resyncs the cached summaries from the stored days. */
     @PostMapping("/summaries/refresh")
     public List<MonthlyAttendanceSummary> refreshSummaries(
             @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month) {
-        return attendanceService.refreshAllSummaries(month);
+        return attendanceService.syncSummaries(month);
     }
 }

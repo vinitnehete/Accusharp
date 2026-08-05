@@ -1,11 +1,9 @@
 # Accusharp HRMS - Architecture & Design
 
 How the system is built and why. For day-to-day operation see [README.md](README.md).
-
-Built from three specifications: [Readme.MD](../Claude%20/Readme.MD) (product
-and architecture), [Attendance.md](Attendance.md) and
-[Payroll.md](../payroll/Payroll.md) (the attendance and payroll behaviour this
-codebase already had, now merged into one service).
+For the attendance engine in full - every rule, the punch windows, generation,
+corrections and locking - see **[Attendance.md](Attendance.md)**; this file only
+summarises it.
 
 - **Stack**: Java 21, Spring Boot 4.1.0 (Web, Data JPA, Validation), MySQL, Lombok
 - **Package root**: `com.accusharp.hrms`
@@ -50,8 +48,8 @@ Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
 
 ```
 Company -> Department -> Designation -> Employee -> Supervisor mapping
-   -> Shift scheduling -> Biometric punches -> Attendance
-   -> Leave approval -> LOP -> Payroll -> Salary slip -> Reports
+   -> Shift scheduling -> Biometric punches -> Attendance generated
+   -> HR corrections -> Leave approval -> LOP -> Payroll -> Salary slip -> Reports
 ```
 
 ## Domain model
@@ -63,9 +61,10 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | `Shift` | `shift` | Shift master. End time not after start time means it crosses midnight |
 | `ShiftSchedule` | `emp_attendance_shift` | One shift per employee per day (unique constraint) |
 | `DeviceLog` | `device_logs` | Raw punches, written by the eSSL device. **Read-only here** |
+| `DailyAttendance` | `emp_daily_attendance` | The reviewed attendance day payroll is paid from. Generated from punches, correctable by HR |
 | `Holiday` | `holiday` | Company calendar; optional holidays stay working days |
 | `LeaveRequest`, `LeaveBalance` | `leave_request`, `leave_balance` | Balance is always quota minus used |
-| `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Write-through cache, recomputed on every read |
+| `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Cached rollup of the stored days |
 | `SalaryRule` | `salary_rule` | Single config row holding every percentage and slab |
 | `Payroll` | `payroll` | Immutable snapshot per employee/month/year/revision |
 
@@ -101,6 +100,15 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
   end (default 4 hours). A symmetric buffer would make a long overtime day look
   like a missing exit punch, so the closing side is configurable per shift and
   sized for real overtime.
+- **Windows are exclusive.** A night shift's window crosses midnight and, with
+  an overtime window on top, can reach into the hours the *next* scheduled day
+  is already collecting for. A day's window is therefore truncated where the
+  next scheduled day's window opens, so a punch is only ever counted by one day
+  - otherwise a night shift swallows the next morning's entry as its own exit
+  and both days claim it. It only ever shrinks: where shifts do not overlap the
+  full overtime window survives, and consecutive night shifts never collide.
+  The roster is read one day either side of the requested range, which is what
+  makes the last night shift of a month hand over correctly to the next month.
 - **Break.** With four or more punches the middle pairs are real in/out cycles,
   so the actual time outside is used. Otherwise the shift's configured unpaid
   break applies.
@@ -110,8 +118,41 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
 - **Holidays, weekly offs and approved leave** are layered on top, so *absent*
   only ever means "expected to work and did not".
 
-Monthly summaries are a cache, not a source of truth - they are recomputed from
-punches and roster on every request and overwritten.
+### Attendance is generated, then reviewed
+
+Attendance is a stored artifact, not a view that re-derives itself:
+
+```
+generate(month)  ->  one DailyAttendance row per rostered day    (GENERATED)
+correct(day)     ->  HR fixes what the device got wrong          (MANUAL)
+payroll          ->  reads the stored rows and freezes them      (locked)
+```
+
+Devices miss punches. When they do, the day reads as an invalid punch and
+silently becomes loss of pay, so HR must be able to correct it - either by
+supplying the punch times the device missed, or by declaring the day outright
+when no punch exists at all. Corrected times are run back through
+`AttendanceCalculationService`, the identical path a device punch takes, so a
+hand-fixed day can never obey different rules from a machine-read one.
+
+Two rules make corrections stick, and both are load-bearing:
+
+- **A regeneration preserves `MANUAL` rows** unless `overwriteManual` is set, so
+  a rerun picks up late-arriving punches without discarding HR's work.
+- **A read never writes.** Before this, both a monthly GET and payroll itself
+  recomputed from raw punches, so any correction was destroyed by the next
+  request that happened to touch the month.
+
+`recordStatus` (GENERATED / MANUAL) and `locked` are deliberately separate
+fields: locking a day must not erase the fact that a human corrected it, which
+is exactly the question asked when a salary is disputed months later.
+
+Generating payroll locks the month, keeping an already-paid period
+reproducible. Correcting it afterwards means unlock, fix, regenerate - which
+supersedes the old revision rather than editing it.
+
+Monthly summaries remain a cache, but now of the stored days rather than of raw
+punches, so LOP and payroll inherit corrections automatically.
 
 ### Loss of pay
 
@@ -190,7 +231,9 @@ currently unauthenticated.**
 
 - **Device integration is one-way.** `device_logs` is populated externally by the
   biometric device's middleware writing straight to MySQL. There is deliberately
-  no endpoint to create or edit a punch.
+  no endpoint to create or edit a punch - HR corrections are recorded on the
+  generated attendance day instead, so the raw device reading survives next to
+  the correction and a device re-sync can never clobber it.
 - **No native SQL.** The one native MySQL query the previous attendance service
   used (`DATE_ADD`, `GROUP BY DATE(...)`) was replaced with portable derived
   queries plus grouping in Java, which is what lets the whole suite run on H2.

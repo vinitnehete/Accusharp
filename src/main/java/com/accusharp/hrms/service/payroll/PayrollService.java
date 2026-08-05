@@ -141,8 +141,11 @@ public class PayrollService {
         SalaryRule rule = salaryRuleService.getActiveRule();
         YearMonth period = YearMonth.of(request.getYear(), request.getMonth());
 
-        // Recompute attendance first so payroll never reads a stale summary.
-        MonthlyAttendanceSummary attendance = attendanceService.refreshSummary(employee.getUserId(), period);
+        // Pay from the attendance HR generated and reviewed - never from a
+        // fresh recompute, which would discard their corrections. Refuses
+        // outright if the period was never generated.
+        MonthlyAttendanceSummary attendance =
+                attendanceService.getGeneratedSummary(employee.getUserId(), period);
 
         Payroll payroll = new Payroll();
         payroll.setEmployeeId(employee.getUserId());
@@ -248,7 +251,13 @@ public class PayrollService {
                 payroll.getEmployeeId(), payroll.getMonth(), payroll.getYear(), revision,
                 payableDays, payroll.getNetSalary());
 
-        return payrollRepository.save(payroll);
+        Payroll saved = payrollRepository.save(payroll);
+
+        // Freeze the attendance this payroll was computed from, so the slip
+        // stays reproducible. Correcting it later means unlock, fix, regenerate.
+        attendanceService.lockMonth(employee.getUserId(), period);
+
+        return saved;
     }
 
     /**

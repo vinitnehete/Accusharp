@@ -1,5 +1,6 @@
 package com.accusharp.hrms;
 
+import com.accusharp.hrms.dto.AttendanceGenerationRequest;
 import com.accusharp.hrms.dto.LeaveDecisionRequest;
 import com.accusharp.hrms.dto.LeaveRequestPayload;
 import com.accusharp.hrms.dto.MonthlyAttendanceResponse;
@@ -16,7 +17,9 @@ import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.ConflictException;
+import com.accusharp.hrms.repository.DailyAttendanceRepository;
 import com.accusharp.hrms.repository.DeviceLogRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.LeaveBalanceRepository;
@@ -63,6 +66,7 @@ class PayrollFlowIntegrationTest {
     @Autowired private ShiftRepository shiftRepository;
     @Autowired private ShiftScheduleRepository shiftScheduleRepository;
     @Autowired private DeviceLogRepository deviceLogRepository;
+    @Autowired private DailyAttendanceRepository dailyAttendanceRepository;
     @Autowired private LeaveRequestRepository leaveRequestRepository;
     @Autowired private LeaveBalanceRepository leaveBalanceRepository;
     @Autowired private PayrollRepository payrollRepository;
@@ -81,6 +85,7 @@ class PayrollFlowIntegrationTest {
         // The context is shared across test methods, so every table this flow
         // touches is reset - otherwise leave from one test leaks into the next.
         payrollRepository.deleteAll();
+        dailyAttendanceRepository.deleteAll();
         monthlyAttendanceSummaryRepository.deleteAll();
         leaveRequestRepository.deleteAll();
         leaveBalanceRepository.deleteAll();
@@ -124,6 +129,7 @@ class PayrollFlowIntegrationTest {
     @DisplayName("attendance derives 23 present days and 1 LOP day after approved leave")
     void attendanceProducesTheExpectedLop() {
         approveTwoDaysLeave();
+        generateAttendance();
 
         MonthlyAttendanceResponse attendance = attendanceService.getMonthlyAttendance(EMPLOYEE, PERIOD);
 
@@ -138,6 +144,7 @@ class PayrollFlowIntegrationTest {
     @DisplayName("payroll prorates earnings to the 25 payable days")
     void payrollProratesByPayableDays() {
         approveTwoDaysLeave();
+        generateAttendance();
 
         Payroll payroll = payrollService.generate(payrollRequest());
 
@@ -158,6 +165,7 @@ class PayrollFlowIntegrationTest {
     @Test
     @DisplayName("a period can only be generated once")
     void generatingTwiceIsAConflict() {
+        generateAttendance();
         payrollService.generate(payrollRequest());
 
         assertThatThrownBy(() -> payrollService.generate(payrollRequest()))
@@ -167,6 +175,7 @@ class PayrollFlowIntegrationTest {
     @Test
     @DisplayName("regenerating supersedes the old revision instead of overwriting it")
     void regenerationKeepsHistoryImmutable() {
+        generateAttendance();
         Payroll first = payrollService.generate(payrollRequest());
         BigDecimal originalNet = first.getNetSalary();
 
@@ -194,6 +203,7 @@ class PayrollFlowIntegrationTest {
     @Test
     @DisplayName("the salary slip reports exactly what payroll recorded")
     void salarySlipMirrorsPayroll() {
+        generateAttendance();
         Payroll payroll = payrollService.generate(payrollRequest());
 
         SalarySlipResponse slip = salarySlipService.getSlip(EMPLOYEE, PERIOD.getMonthValue(),
@@ -226,7 +236,23 @@ class PayrollFlowIntegrationTest {
         assertThat(attendance.lopDays()).isEqualByComparingTo("3");
     }
 
+    @Test
+    @DisplayName("payroll refuses to run against attendance nobody generated")
+    void payrollRequiresGeneratedAttendance() {
+        assertThatThrownBy(() -> payrollService.generate(payrollRequest()))
+                .isInstanceOf(BusinessRuleException.class)
+                .hasMessageContaining("Attendance has not been generated");
+    }
+
     // ---- fixtures ----------------------------------------------------------
+
+    private void generateAttendance() {
+        AttendanceGenerationRequest request = new AttendanceGenerationRequest();
+        request.setMonth(PERIOD);
+        request.setUserIds(List.of(EMPLOYEE));
+        request.setGeneratedBy(HR);
+        attendanceService.generate(request);
+    }
 
     private com.accusharp.hrms.dto.LeaveResponse approveTwoDaysLeave() {
         LeaveRequestPayload payload = new LeaveRequestPayload();

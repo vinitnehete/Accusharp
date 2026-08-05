@@ -42,10 +42,10 @@ public class ReportService {
 
     // ---- attendance --------------------------------------------------------
 
-    /** Monthly attendance across the company, recomputed before reporting. */
+    /** Monthly attendance across the company, resynced from the stored days. */
     @Transactional
     public List<ReportDtos.MonthlyAttendanceRow> monthlyAttendanceReport(YearMonth month) {
-        attendanceService.refreshAllSummaries(month);
+        attendanceService.syncSummaries(month);
         Map<String, Employee> employees = activeEmployeesByUserId();
 
         return monthlyAttendanceSummaryRepository.findAllByMonth(month.toString()).stream()
@@ -197,7 +197,7 @@ public class ReportService {
             java.util.function.Predicate<MonthlyAttendanceSummary> filter,
             Function<MonthlyAttendanceSummary, String> detail) {
 
-        attendanceService.refreshAllSummaries(month);
+        attendanceService.syncSummaries(month);
         Map<String, Employee> employees = activeEmployeesByUserId();
 
         return monthlyAttendanceSummaryRepository.findAllByMonth(month.toString()).stream()

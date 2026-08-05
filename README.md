@@ -9,10 +9,12 @@ loss of pay, payroll, salary slips, reports and a dashboard.
 | **[WALKTHROUGH.md](WALKTHROUGH.md)** | **Start here.** One complete cycle for one employee, explained |
 | **[TESTING.md](TESTING.md)** | You want every URL, header, body and response to test in Postman + SQL |
 | **README.md** (this file) | Day-to-day reference |
+| **[Attendance.md](Attendance.md)** | The full attendance engine: rules, punch windows, generation, corrections, locking |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | How it is built and why |
 
 Ready-to-use test assets: a [Postman collection](docs/testing/Accusharp-HRMS.postman_collection.json)
-(51 requests, 9 ordered folders) and [punch SQL](docs/testing/device_logs_EMP005_2026-09.sql).
+(71 requests, 10 ordered folders), [punch SQL](docs/testing/device_logs_EMP005_2026-09.sql)
+and a [missing-punch scenario](docs/testing/device_logs_EMP005_missing_out_punch.sql).
 
 - **Stack**: Java 21, Spring Boot 4.1.0, MySQL, Lombok
 - **Base URL**: `http://localhost:8080`
@@ -347,15 +349,42 @@ Day range instead of a whole month:
 curl "http://localhost:8080/api/attendance/EMP001?fromDate=2026-09-01&toDate=2026-09-07"
 ```
 
-Refresh the cached summaries for everyone (payroll does this automatically, but
-it is useful before reporting):
+### Generate the attendance payroll will be paid from
+
+The calls above are a **preview** - they compute from punches and persist
+nothing. Before payroll can run, the month has to be generated and reviewed:
+
+```bash
+curl -X POST http://localhost:8080/api/attendance/generate -H 'Content-Type: application/json' -d '{"month":"2026-09","userIds":["EMP001"],"generatedBy":"HR001"}'
+```
+
+Omit `userIds` to run the whole company. This writes one row per rostered day.
+Review them, provenance included:
+
+```bash
+curl "http://localhost:8080/api/attendance/EMP001/records?month=2026-09"
+```
+
+Devices miss punches. When one does, the day reads as `INVALID_PUNCH` and would
+silently become loss of pay - so HR can correct it, either by supplying the
+times the device missed or by declaring the day outright:
+
+```bash
+curl -X PUT http://localhost:8080/api/attendance/EMP001/2026-09-25 -H 'Content-Type: application/json' -d '{"firstIn":"2026-09-25T06:00:00","lastOut":"2026-09-25T15:00:00","remarks":"Device missed the exit punch","updatedBy":"HR001"}'
+```
+
+The row becomes `MANUAL` and **survives the next generation run** - rerun
+generation freely to pick up late-arriving punches without losing corrections.
+Pass `"overwriteManual": true` only when you deliberately want to discard them.
+
+Resync the cached summaries from the stored days before reporting:
 
 ```bash
 curl -X POST "http://localhost:8080/api/attendance/summaries/refresh?month=2026-09"
 ```
 
-Attendance is always recomputed from punches and roster - it is never edited
-directly, so it cannot go stale or be tampered with.
+Punches themselves stay read-only: a correction is recorded on the generated day
+next to the original device reading, never by rewriting `device_logs`.
 
 ---
 
@@ -436,10 +465,20 @@ offsets LOP.
 
 ## 8. Run payroll
 
+Payroll pays from the attendance you generated in step 7 and **refuses to run
+if the period was never generated** - nobody gets paid off numbers nobody
+reviewed. Generating also locks the month, so the slip stays reproducible.
+
 ### One employee
 
 ```bash
 curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -d '{"employeeId":"EMP001","month":9,"year":2026,"advanceDeduction":1000,"loanDeduction":0,"tds":0,"canteen":300,"bonus":0,"incentive":0,"generatedBy":"HR001"}'
+```
+
+To correct attendance after payroll has run: unlock, fix, regenerate.
+
+```bash
+curl -X POST "http://localhost:8080/api/attendance/EMP001/unlock?month=2026-09&actorId=HR001"
 ```
 
 You supply **only** the manual amounts. Everything else - attendance, leave,
@@ -581,7 +620,7 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Employees | `/api/employees` |
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` |
-| Attendance | `/api/attendance` |
+| Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |
 | Holidays | `/api/holidays` |
 | Leave | `/api/leaves` |
 | Leave balances | `/api/leave-balances` |

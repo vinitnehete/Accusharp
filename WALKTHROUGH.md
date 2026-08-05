@@ -374,7 +374,32 @@ day's pay.
 
 ---
 
+## Step 12b — Generate the attendance payroll will pay from
+
+Everything you have looked at so far was a preview computed from punches and
+persisted nowhere. Payroll pays from a reviewed artifact, so generate it:
+
+```bash
+curl -X POST http://localhost:8080/api/attendance/generate -H 'Content-Type: application/json' -d '{"month":"2026-09","userIds":["EMP005"],"generatedBy":"HR001"}'
+```
+
+29 rows - 30 days minus the holiday on the 14th, which was never rostered.
+Review them with `GET /api/attendance/EMP005/records?month=2026-09`.
+
+If the device dropped a punch, correct the day rather than editing `device_logs`:
+
+```bash
+curl -X PUT http://localhost:8080/api/attendance/EMP005/2026-09-25 -H 'Content-Type: application/json' -d '{"firstIn":"2026-09-25T06:00:00","lastOut":"2026-09-25T15:00:00","remarks":"Device missed the exit punch","updatedBy":"HR001"}'
+```
+
+The row becomes `MANUAL` and survives the next generation run.
+
+---
+
 ## Step 13 — Run payroll
+
+Skip step 12b and this returns 400: payroll refuses to run against attendance
+nobody generated. Running it locks the month.
 
 ```bash
 curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -d '{"employeeId":"EMP005","month":9,"year":2026,"advanceDeduction":2000,"loanDeduction":0,"tds":0,"canteen":450,"bonus":1000,"incentive":0,"generatedBy":"HR001"}'
@@ -535,13 +560,18 @@ Once set up, each month is six steps:
 |---|---|---|
 | 1 | Roster everyone | `POST /api/shift-schedules/bulk` |
 | 2 | Let the device write punches all month | *(nothing to do)* |
-| 3 | Check attendance, fix invalid punches | `GET /api/attendance/{userId}/monthly` |
-| 4 | Clear every pending leave request | `GET /api/leaves?status=PENDING` |
-| 5 | Run payroll | `POST /api/payroll/generate-all` |
-| 6 | Print or export slips | `GET /api/salary-slips/export` |
+| 3 | Clear every pending leave request | `GET /api/leaves?status=PENDING` |
+| 4 | Generate the month's attendance | `POST /api/attendance/generate` |
+| 5 | Review it and fix invalid punches | `GET /api/attendance/{userId}/records` then `PUT /api/attendance/{userId}/{date}` |
+| 6 | Run payroll | `POST /api/payroll/generate-all` |
+| 7 | Print or export slips | `GET /api/salary-slips/export` |
 
-**Steps 3 and 4 are the ones that cost people money if skipped.** An unfixed
+**Steps 3 and 5 are the ones that cost people money if skipped.** An unfixed
 invalid punch and an unapproved leave request both come out of someone's salary.
+
+Do leave before generating: approving a leave after the fact means regenerating
+the attendance to pick it up. Corrections made in step 5 are safe from that -
+regeneration preserves them.
 
 ---
 
