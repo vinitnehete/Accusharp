@@ -379,13 +379,25 @@ corrections automatically.
 | `grace_minutes` | Tolerance before an entry counts as late. **Affects lateness only** | Only changes `lateCount` |
 | `overtime_window_minutes` | How long after the scheduled end a punch still counts | **`0` destroys attendance** — see section 2 |
 
-A sanity check worth running before you trust a month:
+### Check it before you trust a month
 
-```sql
-SELECT shift_code, start_time, end_time, working_hours,
-       break_minutes, grace_minutes, overtime_window_minutes
-FROM shift;
+`GET /api/shifts` returns two **derived** fields alongside the stored ones:
+
+```json
+{ "shiftCode": "NIGHT", "startTime": "06:00:00", "endTime": "19:00:00",
+  "crossesMidnight": false, "spanHours": 13.00,
+  "warnings": ["the shift spans 13.00h but only 8h are paid plus 0 break minutes,
+                so anyone working the full shift books about 5.0h of overtime every day..."] }
 ```
+
+**`crossesMidnight` is the one to read first.** Nobody sets it - it is inferred
+from the times, and a shift named NIGHT stored as `06:00-19:00` is simply a day
+shift with a misleading name. The engine cannot know otherwise. If you roster
+night shifts and no shift reports `crossesMidnight: true`, that is the bug.
+
+`warnings` flags configuration that is legal but will produce attendance nobody
+wants - a zero overtime window, or paid hours far shorter than the shift span.
+The same warnings are logged at startup.
 
 `overtime_window_minutes` should be comfortably larger than your longest normal
 overrun, and comfortably smaller than the gap to the next shift. 240 is the
@@ -442,6 +454,7 @@ until someone read the numbers. Generate a month and look at it before paying it
 | Everyone suddenly late | `grace_minutes` too small, or shift start wrong | Compare `firstIn` against `start_time` |
 | Huge overtime every day | `working_hours` lower than the real shift span | Compare `working_hours` to `end - start - break` |
 | Night day has next day's punch | Two shifts too close together | Check the rest gap between consecutive days |
+| Night day reads morning punches | The shift does not actually cross midnight | `GET /api/shifts` — is `crossesMidnight` true? |
 | Correction vanished | Regenerated with `overwriteManual: true` | `recordStatus` will read `GENERATED` |
 | Payroll returns 400 | Attendance not generated for the period | `POST /api/attendance/generate` |
 | Correction returns 400 "locked" | Payroll already ran | Unlock, correct, regenerate |
