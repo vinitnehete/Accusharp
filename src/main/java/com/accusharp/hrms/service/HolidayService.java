@@ -42,7 +42,7 @@ public class HolidayService {
 
     @Transactional(readOnly = true)
     public List<Holiday> getAll() {
-        return holidayRepository.findAll();
+        return holidayRepository.findAllWithCompany();
     }
 
     @Transactional(readOnly = true)
