@@ -220,15 +220,15 @@ empty quota.
 
 ## Roles
 
-`ADMIN`, `HR`, `SUPERVISOR`, `EMPLOYEE` are carried on the employee record and
-enforced today at the points where it matters: only HR or admin can give final
-leave approval, and a supervisor can only schedule or approve their own team.
-
-Login exists (`POST /api/auth/login`, JWT access + refresh tokens - see
-[SECURITY.md](SECURITY.md)), but endpoint-level authorization does not yet:
-business endpoints under `/api/**` are still `permitAll`, so those business
-rules are the only enforcement in effect today. `@PreAuthorize` on every
-controller is the next phase of work.
+`ADMIN`, `HR`, `SUPERVISOR`, `EMPLOYEE` are carried on the employee record.
+Every `/api/**` endpoint requires authentication (`POST /api/auth/login`
+issues a JWT) and a specific permission via `@PreAuthorize`, resolved from a
+data-driven Role → Permission grant table rather than hardcoded `if (role ==
+Role.HR)` checks - see [SECURITY.md](SECURITY.md) for the full authorization
+matrix. Ownership-level rules (a supervisor may only schedule or approve their
+own team) remain enforced in the service layer beneath that, as defense in
+depth. Not yet enforced: "view only my own data" self-service scoping, and
+dynamic (admin-editable) roles - today's grants are fixed at startup.
 
 ## Design decisions worth knowing
 

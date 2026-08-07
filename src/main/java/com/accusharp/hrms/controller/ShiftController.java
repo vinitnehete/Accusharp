@@ -7,6 +7,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -26,27 +27,32 @@ public class ShiftController {
 
     private final ShiftService shiftService;
 
+    @PreAuthorize("@authz.can('SHIFT_MANAGE')")
     @PostMapping
     public ResponseEntity<ShiftResponse> create(@Valid @RequestBody ShiftRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ShiftResponse.of(shiftService.create(request)));
     }
 
+    @PreAuthorize("@authz.can('SHIFT_MANAGE')")
     @PutMapping("/{id}")
     public ShiftResponse update(@PathVariable Long id, @Valid @RequestBody ShiftRequest request) {
         return ShiftResponse.of(shiftService.update(id, request));
     }
 
+    @PreAuthorize("@authz.can('SHIFT_READ')")
     @GetMapping("/{id}")
     public ShiftResponse getById(@PathVariable Long id) {
         return ShiftResponse.of(shiftService.getById(id));
     }
 
+    @PreAuthorize("@authz.can('SHIFT_READ')")
     @GetMapping
     public List<ShiftResponse> getAll() {
         return shiftService.getAll().stream().map(ShiftResponse::of).toList();
     }
 
+    @PreAuthorize("@authz.can('SHIFT_MANAGE')")
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         shiftService.delete(id);

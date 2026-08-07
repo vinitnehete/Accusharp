@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.env.Environment;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -54,6 +55,7 @@ class AttendanceApiHttpTest {
     private static final YearMonth PERIOD = YearMonth.of(2026, 10);
     private static final String EMPLOYEE = "EMP300";
     private static final String HR = "HR300";
+    private static final String PASSWORD = "Test-Password-1";
 
     @Autowired private Environment environment;
     @Autowired private ObjectMapper objectMapper;
@@ -66,8 +68,11 @@ class AttendanceApiHttpTest {
     @Autowired private MonthlyAttendanceSummaryRepository monthlyAttendanceSummaryRepository;
     @Autowired private SalaryRuleService salaryRuleService;
     @Autowired private SalaryCalculationService salaryCalculationService;
+    @Autowired private PasswordEncoder passwordEncoder;
 
     private final HttpClient http = HttpClient.newHttpClient();
+    private String hrToken;
+    private String employeeToken;
 
     @BeforeEach
     void setUp() {
@@ -104,6 +109,9 @@ class AttendanceApiHttpTest {
         // Day 20: entry captured, exit missed - the case that motivated all this.
         punches.add(punch(id, PERIOD.atDay(20).atTime(6, 0)));
         deviceLogRepository.saveAll(punches);
+
+        hrToken = login(HR);
+        employeeToken = login(EMPLOYEE);
     }
 
     @Test
@@ -116,13 +124,13 @@ class AttendanceApiHttpTest {
                   "userIds": ["EMP300"],
                   "generatedBy": "HR300",
                   "overwriteManual": false
-                }""");
+                }""", hrToken);
 
         assertThat(generated.status()).isEqualTo(200);
         assertThat(generated.body().get("daysGenerated").asInt()).isEqualTo(20);
         assertThat(generated.body().get("month").asString()).isEqualTo("2026-10");
 
-        Resp records = send("GET", "/api/attendance/EMP300/records?month=2026-10", null);
+        Resp records = send("GET", "/api/attendance/EMP300/records?month=2026-10", null, hrToken);
         assertThat(records.status()).isEqualTo(200);
         assertThat(records.body().size()).isEqualTo(20);
         assertThat(records.body().get(19).get("status").asString()).isEqualTo("INVALID_PUNCH");
@@ -135,7 +143,7 @@ class AttendanceApiHttpTest {
                   "lastOut": "2026-10-20T15:00:00",
                   "remarks": "Device missed the exit punch",
                   "updatedBy": "HR300"
-                }""");
+                }""", hrToken);
 
         assertThat(corrected.status()).isEqualTo(200);
         assertThat(corrected.body().get("recordStatus").asString()).isEqualTo("MANUAL");
@@ -148,7 +156,7 @@ class AttendanceApiHttpTest {
                   "status": "HALF_DAY",
                   "remarks": "Left at midday",
                   "updatedBy": "HR300"
-                }""");
+                }""", hrToken);
         assertThat(declared.status()).isEqualTo(200);
         assertThat(declared.body().get("status").asString()).isEqualTo("HALF_DAY");
         assertThat(declared.body().get("workingHours").asDouble()).isEqualTo(4.0);
@@ -159,45 +167,45 @@ class AttendanceApiHttpTest {
     @DisplayName("payroll over HTTP refuses an ungenerated period, then locks and unlocks")
     void payrollGuardAndUnlockOverHttp() {
         Resp refused = send("POST", "/api/payroll/generate", """
-                {"employeeId": "EMP300", "month": 10, "year": 2026, "generatedBy": "HR300"}""");
+                {"employeeId": "EMP300", "month": 10, "year": 2026, "generatedBy": "HR300"}""", hrToken);
         assertThat(refused.status()).isEqualTo(400);
         assertThat(refused.body().get("message").asString())
                 .contains("Attendance has not been generated");
 
         send("POST", "/api/attendance/generate", """
-                {"month": "2026-10", "userIds": ["EMP300"], "generatedBy": "HR300"}""");
+                {"month": "2026-10", "userIds": ["EMP300"], "generatedBy": "HR300"}""", hrToken);
 
         // 201 Created - payroll writes a new immutable revision.
         assertThat(send("POST", "/api/payroll/generate", """
-                {"employeeId": "EMP300", "month": 10, "year": 2026, "generatedBy": "HR300"}""")
+                {"employeeId": "EMP300", "month": 10, "year": 2026, "generatedBy": "HR300"}""", hrToken)
                 .status()).isEqualTo(201);
 
         Resp locked = send("PUT", "/api/attendance/EMP300/2026-10-20", """
-                {"status": "PRESENT", "remarks": "Too late", "updatedBy": "HR300"}""");
+                {"status": "PRESENT", "remarks": "Too late", "updatedBy": "HR300"}""", hrToken);
         assertThat(locked.status()).isEqualTo(400);
         assertThat(locked.body().get("message").asString()).contains("locked");
 
-        Resp unlocked = send("POST",
-                "/api/attendance/EMP300/unlock?month=2026-10&actorId=HR300", null);
+        Resp unlocked = send("POST", "/api/attendance/EMP300/unlock?month=2026-10", null, hrToken);
         assertThat(unlocked.status()).isEqualTo(200);
         assertThat(unlocked.body().get("unlockedDays").asInt()).isEqualTo(20);
 
         assertThat(send("PUT", "/api/attendance/EMP300/2026-10-20", """
-                {"status": "PRESENT", "remarks": "Now allowed", "updatedBy": "HR300"}""")
+                {"status": "PRESENT", "remarks": "Now allowed", "updatedBy": "HR300"}""", hrToken)
                 .status()).isEqualTo(200);
     }
 
     @Test
-    @DisplayName("an employee correcting their own attendance is refused over HTTP")
+    @DisplayName("an employee correcting attendance is refused over HTTP - no ATTENDANCE_CORRECT permission")
     void roleIsEnforcedOverHttp() {
         send("POST", "/api/attendance/generate", """
-                {"month": "2026-10", "userIds": ["EMP300"], "generatedBy": "HR300"}""");
+                {"month": "2026-10", "userIds": ["EMP300"], "generatedBy": "HR300"}""", hrToken);
 
         Resp refused = send("PUT", "/api/attendance/EMP300/2026-10-20", """
-                {"status": "PRESENT", "remarks": "Marking myself present", "updatedBy": "EMP300"}""");
+                {"status": "PRESENT", "remarks": "Marking myself present", "updatedBy": "EMP300"}""",
+                employeeToken);
 
-        assertThat(refused.status()).isEqualTo(400);
-        assertThat(refused.body().get("message").asString()).contains("HR or ADMIN");
+        assertThat(refused.status()).isEqualTo(403);
+        assertThat(refused.body().get("message").asString()).contains("permission");
     }
 
     // ---- helpers -----------------------------------------------------------
@@ -205,19 +213,30 @@ class AttendanceApiHttpTest {
     private record Resp(int status, JsonNode body) {
     }
 
-    private Resp send(String method, String path, String json) {
+    private String login(String userId) {
+        Resp response = send("POST", "/api/auth/login",
+                "{\"username\": \"" + userId + "\", \"password\": \"" + PASSWORD + "\"}", null);
+        if (response.status() != 200) {
+            throw new IllegalStateException("Login failed for " + userId + ": " + response.body());
+        }
+        return response.body().get("accessToken").asString();
+    }
+
+    private Resp send(String method, String path, String json, String bearerToken) {
         try {
             HttpRequest.BodyPublisher payload = json == null
                     ? HttpRequest.BodyPublishers.noBody()
                     : HttpRequest.BodyPublishers.ofString(json);
 
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
                     .uri(URI.create("http://localhost:" + port() + path))
                     .header("Content-Type", "application/json")
-                    .method(method, payload)
-                    .build();
+                    .method(method, payload);
+            if (bearerToken != null) {
+                builder.header("Authorization", "Bearer " + bearerToken);
+            }
 
-            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
             JsonNode body = response.body() == null || response.body().isBlank()
                     ? null
                     : objectMapper.readTree(response.body());
@@ -238,7 +257,10 @@ class AttendanceApiHttpTest {
                 .joiningDate(LocalDate.of(2022, 1, 1))
                 .grossSalary(new BigDecimal("26000")).pfBasic(new BigDecimal("9000"))
                 .medicalAllowance(new BigDecimal("1250")).otherAllowance(BigDecimal.ZERO)
-                .overtimeEligible(false).build();
+                .overtimeEligible(false)
+                .passwordHash(passwordEncoder.encode(PASSWORD))
+                .accountEnabled(true).accountLocked(false).failedLoginAttempts(0)
+                .build();
         salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());
         employeeRepository.save(employee);
     }

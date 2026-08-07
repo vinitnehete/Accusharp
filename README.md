@@ -704,14 +704,12 @@ Either the holiday is not in `/api/holidays`, or it is marked
 
 ## 13. Before going live
 
-**Business endpoints are still unauthenticated.** Login now exists (see
-[SECURITY.md](SECURITY.md)) and issues a real, validated JWT, but `/api/**`
-business endpoints do not yet require it - that is the next phase of work.
-Roles are enforced inside the business rules today - only HR or admin can give
-final leave approval, and a supervisor can only touch their own team - but
-nothing yet stops an unauthenticated caller from claiming to be `HR001` on
-those endpoints. Keep this on a trusted network until endpoint-level
-authorization lands.
+**All `/api/**` endpoints now require a bearer token, and each one requires a
+specific permission** (see [SECURITY.md](SECURITY.md) for the full matrix) -
+log in via `POST /api/auth/login` first. What is *not* yet enforced: a caller
+holding a `_READ` permission can read any employee's data by id, not only
+their own - that self-service scoping, and multi-tenant company isolation
+generally, are the next phase of work.
 
 Also worth doing before real use:
 
@@ -721,6 +719,6 @@ Also worth doing before real use:
   local-development defaults only.
 - Move off `ddl-auto=update` to managed migrations.
 
-Multi-tenant company isolation, dynamic role/permission management, audit
-logging and endpoint-level `@PreAuthorize` are the next phases of work - see
-[SECURITY.md](SECURITY.md) for what exists today and what is still open.
+Multi-tenant company isolation, dynamic role/permission management, and audit
+logging are the next phases of work - see [SECURITY.md](SECURITY.md) for what
+exists today and what is still open.

@@ -4,6 +4,7 @@ import com.accusharp.hrms.dto.ReportDtos;
 import com.accusharp.hrms.service.report.DashboardService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -18,6 +19,7 @@ public class DashboardController {
 
     private final DashboardService dashboardService;
 
+    @PreAuthorize("@authz.can('DASHBOARD_READ')")
     @GetMapping
     public ReportDtos.DashboardResponse getDashboard(
             @RequestParam(required = false)

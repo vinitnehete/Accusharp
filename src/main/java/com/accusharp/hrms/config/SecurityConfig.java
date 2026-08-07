@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -31,17 +32,21 @@ import java.util.List;
  * request to ride on. CSRF protection would be theatre here; it matters again
  * only if a future change starts authenticating via cookies.
  *
- * <p><b>Phase 1 scope.</b> Business endpoints under {@code /api/**} (other
- * than {@code /api/auth/**}) are still {@code permitAll} here - this phase
- * adds real login, password hashing and a validated JWT principal, but does
- * not yet gate any business endpoint on it. That is Phase 2
- * ({@code @PreAuthorize} + the Role/Permission model). Until then this filter
- * chain's job is only to make {@code Authentication} available to anything
- * that looks, and to keep the door open for {@code @PreAuthorize} to start
- * working the moment it is added, without another security-config rewrite.
+ * <p><b>Phase 2.</b> Every {@code /api/**} endpoint other than
+ * {@code /api/auth/**} now requires authentication by default
+ * ({@code anyRequest().authenticated()}), and each controller method carries
+ * its own {@code @PreAuthorize("@authz.can('...')")} for the specific
+ * permission it needs - see {@link com.accusharp.hrms.security.AuthorizationService}
+ * and {@link com.accusharp.hrms.config.PermissionSeeder}. A missing/invalid
+ * token gets 401 from {@link RestAuthenticationEntryPoint}; an authenticated
+ * principal without the required permission gets 403 from
+ * {@link RestAccessDeniedHandler} (filter-chain level) or the equivalent
+ * {@code @ExceptionHandler} in {@code GlobalExceptionHandler} (method-security
+ * level) - both produce the identical {@code ApiError} shape.
  */
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
 
@@ -71,8 +76,6 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/**").permitAll()
                         .requestMatchers("/h2-console/**").permitAll()
-                        // TODO(Phase 2): replace with per-endpoint @PreAuthorize + deny-by-default.
-                        .requestMatchers("/api/**").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class);
 
