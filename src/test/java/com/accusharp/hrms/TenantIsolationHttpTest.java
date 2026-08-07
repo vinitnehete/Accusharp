@@ -2,11 +2,13 @@ package com.accusharp.hrms;
 
 import com.accusharp.hrms.entity.Company;
 import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.entity.Holiday;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.HolidayRepository;
 import com.accusharp.hrms.repository.SalaryRuleRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
@@ -45,6 +47,7 @@ class TenantIsolationHttpTest {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private CompanyRepository companyRepository;
     @Autowired private EmployeeRepository employeeRepository;
+    @Autowired private HolidayRepository holidayRepository;
     @Autowired private SalaryRuleRepository salaryRuleRepository;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private SalaryRuleService salaryRuleService;
@@ -57,9 +60,11 @@ class TenantIsolationHttpTest {
     private Employee hrA;
     private Employee employeeB;
     private String hrAToken;
+    private String hrBToken;
 
     @BeforeEach
     void setUp() {
+        holidayRepository.deleteAll();
         salaryRuleRepository.deleteAll();
         employeeRepository.deleteAll();
         companyRepository.deleteAll();
@@ -72,9 +77,53 @@ class TenantIsolationHttpTest {
                 .status(RecordStatus.ACTIVE).build());
 
         hrA = saveEmployee("HRA001", "Tenant A HR", Role.HR, companyA);
+        saveEmployee("HRB001", "Tenant B HR", Role.HR, companyB);
         employeeB = saveEmployee("EMPB001", "Tenant B Worker", Role.EMPLOYEE, companyB);
 
         hrAToken = login("HRA001");
+        hrBToken = login("HRB001");
+    }
+
+    @Test
+    @DisplayName("Company A's HR cannot read, update or delete Company B's holiday by id, "
+            + "and cannot plant a holiday into Company B by naming its id")
+    void holidayCrossTenantAccessIsRejected() {
+        // hrA tries to create a holiday IN Company B by naming its id - lands in Company A instead.
+        String createBody = """
+                {"companyId": %d, "holidayName": "Sneaky Holiday", "holidayDate": "2026-12-25",
+                 "optionalHoliday": false}""".formatted(companyB.getId());
+        Resp created = send("POST", "/api/holidays", createBody, hrAToken);
+        assertThat(created.status()).isEqualTo(201);
+        Long holidayId = created.body().get("id").asLong();
+        // (Response omits company - see Holiday's @JsonIgnore Javadoc - so verify via the DB directly.)
+        Holiday stored = holidayRepository.findById(holidayId).orElseThrow();
+        assertThat(stored.getCompany().getId()).isEqualTo(companyA.getId());
+
+        // Company B's own HR, using its own id space, cannot see, update or delete that holiday.
+        Resp getAsB = send("GET", "/api/holidays", null, hrBToken);
+        assertThat(getAsB.status()).isEqualTo(200);
+        assertThat(getAsB.body().size()).isZero();
+
+        Resp updateAsB = send("PUT", "/api/holidays/" + holidayId, """
+                {"holidayName": "Overwritten", "holidayDate": "2026-12-25", "optionalHoliday": true}""", hrBToken);
+        assertThat(updateAsB.status()).isEqualTo(404);
+
+        Resp deleteAsB = send("DELETE", "/api/holidays/" + holidayId, null, hrBToken);
+        assertThat(deleteAsB.status()).isEqualTo(404);
+
+        // The record survives, untouched, for Company A.
+        assertThat(holidayRepository.findById(holidayId)).isPresent();
+    }
+
+    @Test
+    @DisplayName("Company A's HR cannot correct or unlock Company B's attendance by userId")
+    void attendanceCrossTenantWriteIsRejected() {
+        Resp correct = send("PUT", "/api/attendance/EMPB001/2026-01-15", """
+                {"status": "PRESENT", "remarks": "Marking present", "updatedBy": "HRA001"}""", hrAToken);
+        assertThat(correct.status()).isEqualTo(404);
+
+        Resp unlock = send("POST", "/api/attendance/EMPB001/unlock?month=2026-01", null, hrAToken);
+        assertThat(unlock.status()).isEqualTo(404);
     }
 
     @Test

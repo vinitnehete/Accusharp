@@ -14,6 +14,7 @@ import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
+import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.HolidayService;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Everything that puts an employee on a shift: single and bulk assignment, the
@@ -48,6 +50,7 @@ public class ShiftSchedulingService {
     private final ShiftService shiftService;
     private final EmployeeService employeeService;
     private final HolidayService holidayService;
+    private final TenantContext tenantContext;
 
     // ---- single assignment -------------------------------------------------
 
@@ -80,8 +83,11 @@ public class ShiftSchedulingService {
     public List<ShiftScheduleResponse> assignBulk(BulkShiftAssignmentRequest request) {
         validateRange(request.getFromDate(), request.getToDate());
         Shift shift = shiftService.getByCode(request.getShiftCode());
+        // Every userId below is individually tenant-checked (assertMaySchedule -> getEntityByUserId),
+        // so a single successful call can only ever span one company - the caller's own.
+        Long companyId = tenantContext.currentCompanyId().orElse(null);
         Set<LocalDate> holidays = request.isSkipHolidays()
-                ? holidayService.mandatoryHolidayDates(request.getFromDate(), request.getToDate())
+                ? holidayService.mandatoryHolidayDates(companyId, request.getFromDate(), request.getToDate())
                 : Set.of();
 
         List<ShiftSchedule> toSave = new ArrayList<>();
@@ -134,8 +140,9 @@ public class ShiftSchedulingService {
         validateRange(request.getFromDate(), request.getToDate());
 
         List<Shift> cycle = request.getShiftCycle().stream().map(shiftService::getByCode).toList();
+        Long companyId = tenantContext.currentCompanyId().orElse(null);
         Set<LocalDate> holidays = request.isSkipHolidays()
-                ? holidayService.mandatoryHolidayDates(request.getFromDate(), request.getToDate())
+                ? holidayService.mandatoryHolidayDates(companyId, request.getFromDate(), request.getToDate())
                 : Set.of();
 
         List<ShiftSchedule> toSave = new ArrayList<>();
@@ -231,15 +238,31 @@ public class ShiftSchedulingService {
      * Marks every mandatory holiday in the month as a week off across the
      * roster, so the planner reflects the holiday calendar without anyone
      * editing days by hand.
+     *
+     * <p>Found during a full security audit and fixed here: this previously
+     * queried every company's rosters at once against every company's
+     * holidays merged together, so running it as one company's HR would
+     * silently rewrite every <em>other</em> company's roster too.
+     * {@code ShiftSchedule} has no company column of its own (it is keyed by
+     * {@code userId} - see {@code SECURITY.md}'s tenant-isolation section),
+     * so scoping this means going through the already company-scoped
+     * {@code EmployeeService.getActiveEntities()} to get the set of userIds
+     * that are actually this caller's to touch.
      */
     @Transactional
     public int applyHolidayOverride(YearMonth month) {
-        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(month);
+        Long companyId = tenantContext.currentCompanyId().orElse(null);
+        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, month);
         if (holidays.isEmpty()) {
             return 0;
         }
+        Set<String> scopedUserIds = companyId == null ? null : employeeService.getActiveEntities().stream()
+                .map(Employee::getUserId)
+                .collect(Collectors.toSet());
+
         List<ShiftSchedule> affected = shiftScheduleRepository
                 .findAllByShiftDateBetween(month.atDay(1), month.atEndOfMonth()).stream()
+                .filter(schedule -> scopedUserIds == null || scopedUserIds.contains(schedule.getUserId()))
                 .filter(schedule -> holidays.contains(schedule.getShiftDate()))
                 .filter(schedule -> !schedule.isWeekOff())
                 .peek(schedule -> schedule.setWeekOff(true))

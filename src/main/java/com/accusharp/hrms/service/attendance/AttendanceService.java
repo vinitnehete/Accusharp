@@ -106,7 +106,7 @@ public class AttendanceService {
         List<String> withoutRoster = new ArrayList<>();
 
         for (Employee employee : employees) {
-            GenerationTally tally = generateFor(employee.getUserId(), month,
+            GenerationTally tally = generateFor(employee, month,
                     request.getGeneratedBy(), request.isOverwriteManual());
 
             generated += tally.generated();
@@ -124,12 +124,14 @@ public class AttendanceService {
                 manualPreserved, lockedSkipped, withoutRoster);
     }
 
-    private GenerationTally generateFor(String userId, YearMonth month, String generatedBy,
+    private GenerationTally generateFor(Employee employee, YearMonth month, String generatedBy,
                                         boolean overwriteManual) {
+        String userId = employee.getUserId();
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
         LocalDate first = month.atDay(1);
         LocalDate last = month.atEndOfMonth();
 
-        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(first, last);
+        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, first, last);
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(userId, first, last);
         List<WindowedSchedule> roster = windowed(userId, first, last);
@@ -188,6 +190,12 @@ public class AttendanceService {
     public AttendanceRecordResponse correctDay(String userId, LocalDate date,
                                                AttendanceCorrectionRequest request) {
         assertHrOrAdmin(request.getUpdatedBy());
+        // Tenant check on the record being WRITTEN to, not just the caller's own identity above -
+        // found during a full security audit: this method previously never resolved the target
+        // userId at all, so an HR/ADMIN at any company could correct another company's attendance
+        // by userId, having only proven they hold HR/ADMIN *somewhere*.
+        Employee employee = employeeService.getEntityByUserId(userId);
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
 
         DailyAttendance record = dailyAttendanceRepository.findByUserIdAndAttendanceDate(userId, date)
                 .orElseThrow(() -> NotFoundException.of("Attendance",
@@ -211,7 +219,7 @@ public class AttendanceService {
                 .orElseThrow(() -> NotFoundException.of("Shift schedule", userId + " on " + date));
 
         if (hasPunches) {
-            Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(date, date);
+            Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, date, date);
             Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                     leaveCalculationService.approvedLeaveDaysBetween(userId, date, date);
 
@@ -277,16 +285,25 @@ public class AttendanceService {
     /** Freezes the month so an already-paid period stays reproducible. */
     @Transactional
     public int lockMonth(String userId, YearMonth month) {
+        employeeService.getEntityByUserId(userId); // tenant check; see unlockMonth's Javadoc
         return setLocked(userId, month, true);
     }
 
     /**
      * Reopens a paid month for correction. The payroll already generated is not
      * touched - regenerate it afterwards to pick the corrections up.
+     *
+     * <p>Resolves {@code userId} through the tenant-checked
+     * {@code EmployeeService} before touching anything - found missing during
+     * a full security audit, alongside the identical gap in
+     * {@link #correctDay}. {@code assertHrOrAdmin(actorId)} only proves the
+     * <em>caller</em> holds HR/ADMIN somewhere; it says nothing about which
+     * company the records being locked/unlocked belong to.
      */
     @Transactional
     public int unlockMonth(String userId, YearMonth month, String actorId) {
         assertHrOrAdmin(actorId);
+        employeeService.getEntityByUserId(userId);
         log.info("attendance.unlock userId={} month={} by={}", userId, month, actorId);
         return setLocked(userId, month, false);
     }
@@ -311,7 +328,7 @@ public class AttendanceService {
      */
     @Transactional(readOnly = true)
     public List<DailyAttendanceResponse> getDailyAttendance(String userId, LocalDate fromDate, LocalDate toDate) {
-        employeeService.getEntityByUserId(userId);
+        Employee employee = employeeService.getEntityByUserId(userId);
         if (fromDate.isAfter(toDate)) {
             throw new BusinessRuleException("fromDate must be on or before toDate");
         }
@@ -319,7 +336,8 @@ public class AttendanceService {
         Map<LocalDate, DailyAttendance> stored = indexByDate(dailyAttendanceRepository
                 .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, fromDate, toDate));
 
-        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(fromDate, toDate);
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, fromDate, toDate);
         // Read across the whole window, not just the first month of it.
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(userId, fromDate, toDate);
@@ -467,7 +485,8 @@ public class AttendanceService {
         LocalDate first = month.atDay(1);
         LocalDate last = month.atEndOfMonth();
 
-        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(first, last);
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, first, last);
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(employee.getUserId(), first, last);
 

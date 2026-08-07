@@ -19,10 +19,12 @@ import java.io.IOException;
 /**
  * Populates the {@link SecurityContextHolder} from a bearer access token, if
  * one is present and valid. Deliberately does not reject the request itself
- * on a missing/invalid token - Phase 1 endpoints are still {@code permitAll}
- * (see {@link SecurityConfig}), so this filter's only job right now is
- * making an authenticated principal available to anything that chooses to
- * look, ahead of Phase 2 turning that into real enforcement.
+ * on a missing/invalid token - that is {@code SecurityConfig}'s
+ * {@code anyRequest().authenticated()} (via {@link RestAuthenticationEntryPoint})
+ * and each controller's {@code @PreAuthorize}'s job, both of which run later
+ * in the chain and need this filter's populated {@code SecurityContext} to
+ * have anything to check. This filter only ever adds a principal or leaves
+ * the context empty; it never itself produces a 401/403.
  */
 @RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {

@@ -8,6 +8,15 @@ and **Phase 5** (audit logging) of a multi-phase security rollout. Read this
 alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
 
+**[SECURITY_AUDIT.md](SECURITY_AUDIT.md)** is a full audit of everything
+below, done after Phase 5 rather than assumed from these phase write-ups -
+it found and fixed 2 severe cross-tenant IDORs this document had missed
+(`Holiday` and `Attendance` write paths) and a privilege-escalation bug
+(`Role.ADMIN` briefly held platform-only permissions). Read it alongside
+this file, not instead of it - the phase-by-phase sections below are still
+the source of truth for *what exists*; the audit is the record of *what was
+independently checked and what was found wrong*.
+
 ## What exists
 
 ### Two principal types
@@ -287,6 +296,11 @@ would be self-auditing.
 is stored in plain text and returned verbatim by the read endpoint.
 
 ## Not yet built (next phases)
+
+See also [SECURITY_AUDIT.md](SECURITY_AUDIT.md#open-findings-not-fixed) for
+the two items there with an assigned severity and a recommended interim
+mitigation (`Department`/`Designation`/`Shift` tenant isolation, and
+list/report endpoint scoping) - both restated below for completeness.
 
 - Dynamic role/permission management endpoints (create a custom role, assign
   permissions to it, assign it to a user) - today's grants are fixed at

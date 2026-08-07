@@ -2,9 +2,9 @@ package com.accusharp.hrms.security;
 
 import com.accusharp.hrms.enums.PrincipalType;
 import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.MalformedJwtException;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -29,6 +29,7 @@ public class JwtService {
     private static final String CLAIM_TYPE = "type";
     private static final String CLAIM_COMPANY_ID = "companyId";
     private static final String CLAIM_ROLE = "role";
+    private static final String AUDIENCE = "accusharp-hrms-api";
 
     private final SecretKey signingKey;
     private final String issuer;
@@ -49,7 +50,7 @@ public class JwtService {
         var builder = Jwts.builder()
                 .subject(principal.getUsername())
                 .issuer(issuer)
-                .audience().add("accusharp-hrms-api").and()
+                .audience().add(AUDIENCE).and()
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
                 .claim(CLAIM_TYPE, principal.getType().name())
@@ -64,21 +65,35 @@ public class JwtService {
         return accessTokenExpiryMinutes * 60;
     }
 
-    /** @throws JwtException if the token is malformed, expired, or fails signature verification. */
+    /**
+     * @throws JwtException if the token is malformed, expired, fails
+     *     signature verification, or does not carry this API's issuer/audience
+     *     (audience mismatch matters the moment this signing key is ever
+     *     shared with another service issuing its own tokens - checking it
+     *     costs nothing today and closes that door in advance).
+     */
     public UserPrincipal parseAccessToken(String token) {
-        Claims claims;
+        Claims claims = Jwts.parser()
+                .verifyWith(signingKey)
+                .requireIssuer(issuer)
+                .requireAudience(AUDIENCE)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+
+        String typeClaim = claims.get(CLAIM_TYPE, String.class);
+        if (typeClaim == null) {
+            // Only reachable if this signing key ever issues a token missing a claim this
+            // JwtService itself always sets - defensive, not currently exercisable internally.
+            throw new MalformedJwtException("Token is missing the required '" + CLAIM_TYPE + "' claim");
+        }
+        PrincipalType type;
         try {
-            claims = Jwts.parser()
-                    .verifyWith(signingKey)
-                    .requireIssuer(issuer)
-                    .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
-        } catch (ExpiredJwtException e) {
-            throw e;
+            type = PrincipalType.valueOf(typeClaim);
+        } catch (IllegalArgumentException notAKnownType) {
+            throw new MalformedJwtException("Token carries an unrecognized '" + CLAIM_TYPE + "' claim: " + typeClaim);
         }
 
-        PrincipalType type = PrincipalType.valueOf(claims.get(CLAIM_TYPE, String.class));
         String role = claims.get(CLAIM_ROLE, String.class);
         Long companyId = claims.get(CLAIM_COMPANY_ID, Long.class);
         return UserPrincipal.fromClaims(type, claims.getSubject(), companyId, role);

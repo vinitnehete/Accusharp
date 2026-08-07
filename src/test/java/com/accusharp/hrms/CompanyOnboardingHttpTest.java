@@ -4,7 +4,9 @@ import com.accusharp.hrms.entity.PlatformUser;
 import com.accusharp.hrms.enums.PlatformRole;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.HolidayRepository;
 import com.accusharp.hrms.repository.PlatformUserRepository;
+import com.accusharp.hrms.repository.SalaryRuleRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -34,12 +36,25 @@ class CompanyOnboardingHttpTest {
     @Autowired private PlatformUserRepository platformUserRepository;
     @Autowired private CompanyRepository companyRepository;
     @Autowired private EmployeeRepository employeeRepository;
+    @Autowired private HolidayRepository holidayRepository;
+    @Autowired private SalaryRuleRepository salaryRuleRepository;
     @Autowired private PasswordEncoder passwordEncoder;
 
     private final HttpClient http = HttpClient.newHttpClient();
 
+    /**
+     * Deletes in FK-dependency order (children before parents). Spring Boot
+     * Test caches and reuses one {@code ApplicationContext} - and one H2
+     * instance - across test classes with an identical configuration, so
+     * leftover rows from another test class's company (e.g. a holiday
+     * created in {@code TenantIsolationHttpTest}) are exactly as real a
+     * foreign-key hazard here as leftover rows from this class's own
+     * previous run.
+     */
     @BeforeEach
     void setUp() {
+        holidayRepository.deleteAll();
+        salaryRuleRepository.deleteAll();
         employeeRepository.deleteAll();
         companyRepository.deleteAll();
         platformUserRepository.deleteAll();

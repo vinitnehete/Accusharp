@@ -134,7 +134,12 @@ public class DataSeeder {
 
         log.info("seed.organisation company={} employees={}", company.getCompanyCode(),
                 employeeRepository.count());
-        log.info("seed.credentials note=\"every seeded employee's password is '{}' - demo only\"", SEED_PASSWORD);
+        // Never interpolate the actual password into a log line, even a demo one - see SECURITY.md
+        // for the value. Logging credential material at INFO is the exact anti-pattern this app's
+        // own security docs require every other code path to avoid; a fixed demo password is not
+        // an exemption from that, only a reason the consequence of doing it anyway is low.
+        log.info("seed.credentials note=\"every seeded employee and the platform owner share one "
+                + "fixed demo password - see SECURITY.md, not this log\"");
     }
 
     /** A platform-level account for company onboarding, separate from any Employee. */
