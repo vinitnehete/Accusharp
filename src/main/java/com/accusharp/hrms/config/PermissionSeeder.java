@@ -71,9 +71,12 @@ public class PermissionSeeder {
     private void seedGrants(Map<PermissionCode, Permission> catalog) {
         Map<String, Set<PermissionCode>> grants = new HashMap<>();
 
-        grants.put(Role.ADMIN.name(), EnumSet.allOf(PermissionCode.class));
-
-        grants.put(Role.HR.name(), EnumSet.of(
+        // ADMIN and HR are functionally identical in every documented rule in this app today - see the
+        // authorization matrix in SECURITY.md - with one deliberate exception: neither holds
+        // COMPANY_CREATE/UPDATE/DELETE, which is platform-only. Sharing one set keeps that true by
+        // construction; EnumSet.allOf(...) here previously handed ADMIN those platform-only permissions
+        // too, undetected until CompanyOnboardingHttpTest#onboardingIsPlatformOnly caught it.
+        Set<PermissionCode> companyAdminPermissions = EnumSet.of(
                 PermissionCode.COMPANY_READ,
                 PermissionCode.DEPARTMENT_MANAGE, PermissionCode.DEPARTMENT_READ,
                 PermissionCode.DESIGNATION_MANAGE, PermissionCode.DESIGNATION_READ,
@@ -91,7 +94,10 @@ public class PermissionSeeder {
                 PermissionCode.PAYROLL_PROCESS, PermissionCode.PAYROLL_READ,
                 PermissionCode.SALARY_SLIP_READ,
                 PermissionCode.REPORT_READ,
-                PermissionCode.DASHBOARD_READ));
+                PermissionCode.DASHBOARD_READ);
+
+        grants.put(Role.ADMIN.name(), companyAdminPermissions);
+        grants.put(Role.HR.name(), companyAdminPermissions);
 
         grants.put(Role.SUPERVISOR.name(), EnumSet.of(
                 PermissionCode.COMPANY_READ,

@@ -2,10 +2,10 @@
 
 This covers **Phase 1** (authentication: login, password hashing, JWT),
 **Phase 2** (authorization: permissions, `@PreAuthorize` on every business
-endpoint) and **Phase 3** (multi-tenant isolation: a company cannot reach
-another company's data by id) of a multi-phase security rollout. Read this
-alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
-"Roles".
+endpoint), **Phase 3** (multi-tenant isolation: a company cannot reach
+another company's data by id), and **Phase 4** (platform company onboarding)
+of a multi-phase security rollout. Read this alongside [README.md](README.md)
+§13 and [ARCHITECTURE.md](ARCHITECTURE.md) "Roles".
 
 ## What exists
 
@@ -222,11 +222,46 @@ both are now `@JsonIgnore`d on that field. Test properties now set
 `open-in-view=false` to match production, so this class of bug fails loudly
 in CI instead of silently passing.
 
+## Platform company onboarding (Phase 4)
+
+```
+POST /api/companies/onboard   PLATFORM_OWNER / PLATFORM_ADMIN only
+```
+
+A bare `POST /api/companies` (still available, unchanged) leaves a company
+with zero employees - and therefore nobody able to create one, since
+`EMPLOYEE_CREATE` is company-scoped and held only by that company's own
+ADMIN/HR, who don't exist yet. `/onboard` creates the `Company` and its
+first `ADMIN`-role employee together, atomically, with a server-generated
+temporary password returned exactly once in the response body -
+`CompanyOnboardingService` never logs it. The platform operator relays it
+out of band; the new admin should change it via `POST /api/auth/change-password`
+on first login (there is no forced-change flag yet - seed-worthy follow-up).
+
+**A real bug this uncovered**: `Role.ADMIN` (company-scoped) had been seeded
+with `EnumSet.allOf(PermissionCode.class)` since Phase 2 - literally every
+permission, including the platform-only `COMPANY_CREATE/UPDATE/DELETE` -
+directly contradicting this file's own authorization matrix, which always
+showed those as platform-only. Nothing had ever exercised "a company admin
+attempts a platform action" until `CompanyOnboardingHttpTest.onboardingIsPlatformOnly`.
+Fixed by having `ADMIN` and `HR` share one literal permission set in
+`PermissionSeeder` instead of `ADMIN` being independently (and wrongly)
+defined as "all of them" - the two are functionally identical everywhere in
+this app's rules except that platform carve-out, so sharing the set makes
+the correct behavior structural rather than something to remember to keep
+in sync.
+
 ## Not yet built (next phases)
 
 - Dynamic role/permission management endpoints (create a custom role, assign
   permissions to it, assign it to a user) - today's grants are fixed at
-  startup by `PermissionSeeder`.
+  startup by `PermissionSeeder`. Deliberately not attempted in Phase 4: it
+  needs `Employee.role` to move from a plain enum column to a real
+  relational assignment, which is a larger migration than this pass's
+  budget allowed - see Phase 2's `RolePermission` Javadoc for the same point.
+- Company activate/deactivate as dedicated endpoints - `PUT /api/companies/{id}`
+  already accepts a `status` change, so this may already be sufficient;
+  revisit only if a dedicated audit trail per status change is needed.
 - `Department`/`Designation`/`Shift` are still global masters shared by every
   company - unlike `SalaryRule`, these were **not** migrated to per-company
   rows in Phase 3. Their unique constraints are single-column

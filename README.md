@@ -616,7 +616,7 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Module | Base path |
 |---|---|
 | Auth (login/refresh/logout/change-password) | `/api/auth` - see [SECURITY.md](SECURITY.md) |
-| Companies | `/api/companies` |
+| Companies | `/api/companies` (`POST /onboard` creates the company plus its first admin - see [SECURITY.md](SECURITY.md)) |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
 | Employees | `/api/employees` |

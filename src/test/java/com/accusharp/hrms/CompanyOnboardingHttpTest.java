@@ -1,0 +1,141 @@
+package com.accusharp.hrms;
+
+import com.accusharp.hrms.entity.PlatformUser;
+import com.accusharp.hrms.enums.PlatformRole;
+import com.accusharp.hrms.repository.CompanyRepository;
+import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.PlatformUserRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Instant;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** Platform-only company onboarding: a company and its first ADMIN employee, created together. */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+class CompanyOnboardingHttpTest {
+
+    private static final String PLATFORM_PASSWORD = "Platform-Test-1";
+
+    @Autowired private Environment environment;
+    @Autowired private ObjectMapper objectMapper;
+    @Autowired private PlatformUserRepository platformUserRepository;
+    @Autowired private CompanyRepository companyRepository;
+    @Autowired private EmployeeRepository employeeRepository;
+    @Autowired private PasswordEncoder passwordEncoder;
+
+    private final HttpClient http = HttpClient.newHttpClient();
+
+    @BeforeEach
+    void setUp() {
+        employeeRepository.deleteAll();
+        companyRepository.deleteAll();
+        platformUserRepository.deleteAll();
+
+        platformUserRepository.save(PlatformUser.builder()
+                .username("owner1").passwordHash(passwordEncoder.encode(PLATFORM_PASSWORD))
+                .email("owner1@accusharp.example").role(PlatformRole.PLATFORM_OWNER)
+                .enabled(true).accountLocked(false).failedLoginAttempts(0)
+                .createdAt(Instant.now()).build());
+    }
+
+    @Test
+    @DisplayName("onboarding creates the company and a working ADMIN login for it")
+    void onboardingCreatesCompanyAndWorkingAdmin() {
+        String platformToken = login("owner1", PLATFORM_PASSWORD);
+
+        String body = """
+                {"companyCode": "NEWCO", "companyName": "New Co Industries", "companyEmail": "hr@newco.example",
+                 "adminUserId": "NEWCO-ADMIN", "adminEmployeeCode": "NC-ADMIN-1", "adminName": "First Admin",
+                 "adminEmail": "admin@newco.example", "adminGrossSalary": 50000, "adminPfBasic": 15000}""";
+        Resp onboarded = send("POST", "/api/companies/onboard", body, platformToken);
+        assertThat(onboarded.status()).isEqualTo(201);
+        assertThat(onboarded.body().get("company").get("companyCode").asString()).isEqualTo("NEWCO");
+        assertThat(onboarded.body().get("admin").get("role").asString()).isEqualTo("ADMIN");
+        String temporaryPassword = onboarded.body().get("temporaryPassword").asString();
+        assertThat(temporaryPassword).isNotBlank();
+
+        // The generated admin can actually log in and use their own permissions.
+        Resp adminLogin = send("POST", "/api/auth/login",
+                "{\"username\": \"NEWCO-ADMIN\", \"password\": \"" + temporaryPassword + "\"}", null);
+        assertThat(adminLogin.status()).isEqualTo(200);
+        String adminToken = adminLogin.body().get("accessToken").asString();
+
+        Resp createsOwnEmployee = send("POST", "/api/employees", """
+                {"userId": "NEWCO-EMP1", "employeeCode": "NC-EMP-1", "employeeName": "First Hire",
+                 "status": "PERMANENT", "role": "EMPLOYEE",
+                 "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0}""",
+                adminToken);
+        assertThat(createsOwnEmployee.status()).isEqualTo(201);
+        assertThat(createsOwnEmployee.body().get("companyName").asString()).isEqualTo("New Co Industries");
+    }
+
+    @Test
+    @DisplayName("a company-scoped ADMIN cannot onboard a new company")
+    void onboardingIsPlatformOnly() {
+        // Onboard once to get a company-scoped admin token, then try onboarding again with it.
+        login("owner1", PLATFORM_PASSWORD);
+        String setupBody = """
+                {"companyCode": "OTHERCO", "companyName": "Other Co", "companyEmail": "hr@otherco.example",
+                 "adminUserId": "OTHERCO-ADMIN", "adminEmployeeCode": "OC-ADMIN-1", "adminName": "Admin",
+                 "adminEmail": "admin@otherco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
+        Resp onboarded = send("POST", "/api/companies/onboard", setupBody, login("owner1", PLATFORM_PASSWORD));
+        String temporaryPassword = onboarded.body().get("temporaryPassword").asString();
+        String companyAdminToken = login("OTHERCO-ADMIN", temporaryPassword);
+
+        Resp forbidden = send("POST", "/api/companies/onboard", setupBody, companyAdminToken);
+        assertThat(forbidden.status()).isEqualTo(403);
+    }
+
+    // ---- helpers -----------------------------------------------------------
+
+    private record Resp(int status, JsonNode body) {
+    }
+
+    private String login(String username, String password) {
+        Resp response = send("POST", "/api/auth/login",
+                "{\"username\": \"" + username + "\", \"password\": \"" + password + "\"}", null);
+        if (response.status() != 200) {
+            throw new IllegalStateException("Login failed for " + username + ": " + response.body());
+        }
+        return response.body().get("accessToken").asString();
+    }
+
+    private Resp send(String method, String path, String json, String bearerToken) {
+        try {
+            HttpRequest.BodyPublisher payload = json == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(json);
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:" + port() + path))
+                    .header("Content-Type", "application/json")
+                    .method(method, payload);
+            if (bearerToken != null) {
+                builder.header("Authorization", "Bearer " + bearerToken);
+            }
+            HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            JsonNode body = response.body() == null || response.body().isBlank()
+                    ? null
+                    : objectMapper.readTree(response.body());
+            return new Resp(response.statusCode(), body);
+        } catch (Exception ex) {
+            throw new IllegalStateException(method + " " + path + " failed", ex);
+        }
+    }
+
+    private String port() {
+        return environment.getProperty("local.server.port");
+    }
+}
