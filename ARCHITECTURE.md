@@ -223,9 +223,12 @@ empty quota.
 `ADMIN`, `HR`, `SUPERVISOR`, `EMPLOYEE` are carried on the employee record and
 enforced today at the points where it matters: only HR or admin can give final
 leave approval, and a supervisor can only schedule or approve their own team.
-Endpoint-level authentication (JWT / Spring Security) is listed as a future
-enhancement in the specification and is not present - **all endpoints are
-currently unauthenticated.**
+
+Login exists (`POST /api/auth/login`, JWT access + refresh tokens - see
+[SECURITY.md](SECURITY.md)), but endpoint-level authorization does not yet:
+business endpoints under `/api/**` are still `permitAll`, so those business
+rules are the only enforcement in effect today. `@PreAuthorize` on every
+controller is the next phase of work.
 
 ## Design decisions worth knowing
 
@@ -246,7 +249,9 @@ currently unauthenticated.**
 
 ## Not implemented
 
-These are listed as future enhancements in the specification and are not built:
-JWT/Spring Security, multi-branch support, employee self-service, notification
-and email services, effective-dated salary rule versions, soft delete, audit
-logs, Flyway migrations, Redis caching, and Swagger/OpenAPI documentation.
+Login and JWT issuance exist (see [SECURITY.md](SECURITY.md)); endpoint-level
+authorization (`@PreAuthorize`), a dynamic role/permission model, multi-tenant
+company isolation, and audit logging do not yet. Also not built: multi-branch
+support, employee self-service, notification and email services, effective-dated
+salary rule versions, soft delete, Flyway migrations, Redis caching, and
+Swagger/OpenAPI documentation.

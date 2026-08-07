@@ -4,14 +4,17 @@ import com.accusharp.hrms.entity.Company;
 import com.accusharp.hrms.entity.Department;
 import com.accusharp.hrms.entity.Designation;
 import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.entity.PlatformUser;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.enums.EmployeeStatus;
+import com.accusharp.hrms.enums.PlatformRole;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.DepartmentRepository;
 import com.accusharp.hrms.repository.DesignationRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.PlatformUserRepository;
 import com.accusharp.hrms.repository.ShiftRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
@@ -21,8 +24,10 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.List;
@@ -41,13 +46,18 @@ import java.util.List;
 @Slf4j
 public class DataSeeder {
 
+    /** Demo-only credential for every seeded account. Never used past local/demo setup. */
+    private static final String SEED_PASSWORD = "Accusharp@123";
+
     private final CompanyRepository companyRepository;
     private final DepartmentRepository departmentRepository;
     private final DesignationRepository designationRepository;
     private final ShiftRepository shiftRepository;
     private final EmployeeRepository employeeRepository;
+    private final PlatformUserRepository platformUserRepository;
     private final SalaryRuleService salaryRuleService;
     private final SalaryCalculationService salaryCalculationService;
+    private final PasswordEncoder passwordEncoder;
 
     @Bean
     ApplicationRunner seedReferenceData() {
@@ -55,6 +65,7 @@ public class DataSeeder {
             salaryRuleService.getActiveRule();
             seedShifts();
             seedOrganisation();
+            seedPlatformOwner();
         };
     }
 
@@ -123,6 +134,23 @@ public class DataSeeder {
 
         log.info("seed.organisation company={} employees={}", company.getCompanyCode(),
                 employeeRepository.count());
+        log.info("seed.credentials note=\"every seeded employee's password is '{}' - demo only\"", SEED_PASSWORD);
+    }
+
+    /** A platform-level account for company onboarding, separate from any Employee. */
+    private void seedPlatformOwner() {
+        if (platformUserRepository.existsByUsername("platform_owner")) {
+            return;
+        }
+        platformUserRepository.save(PlatformUser.builder()
+                .username("platform_owner")
+                .passwordHash(passwordEncoder.encode(SEED_PASSWORD))
+                .email("owner@accusharp.example")
+                .role(PlatformRole.PLATFORM_OWNER)
+                .enabled(true)
+                .createdAt(Instant.now())
+                .build());
+        log.info("seed.platform-owner username=platform_owner");
     }
 
     private Department department(String code, String name) {
@@ -160,6 +188,10 @@ public class DataSeeder {
                 .medicalAllowance(new BigDecimal("1250"))
                 .otherAllowance(BigDecimal.ZERO)
                 .overtimeEligible(overtimeEligible)
+                .passwordHash(passwordEncoder.encode(SEED_PASSWORD))
+                .accountEnabled(true)
+                .accountLocked(false)
+                .failedLoginAttempts(0)
                 .build();
 
         salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());

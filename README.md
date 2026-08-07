@@ -11,6 +11,7 @@ loss of pay, payroll, salary slips, reports and a dashboard.
 | **README.md** (this file) | Day-to-day reference |
 | **[Attendance.md](Attendance.md)** | The full attendance engine: rules, punch windows, generation, corrections, locking |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | How it is built and why |
+| **[SECURITY.md](SECURITY.md)** | Login, JWT, password hashing, what is and isn't protected yet |
 
 Ready-to-use test assets: a [Postman collection](docs/testing/Accusharp-HRMS.postman_collection.json)
 (71 requests, 10 ordered folders), [punch SQL](docs/testing/device_logs_EMP005_2026-09.sql)
@@ -614,6 +615,7 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 
 | Module | Base path |
 |---|---|
+| Auth (login/refresh/logout/change-password) | `/api/auth` - see [SECURITY.md](SECURITY.md) |
 | Companies | `/api/companies` |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
@@ -702,17 +704,23 @@ Either the holiday is not in `/api/holidays`, or it is marked
 
 ## 13. Before going live
 
-**All endpoints are unauthenticated.** Roles are enforced inside the business
-rules - only HR or admin can give final leave approval, and a supervisor can only
-touch their own team - but nothing stops an unauthenticated caller from claiming
-to be `HR001`. Keep this on a trusted network until authentication is added.
+**Business endpoints are still unauthenticated.** Login now exists (see
+[SECURITY.md](SECURITY.md)) and issues a real, validated JWT, but `/api/**`
+business endpoints do not yet require it - that is the next phase of work.
+Roles are enforced inside the business rules today - only HR or admin can give
+final leave approval, and a supervisor can only touch their own team - but
+nothing yet stops an unauthenticated caller from claiming to be `HR001` on
+those endpoints. Keep this on a trusted network until endpoint-level
+authorization lands.
 
 Also worth doing before real use:
 
 - Set `hrms.seed.enabled=false` and remove the demo employees.
-- Change the MySQL credentials in `application.properties`.
+- Set `DB_USERNAME`/`DB_PASSWORD`/`JWT_SECRET` via environment variables - see
+  [SECURITY.md](SECURITY.md). The values in `application.properties` are
+  local-development defaults only.
 - Move off `ddl-auto=update` to managed migrations.
 
-JWT/Spring Security, notifications, email, PDF/Excel rendering and audit logs are
-listed as future enhancements in the specification and are not built - see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+Multi-tenant company isolation, dynamic role/permission management, audit
+logging and endpoint-level `@PreAuthorize` are the next phases of work - see
+[SECURITY.md](SECURITY.md) for what exists today and what is still open.
