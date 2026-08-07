@@ -11,6 +11,7 @@ import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -21,12 +22,17 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Employee master. Owns two rules worth calling out:
+ * Employee master. Owns three rules worth calling out:
  * <ul>
  *   <li>the derived salary components are recalculated on every write, so they
  *       can never drift from the current {@link SalaryRule};</li>
  *   <li>supervisor mapping is validated to stay a tree - no employee may end up
- *       reporting to themselves through any chain.</li>
+ *       reporting to themselves through any chain;</li>
+ *   <li>{@link #getEntityById} and {@link #getEntityByUserId} are the tenant
+ *       isolation choke point: every other service (attendance, leave, payroll,
+ *       shift scheduling) resolves an employee through one of these two methods
+ *       before doing anything else, so the cross-company check lives here once
+ *       rather than being repeated in each of them.</li>
  * </ul>
  */
 @Service
@@ -40,6 +46,7 @@ public class EmployeeService {
     private final SalaryRuleService salaryRuleService;
     private final SalaryCalculationService salaryCalculationService;
     private final EmployeeMapper employeeMapper;
+    private final TenantContext tenantContext;
 
     @Transactional
     public EmployeeResponse create(EmployeeRequest request) {
@@ -117,18 +124,55 @@ public class EmployeeService {
 
     @Transactional(readOnly = true)
     public Employee getEntityById(Long id) {
-        return employeeRepository.findById(id).orElseThrow(() -> NotFoundException.of("Employee", id));
+        Employee employee = employeeRepository.findById(id).orElseThrow(() -> NotFoundException.of("Employee", id));
+        assertAccessible(employee);
+        return employee;
     }
 
     @Transactional(readOnly = true)
     public Employee getEntityByUserId(String userId) {
-        return employeeRepository.findByUserId(userId)
+        Employee employee = employeeRepository.findByUserId(userId)
                 .orElseThrow(() -> NotFoundException.of("Employee", "userId " + userId));
+        assertAccessible(employee);
+        return employee;
     }
 
+    /**
+     * Tenant isolation: a caller scoped to one company must never learn that
+     * an employee belonging to a <em>different</em> company exists at all -
+     * not just be refused access to it. That is why this throws the same
+     * {@link NotFoundException} an unknown id would, rather than a 403 -
+     * a 403 would confirm the record exists somewhere, a 404 does not.
+     *
+     * <p>No-ops when {@link TenantContext} has no company to check against
+     * (no authenticated principal, a platform principal, or an employee
+     * record with no company of its own) - see {@link TenantContext}'s
+     * Javadoc for why each of those is intentional rather than a gap.
+     */
+    private void assertAccessible(Employee employee) {
+        tenantContext.currentCompanyId().ifPresent(callerCompanyId -> {
+            Long targetCompanyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+            if (!callerCompanyId.equals(targetCompanyId)) {
+                throw NotFoundException.of("Employee", "userId " + employee.getUserId());
+            }
+        });
+    }
+
+    /**
+     * "Every active employee" - the base of every whole-company operation
+     * (generate payroll for everyone, generate attendance for everyone, the
+     * shift planner with no supervisor filter). Scoped to the caller's own
+     * company whenever one is known, for the same reason as
+     * {@link #assertAccessible}: without it, an HR/ADMIN at one company
+     * could trigger payroll or attendance generation across <em>every</em>
+     * company on the platform, not just their own - a write-side-effect
+     * version of the same tenant leak, and a more severe one.
+     */
     @Transactional(readOnly = true)
     public List<Employee> getActiveEntities() {
-        return employeeRepository.findByRecordStatus(RecordStatus.ACTIVE);
+        return tenantContext.currentCompanyId()
+                .map(companyId -> employeeRepository.findByRecordStatusAndCompanyId(RecordStatus.ACTIVE, companyId))
+                .orElseGet(() -> employeeRepository.findByRecordStatus(RecordStatus.ACTIVE));
     }
 
     /** True when the supervisor may act on this employee's requests. */
@@ -140,7 +184,9 @@ public class EmployeeService {
     }
 
     private void recalculate(Employee employee) {
-        salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());
+        // The employee's own company's rule, not the caller's - correct regardless of who is asking.
+        salaryCalculationService.applyCalculatedFields(employee,
+                salaryRuleService.getActiveRuleForCompany(employee.getCompany()));
     }
 
     private void apply(Employee employee, EmployeeRequest request) {

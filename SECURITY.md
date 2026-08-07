@@ -1,9 +1,11 @@
 # Security - what exists today, and what is next
 
-This covers **Phase 1** (authentication: login, password hashing, JWT) and
+This covers **Phase 1** (authentication: login, password hashing, JWT),
 **Phase 2** (authorization: permissions, `@PreAuthorize` on every business
-endpoint) of a multi-phase security rollout. Read this alongside
-[README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md) "Roles".
+endpoint) and **Phase 3** (multi-tenant isolation: a company cannot reach
+another company's data by id) of a multi-phase security rollout. Read this
+alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
+"Roles".
 
 ## What exists
 
@@ -56,11 +58,16 @@ PermissionRegistry loads all grants into memory once (after seeding), so @authz.
 AuthorizationService  the "authz" bean every @PreAuthorize expression calls - one method, can(code)
 ```
 
-A missing/invalid token → `401` (`RestAuthenticationEntryPoint`). An
-authenticated principal without the required permission → `403`
-(`RestAccessDeniedHandler` at the filter-chain level, or
-`GlobalExceptionHandler`'s `AccessDeniedException` handler for
-`@PreAuthorize` denials) - both produce the identical `ApiError` shape.
+A missing/invalid token → `401` (`RestAuthenticationEntryPoint`, rejected at
+the filter chain before any controller runs). An authenticated principal
+without the required permission → `403` - in practice always via
+`GlobalExceptionHandler`'s `AccessDeniedException` handler, since a
+`@PreAuthorize` denial is thrown *during* the controller method invocation
+and Spring MVC's `@ExceptionHandler` resolution always gets first refusal
+(verified empirically, not just reasoned about - see `SecurityConfig`'s
+Javadoc). `RestAccessDeniedHandler` is kept for the different case of a
+filter-level `authorizeHttpRequests().hasRole(...)` rule, which this app does
+not currently use. Both produce the identical `ApiError` shape regardless.
 
 **Employees and platform users each carry exactly one role today** (a plain
 enum column) - there is deliberately no separate `UserRole` join table yet.
@@ -145,19 +152,98 @@ When `hrms.seed.enabled=true` (the default), every seeded employee
 (`platform_owner`) get the password **`Accusharp@123`**. Disable seeding
 (`hrms.seed.enabled=false`) before loading real data - see README §13.
 
+## Multi-tenant isolation (Phase 3)
+
+### The choke point
+
+`EmployeeService.getEntityById`/`getEntityByUserId` are where tenant
+isolation actually lives. Almost every other service (attendance, leave,
+leave balance, payroll, shift scheduling) already resolved the employee it
+was operating on through one of these two methods before doing anything
+else - so a single check there, comparing the target employee's company
+against `TenantContext.currentCompanyId()`, protects all of them
+transitively without touching their code. A cross-company id gets the
+identical `404` an unknown one would (never `403`) - a `403` would confirm
+the record exists somewhere else, which is itself information leakage.
+
+`TenantContext` resolves the caller's company from the JWT-backed
+`UserPrincipal` already on `SecurityContextHolder`. It resolves to "no
+company to check against" - the tenant check then no-ops - for a platform
+principal, an employee with no company of its own, or **no authenticated
+principal at all**. That last case is deliberate: it is what every existing
+service-level test hits (they call services directly, with no
+`SecurityContext` populated), so none of them needed to change. In
+production every request has already passed `SecurityConfig`'s
+`anyRequest().authenticated()` by the time a service method runs, so the
+check is fully live for real traffic.
+
+### What else needed a matching fix
+
+- `EmployeeController` create/update: `companyId` is overwritten from the
+  caller's own company (same pattern as Phase 2's actor-identity fix) -
+  otherwise HR at Company A could create, or reassign an existing employee
+  to, Company B just by naming its id.
+- `PayrollService.getById/getCurrent/getRevisions/getHistory` and
+  `CompanyService.getById/getAll`: these read paths bypassed
+  `EmployeeService` entirely (payroll) or have no natural choke point at all
+  (company), so each got an explicit check.
+- `EmployeeService.getActiveEntities()` - the base of every "generate for
+  everyone" operation (`payroll/generate-all`, attendance's whole-company
+  generate, the shift planner) - had no company filter at all. Without this
+  fix, any HR could trigger payroll or attendance generation across *every*
+  company on the platform, not just their own - a write-side-effect version
+  of the same leak, and a more severe one than a misdirected read.
+- `LeaveService`'s list queries (`getByStatus`, `getCalendar`,
+  `getPendingFor`) have no company filter of their own, and route every row
+  through the now-tenant-checked employee lookup to resolve a name. Left
+  alone, a single other-company row mixed into the result would throw and
+  take the *whole list* down instead of just being excluded - not
+  "isolated," just broken. Fixed with a filtering wrapper
+  (`toResponseIfAccessible`) that drops inaccessible rows instead of
+  propagating the exception.
+- `SalaryRule` was a single global row every company shared - a real
+  multi-tenancy bug (Section 19 of the original spec), not just an
+  access-control gap. Now one row per company plus a `company = null`
+  global default every company falls back to until it customizes its own;
+  `updateRule` only ever creates/edits the *caller's own* company's row.
+
+### A bug found while building this, unrelated to tenant isolation itself
+
+Adding `SalaryRule.company` (a lazy `@ManyToOne`) exposed that this app's
+production setting `spring.jpa.open-in-view=false` (correctly set in
+`application.properties`, but never carried into `src/test/resources/`,
+so no test had ever run against it) makes returning an entity with an
+uninitialized lazy association directly from a controller throw
+`LazyInitializationException` → `500`, instead of the graceful "session
+still open" behavior Spring Boot's open-in-view *default* (`true`) would
+have given it. `SalaryRuleController` and the pre-existing
+`HolidayController` both return raw entities with a lazy `company` field;
+both are now `@JsonIgnore`d on that field. Test properties now set
+`open-in-view=false` to match production, so this class of bug fails loudly
+in CI instead of silently passing.
+
 ## Not yet built (next phases)
 
 - Dynamic role/permission management endpoints (create a custom role, assign
   permissions to it, assign it to a user) - today's grants are fixed at
   startup by `PermissionSeeder`.
-- Multi-tenant company isolation (`company_id` on the currently-global
-  `Department`/`Designation`/`Shift`/`SalaryRule`, tenant checks on every
-  cross-company lookup, IDOR fixes on every `findById`).
+- `Department`/`Designation`/`Shift` are still global masters shared by every
+  company - unlike `SalaryRule`, these were **not** migrated to per-company
+  rows in Phase 3. Their unique constraints are single-column
+  (`department_code`, `designation_code`, `shift_code`); making them
+  per-company means a composite `(company_id, code)` constraint, and this
+  project has no migration tool (`ddl-auto=update` only - see README §13) to
+  safely alter an existing unique index on a live database. Doing this
+  without one means either a manual `ALTER TABLE` step documented for
+  operators, or waiting for Flyway/Liquibase to land first.
 - "View only my own data" self-service scoping - today any authenticated
   principal holding a `_READ` permission can read *any* employee's records by
-  id/userId, not only their own. Closing this is tangled up with tenant
-  isolation above (both are "does this caller actually own this resource"
-  checks) and is deferred to the same phase.
+  id/userId, not only their own (the choke point stops *cross-company*
+  reads, not *cross-employee-within-a-company* reads).
+- List/report endpoints still return cross-company data where no natural
+  choke point caught them: `EmployeeService.getAll()`, every
+  `ReportService.*` method, `DashboardService`, `PayrollService.getPeriod`.
+  (`LeaveService`'s list methods are the exception - see above.)
 - Platform-owner company onboarding flow beyond raw CRUD.
 - Audit logging.
 - Self-service / admin account unlock.

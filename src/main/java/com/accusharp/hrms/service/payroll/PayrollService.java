@@ -107,13 +107,23 @@ public class PayrollService {
                 .toList();
     }
 
+    /**
+     * Every read below resolves the owning employee through
+     * {@code EmployeeService} before returning anything - that is where
+     * tenant isolation actually lives (see {@code EmployeeService}'s
+     * Javadoc), so a numeric payroll id or an employee id string from
+     * another company yields the identical 404 an unknown one would.
+     */
     @Transactional(readOnly = true)
     public Payroll getById(Long id) {
-        return payrollRepository.findById(id).orElseThrow(() -> NotFoundException.of("Payroll", id));
+        Payroll payroll = payrollRepository.findById(id).orElseThrow(() -> NotFoundException.of("Payroll", id));
+        employeeService.getEntityByUserId(payroll.getEmployeeId());
+        return payroll;
     }
 
     @Transactional(readOnly = true)
     public Payroll getCurrent(String employeeId, int month, int year) {
+        employeeService.getEntityByUserId(employeeId);
         return payrollRepository.findByEmployeeIdAndMonthAndYearAndStatus(
                         employeeId, month, year, PayrollStatus.GENERATED)
                 .orElseThrow(() -> NotFoundException.of("Payroll", employeeId + " " + month + "/" + year));
@@ -121,11 +131,13 @@ public class PayrollService {
 
     @Transactional(readOnly = true)
     public List<Payroll> getRevisions(String employeeId, int month, int year) {
+        employeeService.getEntityByUserId(employeeId);
         return payrollRepository.findAllByEmployeeIdAndMonthAndYearOrderByRevisionDesc(employeeId, month, year);
     }
 
     @Transactional(readOnly = true)
     public List<Payroll> getHistory(String employeeId) {
+        employeeService.getEntityByUserId(employeeId);
         return payrollRepository.findAllByEmployeeIdOrderByYearDescMonthDesc(employeeId);
     }
 
@@ -138,7 +150,8 @@ public class PayrollService {
 
     private Payroll build(PayrollRequest request, int revision) {
         Employee employee = employeeService.getEntityByUserId(request.getEmployeeId());
-        SalaryRule rule = salaryRuleService.getActiveRule();
+        // The employee's own company's rule, not the caller's - correct regardless of who is asking.
+        SalaryRule rule = salaryRuleService.getActiveRuleForCompany(employee.getCompany());
         YearMonth period = YearMonth.of(request.getYear(), request.getMonth());
 
         // Pay from the attendance HR generated and reviewed - never from a

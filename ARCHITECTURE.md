@@ -65,7 +65,7 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | `Holiday` | `holiday` | Company calendar; optional holidays stay working days |
 | `LeaveRequest`, `LeaveBalance` | `leave_request`, `leave_balance` | Balance is always quota minus used |
 | `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Cached rollup of the stored days |
-| `SalaryRule` | `salary_rule` | Single config row holding every percentage and slab |
+| `SalaryRule` | `salary_rule` | One row per company holding every percentage and slab, plus one `company = null` global default a company falls back to until it customizes its own - see [SECURITY.md](SECURITY.md) |
 | `Payroll` | `payroll` | Immutable snapshot per employee/month/year/revision |
 
 ### Salary structure

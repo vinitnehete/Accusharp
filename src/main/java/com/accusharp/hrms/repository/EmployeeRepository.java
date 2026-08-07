@@ -22,6 +22,8 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
 
     List<Employee> findByRecordStatus(RecordStatus recordStatus);
 
+    List<Employee> findByRecordStatusAndCompanyId(RecordStatus recordStatus, Long companyId);
+
     List<Employee> findBySupervisorUserId(String supervisorUserId);
 
     List<Employee> findByDepartmentId(Long departmentId);

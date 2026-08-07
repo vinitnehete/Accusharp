@@ -2,6 +2,7 @@ package com.accusharp.hrms.controller;
 
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
+import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
 import com.accusharp.hrms.security.UserPrincipal;
@@ -29,6 +30,7 @@ public class EmployeeController {
     public ResponseEntity<EmployeeResponse> create(@AuthenticationPrincipal UserPrincipal principal,
                                                     @Valid @RequestBody EmployeeRequest request) {
         assertNotGrantingAdminUnlessAdmin(principal, request);
+        applyTenantScope(principal, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(employeeService.create(request));
     }
 
@@ -37,6 +39,7 @@ public class EmployeeController {
     public EmployeeResponse update(@AuthenticationPrincipal UserPrincipal principal,
                                    @PathVariable Long id, @Valid @RequestBody EmployeeRequest request) {
         assertNotGrantingAdminUnlessAdmin(principal, request);
+        applyTenantScope(principal, request);
         return employeeService.update(id, request);
     }
 
@@ -93,6 +96,20 @@ public class EmployeeController {
         }
         if (request.getRole() == Role.ADMIN && !Role.ADMIN.name().equals(principal.getRole())) {
             throw new AccessDeniedException("Only an ADMIN may grant the ADMIN role");
+        }
+    }
+
+    /**
+     * Tenant isolation (create/update side): {@code companyId} is never taken
+     * from the request for a company-scoped caller - otherwise HR at Company
+     * A could create, or reassign an existing employee to, Company B simply
+     * by naming its id. A platform principal never reaches this controller
+     * (it holds none of the EMPLOYEE_* permissions), so there is nothing to
+     * scope for that case.
+     */
+    private void applyTenantScope(UserPrincipal principal, EmployeeRequest request) {
+        if (principal.getType() == PrincipalType.EMPLOYEE) {
+            request.setCompanyId(principal.getCompanyId());
         }
     }
 }

@@ -21,6 +21,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * Leave workflow: employee applies, the supervisor endorses, HR approves.
@@ -162,12 +163,13 @@ public class LeaveService {
     @Transactional(readOnly = true)
     public List<LeaveResponse> getPendingFor(String supervisorUserId) {
         return leaveRequestRepository.findAllBySupervisorIdAndStatus(supervisorUserId, LeaveStatus.PENDING)
-                .stream().map(this::toResponse).toList();
+                .stream().flatMap(this::toResponseIfAccessible).toList();
     }
 
     @Transactional(readOnly = true)
     public List<LeaveResponse> getByStatus(LeaveStatus status) {
-        return leaveRequestRepository.findAllByStatus(status).stream().map(this::toResponse).toList();
+        return leaveRequestRepository.findAllByStatus(status).stream()
+                .flatMap(this::toResponseIfAccessible).toList();
     }
 
     /** Every approved leave overlapping a window - the leave calendar. */
@@ -176,7 +178,7 @@ public class LeaveService {
         return leaveRequestRepository
                 .findAllByStatusInAndFromDateLessThanEqualAndToDateGreaterThanEqual(
                         List.of(LeaveStatus.APPROVED), toDate, fromDate)
-                .stream().map(this::toResponse).toList();
+                .stream().flatMap(this::toResponseIfAccessible).toList();
     }
 
     // ---- helpers -----------------------------------------------------------
@@ -237,5 +239,22 @@ public class LeaveService {
                 request.getFromDate(), request.getToDate(), request.getDuration(), request.getTotalDays(),
                 request.getReason(), request.getStatus(), request.getSupervisorId(), request.getApproverId(),
                 request.getApprovalComments(), request.getAppliedAt(), request.getDecidedAt());
+    }
+
+    /**
+     * Used only by list-returning queries that have no company filter of
+     * their own ({@code findAllByStatus} and friends can span every
+     * company). {@code toResponse} resolves the owning employee through the
+     * tenant-checked {@code EmployeeService.getEntityByUserId} - without
+     * this wrapper, a single other-company row mixed into the result would
+     * throw and take the <em>whole</em> list down with it instead of simply
+     * being excluded, which is not "isolated," it is "broken."
+     */
+    private Stream<LeaveResponse> toResponseIfAccessible(LeaveRequest request) {
+        try {
+            return Stream.of(toResponse(request));
+        } catch (NotFoundException notAccessible) {
+            return Stream.empty();
+        }
     }
 }
