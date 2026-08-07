@@ -33,13 +33,17 @@ import java.util.Optional;
 public class TenantContext {
 
     public Optional<Long> currentCompanyId() {
+        return currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(UserPrincipal::getCompanyId);
+    }
+
+    /** Used by {@code AuditService} to attribute an action - not otherwise needed outside auditing. */
+    public Optional<UserPrincipal> currentPrincipal() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !(authentication.getPrincipal() instanceof UserPrincipal principal)) {
             return Optional.empty();
         }
-        if (principal.getType() != PrincipalType.EMPLOYEE) {
-            return Optional.empty();
-        }
-        return Optional.ofNullable(principal.getCompanyId());
+        return Optional.of(principal);
     }
 }

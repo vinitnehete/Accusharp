@@ -3,9 +3,10 @@
 This covers **Phase 1** (authentication: login, password hashing, JWT),
 **Phase 2** (authorization: permissions, `@PreAuthorize` on every business
 endpoint), **Phase 3** (multi-tenant isolation: a company cannot reach
-another company's data by id), and **Phase 4** (platform company onboarding)
-of a multi-phase security rollout. Read this alongside [README.md](README.md)
-§13 and [ARCHITECTURE.md](ARCHITECTURE.md) "Roles".
+another company's data by id), **Phase 4** (platform company onboarding),
+and **Phase 5** (audit logging) of a multi-phase security rollout. Read this
+alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
+"Roles".
 
 ## What exists
 
@@ -251,6 +252,40 @@ this app's rules except that platform carve-out, so sharing the set makes
 the correct behavior structural rather than something to remember to keep
 in sync.
 
+## Audit logging (Phase 5)
+
+```
+GET /api/audit-logs?limit=50   ADMIN, PLATFORM_OWNER, PLATFORM_ADMIN only - not HR
+```
+
+`AuditLog` is a flat, scalar-only table (no JPA relations - see its Javadoc
+for why: a `@ManyToOne` here would reintroduce the exact lazy-serialization
+bug fixed on `SalaryRule`/`Holiday` in Phase 3). Every write goes through
+`AuditService`, always `@Transactional(propagation = REQUIRES_NEW)` - an
+audit record has to commit independently of the business operation it
+describes, both because a `FAILURE` row is written by definition inside a
+transaction that is about to roll back, and because a trail an unrelated
+later failure could silently erase is not a trail.
+
+Covered today: login success/failure (including unknown usernames and
+locked-account attempts), logout, password change, employee create/update/
+deactivate, company onboarding, payroll generation. Not yet covered: leave
+approval/rejection, shift schedule changes, salary rule changes,
+attendance corrections - the highest-value events were prioritized over
+full coverage given this phase's scope; extending `AuditService.record(...)`
+into any of these follows the exact same one-line pattern used everywhere
+above.
+
+`GET /api/audit-logs` is company-scoped the same way every other read is
+(`TenantContext`) - a company `ADMIN` sees only their own company's trail,
+platform accounts see everything. Deliberately **not** granted to `HR`,
+unlike every other permission `ADMIN` and `HR` share - HR's own actions are
+exactly what the trail needs to hold HR accountable for, so HR reviewing it
+would be self-auditing.
+
+**Never put a password, token, or secret in an audit `detail` field** - it
+is stored in plain text and returned verbatim by the read endpoint.
+
 ## Not yet built (next phases)
 
 - Dynamic role/permission management endpoints (create a custom role, assign
@@ -262,6 +297,10 @@ in sync.
 - Company activate/deactivate as dedicated endpoints - `PUT /api/companies/{id}`
   already accepts a `status` change, so this may already be sufficient;
   revisit only if a dedicated audit trail per status change is needed.
+- Full audit coverage of every sensitive action listed in the original spec
+  (see "Covered today" above for what Phase 5 actually shipped).
+- Audit log retention/export tooling - today it is an unbounded table with
+  no archival or deletion policy.
 - `Department`/`Designation`/`Shift` are still global masters shared by every
   company - unlike `SalaryRule`, these were **not** migrated to per-company
   rows in Phase 3. Their unique constraints are single-column

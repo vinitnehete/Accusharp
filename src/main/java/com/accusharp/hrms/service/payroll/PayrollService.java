@@ -5,10 +5,12 @@ import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.entity.SalaryRule;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.PayrollRepository;
+import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.SalaryRuleService;
 import com.accusharp.hrms.service.attendance.AttendanceService;
@@ -57,6 +59,7 @@ public class PayrollService {
     private final SalaryCalculationService salaryCalculationService;
     private final DeductionCalculationService deductionCalculationService;
     private final LopCalculationService lopCalculationService;
+    private final AuditService auditService;
 
     /** Generates the period once; a second call is a conflict. */
     @Transactional
@@ -265,6 +268,8 @@ public class PayrollService {
                 payableDays, payroll.getNetSalary());
 
         Payroll saved = payrollRepository.save(payroll);
+        auditService.record("PAYROLL_GENERATE", "Payroll", employee.getUserId(), AuditOutcome.SUCCESS,
+                "period=" + payroll.getMonth() + "/" + payroll.getYear() + " revision=" + revision);
 
         // Freeze the attendance this payroll was computed from, so the slip
         // stays reproducible. Correcting it later means unlock, fix, regenerate.

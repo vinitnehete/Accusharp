@@ -96,8 +96,13 @@ public class PermissionSeeder {
                 PermissionCode.REPORT_READ,
                 PermissionCode.DASHBOARD_READ);
 
-        grants.put(Role.ADMIN.name(), companyAdminPermissions);
         grants.put(Role.HR.name(), companyAdminPermissions);
+
+        // ADMIN gets everything HR does, plus AUDIT_READ - deliberately not shared with HR,
+        // since the audit trail should include HR's own actions, not be self-reviewable by HR.
+        Set<PermissionCode> adminPermissions = EnumSet.copyOf(companyAdminPermissions);
+        adminPermissions.add(PermissionCode.AUDIT_READ);
+        grants.put(Role.ADMIN.name(), adminPermissions);
 
         grants.put(Role.SUPERVISOR.name(), EnumSet.of(
                 PermissionCode.COMPANY_READ,
@@ -131,11 +136,13 @@ public class PermissionSeeder {
 
         grants.put(PlatformRole.PLATFORM_OWNER.name(), EnumSet.of(
                 PermissionCode.COMPANY_CREATE, PermissionCode.COMPANY_READ,
-                PermissionCode.COMPANY_UPDATE, PermissionCode.COMPANY_DELETE));
+                PermissionCode.COMPANY_UPDATE, PermissionCode.COMPANY_DELETE,
+                PermissionCode.AUDIT_READ));
 
         grants.put(PlatformRole.PLATFORM_ADMIN.name(), EnumSet.of(
                 PermissionCode.COMPANY_CREATE, PermissionCode.COMPANY_READ,
-                PermissionCode.COMPANY_UPDATE, PermissionCode.COMPANY_DELETE));
+                PermissionCode.COMPANY_UPDATE, PermissionCode.COMPANY_DELETE,
+                PermissionCode.AUDIT_READ));
 
         rolePermissionRepository.deleteAll();
         for (Role role : Role.values()) {

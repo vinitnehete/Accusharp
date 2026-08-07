@@ -631,6 +631,7 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Salary slips | `/api/salary-slips` |
 | Reports | `/api/reports` |
 | Dashboard | `/api/dashboard` |
+| Audit logs | `/api/audit-logs` - ADMIN/platform only, see [SECURITY.md](SECURITY.md) |
 
 Masters follow standard REST: `POST` create, `PUT /{id}` update, `GET /{id}`,
 `GET` list, `DELETE /{id}`.

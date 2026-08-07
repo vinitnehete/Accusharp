@@ -4,6 +4,7 @@ import com.accusharp.hrms.dto.TokenResponse;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.PlatformUser;
 import com.accusharp.hrms.entity.RefreshToken;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
 import com.accusharp.hrms.repository.EmployeeRepository;
@@ -42,6 +43,7 @@ public class AuthService {
     private final RefreshTokenService refreshTokenService;
     private final JwtService jwtService;
     private final PasswordEncoder passwordEncoder;
+    private final AuditService auditService;
 
     @Value("${security.max-failed-login-attempts:5}")
     private int maxFailedAttempts;
@@ -67,6 +69,8 @@ public class AuthService {
         }
         // No such account. Same message as a wrong password - existence is not disclosed.
         log.info("auth.login.failed username={} reason=unknown-username", username);
+        auditService.recordWithActor(username, null, null, "LOGIN", "Account", username,
+                AuditOutcome.FAILURE, "unknown username");
         throw new AuthenticationFailedException(INVALID_CREDENTIALS);
     }
 
@@ -89,6 +93,9 @@ public class AuthService {
 
         UserPrincipal principal = UserPrincipal.fromEmployee(employee);
         log.info("auth.login.success username={} type=EMPLOYEE", employee.getUserId());
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        auditService.recordWithActor(employee.getUserId(), PrincipalType.EMPLOYEE, companyId,
+                "LOGIN", "Account", employee.getUserId(), AuditOutcome.SUCCESS, null);
         return issueTokens(principal);
     }
 
@@ -111,6 +118,8 @@ public class AuthService {
 
         UserPrincipal principal = UserPrincipal.fromPlatformUser(user);
         log.info("auth.login.success username={} type=PLATFORM", user.getUsername());
+        auditService.recordWithActor(user.getUsername(), PrincipalType.PLATFORM, null,
+                "LOGIN", "Account", user.getUsername(), AuditOutcome.SUCCESS, null);
         return issueTokens(principal);
     }
 
@@ -123,6 +132,10 @@ public class AuthService {
         }
         employeeRepository.save(employee);
         log.info("auth.login.failed username={} reason=bad-password attempts={}", employee.getUserId(), attempts);
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        auditService.recordWithActor(employee.getUserId(), PrincipalType.EMPLOYEE, companyId,
+                "LOGIN", "Account", employee.getUserId(), AuditOutcome.FAILURE,
+                attempts >= maxFailedAttempts ? "bad password - account now locked" : "bad password");
     }
 
     private void registerFailedAttempt(PlatformUser user) {
@@ -134,6 +147,9 @@ public class AuthService {
         }
         platformUserRepository.save(user);
         log.info("auth.login.failed username={} reason=bad-password attempts={}", user.getUsername(), attempts);
+        auditService.recordWithActor(user.getUsername(), PrincipalType.PLATFORM, null,
+                "LOGIN", "Account", user.getUsername(), AuditOutcome.FAILURE,
+                attempts >= maxFailedAttempts ? "bad password - account now locked" : "bad password");
     }
 
     /**
@@ -162,9 +178,18 @@ public class AuthService {
         return issueTokens(principal);
     }
 
+    /**
+     * Attributes the audit record to whoever the <em>refresh token</em>
+     * belonged to, not the current {@code SecurityContext} - logout only
+     * requires a refresh token in the body, and by the time a client calls
+     * it their access token may already be expired or simply never sent, so
+     * there may be no authenticated principal on this request at all.
+     */
     @Transactional
     public void logout(String rawRefreshToken) {
-        refreshTokenService.revoke(rawRefreshToken);
+        refreshTokenService.revoke(rawRefreshToken).ifPresent(token ->
+                auditService.recordWithActor(token.getPrincipalId(), token.getPrincipalType(), null,
+                        "LOGOUT", "Account", token.getPrincipalId(), AuditOutcome.SUCCESS, null));
     }
 
     @Transactional
@@ -195,6 +220,7 @@ public class AuthService {
             }
         }
         log.info("auth.password-change username={} type={}", principal.getUsername(), principal.getType());
+        auditService.record("PASSWORD_CHANGE", "Account", principal.getUsername(), AuditOutcome.SUCCESS, null);
     }
 
     private TokenResponse issueTokens(UserPrincipal principal) {

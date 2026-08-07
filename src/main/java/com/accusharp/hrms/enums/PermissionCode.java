@@ -57,5 +57,7 @@ public enum PermissionCode {
 
     REPORT_READ,
 
-    DASHBOARD_READ
+    DASHBOARD_READ,
+
+    AUDIT_READ
 }

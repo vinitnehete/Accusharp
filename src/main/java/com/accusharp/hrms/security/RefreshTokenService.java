@@ -16,6 +16,7 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.Optional;
 
 /**
  * Issues and validates opaque refresh tokens. Only the SHA-256 hash is ever
@@ -70,12 +71,13 @@ public class RefreshTokenService {
         return token;
     }
 
+    /** Returns the token that was revoked, if it existed - callers (audit logging) attribute the action to it. */
     @Transactional
-    public void revoke(String rawToken) {
-        refreshTokenRepository.findByTokenHash(hash(rawToken))
-                .ifPresent(token -> {
+    public Optional<RefreshToken> revoke(String rawToken) {
+        return refreshTokenRepository.findByTokenHash(hash(rawToken))
+                .map(token -> {
                     token.setRevoked(true);
-                    refreshTokenRepository.save(token);
+                    return refreshTokenRepository.save(token);
                 });
     }
 

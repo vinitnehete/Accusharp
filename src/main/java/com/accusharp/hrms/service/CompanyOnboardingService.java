@@ -4,6 +4,7 @@ import com.accusharp.hrms.dto.CompanyOnboardingRequest;
 import com.accusharp.hrms.dto.CompanyOnboardingResponse;
 import com.accusharp.hrms.entity.Company;
 import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
@@ -43,6 +44,7 @@ public class CompanyOnboardingService {
     private final SalaryCalculationService salaryCalculationService;
     private final EmployeeMapper employeeMapper;
     private final PasswordEncoder passwordEncoder;
+    private final AuditService auditService;
 
     @Transactional
     public CompanyOnboardingResponse onboard(CompanyOnboardingRequest request) {
@@ -91,6 +93,10 @@ public class CompanyOnboardingService {
         admin = employeeRepository.save(admin);
 
         log.info("company.onboard companyCode={} adminUserId={}", company.getCompanyCode(), admin.getUserId());
+        // record(), not recordWithActor(): the actor is the platform principal calling this endpoint
+        // (resolved from SecurityContext), not the new admin the action created.
+        auditService.record("COMPANY_ONBOARD", "Company", company.getCompanyCode(), AuditOutcome.SUCCESS,
+                "admin=" + admin.getUserId());
         return new CompanyOnboardingResponse(company, employeeMapper.toResponse(admin), temporaryPassword);
     }
 

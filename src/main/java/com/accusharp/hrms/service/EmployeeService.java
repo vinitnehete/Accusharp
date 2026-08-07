@@ -4,6 +4,7 @@ import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.SalaryRule;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
@@ -47,6 +48,7 @@ public class EmployeeService {
     private final SalaryCalculationService salaryCalculationService;
     private final EmployeeMapper employeeMapper;
     private final TenantContext tenantContext;
+    private final AuditService auditService;
 
     @Transactional
     public EmployeeResponse create(EmployeeRequest request) {
@@ -60,7 +62,10 @@ public class EmployeeService {
         Employee employee = new Employee();
         apply(employee, request);
         recalculate(employee);
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_CREATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
+                "role=" + response.role());
+        return response;
     }
 
     @Transactional
@@ -80,7 +85,10 @@ public class EmployeeService {
 
         apply(employee, request);
         recalculate(employee);
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_UPDATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
+                "role=" + response.role());
+        return response;
     }
 
     @Transactional(readOnly = true)
@@ -119,7 +127,9 @@ public class EmployeeService {
     public EmployeeResponse deactivate(Long id) {
         Employee employee = getEntityById(id);
         employee.setRecordStatus(RecordStatus.INACTIVE);
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_DEACTIVATE", "Employee", response.userId(), AuditOutcome.SUCCESS, null);
+        return response;
     }
 
     @Transactional(readOnly = true)
