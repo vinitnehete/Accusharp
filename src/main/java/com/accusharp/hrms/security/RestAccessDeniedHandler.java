@@ -13,7 +13,19 @@ import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Instant;
 
-/** Turns "authenticated but not permitted" into the same {@link ApiError} shape every other failure uses. */
+/**
+ * Turns "authenticated but not permitted" into the same {@link ApiError}
+ * shape every other failure uses - for an {@code AccessDeniedException}
+ * thrown at the security filter-chain level itself. {@code @PreAuthorize}
+ * denials on controller methods do <b>not</b> reach this class: they are
+ * thrown during the controller invocation, inside {@code DispatcherServlet},
+ * so {@code GlobalExceptionHandler}'s {@code @ExceptionHandler} always
+ * catches them first (verified in {@code SecurityConfig}'s Javadoc). This
+ * handler exists for the other kind of denial - a rule declared directly in
+ * {@code authorizeHttpRequests(...)} (e.g. {@code .hasRole(...)} on a
+ * request matcher) - which this app does not currently use, but which would
+ * bypass the controller entirely and land here instead.
+ */
 @Component
 public class RestAccessDeniedHandler implements AccessDeniedHandler {
 

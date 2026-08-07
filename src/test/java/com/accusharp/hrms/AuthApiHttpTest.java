@@ -173,6 +173,28 @@ class AuthApiHttpTest {
         assertThat(login(USER_ID, "New-Password-9").status()).isEqualTo(200);
     }
 
+    /**
+     * Every other test in this class only exercises {@code /api/auth/**},
+     * which is {@code permitAll} - so none of them actually prove a business
+     * endpoint is protected. This is the one that does: it hits a genuinely
+     * gated endpoint with no bearer token at all, which is rejected by
+     * {@code SecurityConfig}'s {@code anyRequest().authenticated()} at the
+     * filter-chain level, before any controller runs.
+     */
+    @Test
+    @DisplayName("a business endpoint with no bearer token is rejected at the filter chain, not the controller")
+    void businessEndpointWithNoTokenIsRejected() {
+        Resp noToken = send("GET", "/api/employees", null, null);
+        assertThat(noToken.status()).isEqualTo(401);
+
+        Resp garbageToken = send("GET", "/api/employees", null, "not-a-real-jwt");
+        assertThat(garbageToken.status()).isEqualTo(401);
+
+        String accessToken = login(USER_ID, PASSWORD).body().get("accessToken").asString();
+        Resp withToken = send("GET", "/api/employees", null, accessToken);
+        assertThat(withToken.status()).isEqualTo(200);
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     private record Resp(int status, JsonNode body) {

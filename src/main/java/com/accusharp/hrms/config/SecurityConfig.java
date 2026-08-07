@@ -37,12 +37,26 @@ import java.util.List;
  * ({@code anyRequest().authenticated()}), and each controller method carries
  * its own {@code @PreAuthorize("@authz.can('...')")} for the specific
  * permission it needs - see {@link com.accusharp.hrms.security.AuthorizationService}
- * and {@link com.accusharp.hrms.config.PermissionSeeder}. A missing/invalid
- * token gets 401 from {@link RestAuthenticationEntryPoint}; an authenticated
- * principal without the required permission gets 403 from
- * {@link RestAccessDeniedHandler} (filter-chain level) or the equivalent
- * {@code @ExceptionHandler} in {@code GlobalExceptionHandler} (method-security
- * level) - both produce the identical {@code ApiError} shape.
+ * and {@link com.accusharp.hrms.config.PermissionSeeder}.
+ *
+ * <p><b>Two different 403 paths exist, and only one is live today.</b> A
+ * missing/invalid token is rejected right here, at the filter-chain level,
+ * before any controller runs - that is a genuine {@link RestAuthenticationEntryPoint}
+ * 401. A {@code @PreAuthorize} denial, however, is thrown by Spring's method
+ * security interceptor <em>during</em> the controller method invocation,
+ * inside {@code DispatcherServlet}'s own try/catch - so Spring MVC's
+ * {@code @ExceptionHandler} resolution (i.e. {@code GlobalExceptionHandler})
+ * always gets first refusal and handles it before the exception could ever
+ * propagate back out to this filter chain's {@link RestAccessDeniedHandler}.
+ * Verified empirically, not just reasoned about - see the
+ * {@code AttendanceApiHttpTest.roleIsEnforcedOverHttp} /
+ * {@code AuthApiHttpTest.businessEndpointWithNoTokenIsRejected} pair.
+ * {@link RestAccessDeniedHandler} is kept anyway as the correct handler for
+ * an {@code AccessDeniedException} thrown at the filter-chain level itself -
+ * e.g. a future {@code authorizeHttpRequests().hasRole(...)} rule - which
+ * this app does not currently have any of. Both handlers produce the
+ * identical {@code ApiError} shape on purpose, so which one fires is an
+ * implementation detail, not a client-visible difference.
  */
 @Configuration
 @EnableWebSecurity
