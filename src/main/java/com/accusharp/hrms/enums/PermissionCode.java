@@ -61,5 +61,9 @@ public enum PermissionCode {
 
     AUDIT_READ,
     /** Purging old audit rows - deliberately platform-only, never granted alongside AUDIT_READ to a company role: the entity an audit trail holds accountable must never be the one who can erase it. */
-    AUDIT_MANAGE
+    AUDIT_MANAGE,
+
+    /** Create/edit/delete custom roles, assign their permissions, assign them to employees. ADMIN only - not HR, same trust bar as AUDIT_READ. */
+    ROLE_MANAGE,
+    ROLE_READ
 }

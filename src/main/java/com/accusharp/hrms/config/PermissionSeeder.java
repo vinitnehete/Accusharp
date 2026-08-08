@@ -98,10 +98,13 @@ public class PermissionSeeder {
 
         grants.put(Role.HR.name(), companyAdminPermissions);
 
-        // ADMIN gets everything HR does, plus AUDIT_READ - deliberately not shared with HR,
-        // since the audit trail should include HR's own actions, not be self-reviewable by HR.
+        // ADMIN gets everything HR does, plus AUDIT_READ and ROLE_MANAGE/ROLE_READ - deliberately
+        // not shared with HR: the audit trail should include HR's own actions, not be
+        // self-reviewable by HR, and granting/managing custom roles is the same trust bar.
         Set<PermissionCode> adminPermissions = EnumSet.copyOf(companyAdminPermissions);
         adminPermissions.add(PermissionCode.AUDIT_READ);
+        adminPermissions.add(PermissionCode.ROLE_MANAGE);
+        adminPermissions.add(PermissionCode.ROLE_READ);
         grants.put(Role.ADMIN.name(), adminPermissions);
 
         grants.put(Role.SUPERVISOR.name(), EnumSet.of(
