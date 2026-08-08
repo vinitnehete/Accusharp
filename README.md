@@ -162,12 +162,12 @@ employee will show zero attendance forever.
 
 **The response is `{"employee": {...}, "temporaryPassword": "..."}`, not a bare
 employee** - `temporaryPassword` is generated server-side and returned exactly
-once; capture it now and relay it to the new hire out of band. There is no
-admin-reset-password endpoint yet (see SECURITY.md's "Not yet built"), so if
-it's lost, `PUT /api/employees/{id}` and creating them again is not an
-option either (userId/employeeCode would collide) - today the only recovery
-is a direct database update. See [SECURITY.md](SECURITY.md) for the same
-one-time-password contract on `POST /api/companies/onboard`.
+once; capture it now and relay it to the new hire out of band. If it's lost,
+`POST /api/employees/{id}/reset-password` (ADMIN/HR) generates a new one -
+the practical stand-in for self-service forgot-password, which this app
+can't build without email delivery infrastructure it doesn't have. See
+[SECURITY.md](SECURITY.md) for the same one-time-password contract on
+`POST /api/companies/onboard`.
 
 You send only these money fields:
 
@@ -714,12 +714,15 @@ Either the holiday is not in `/api/holidays`, or it is marked
 
 ## 13. Before going live
 
-**All `/api/**` endpoints now require a bearer token, and each one requires a
+**All `/api/**` endpoints require a bearer token, and each one requires a
 specific permission** (see [SECURITY.md](SECURITY.md) for the full matrix) -
-log in via `POST /api/auth/login` first. What is *not* yet enforced: a caller
-holding a `_READ` permission can read any employee's data by id, not only
-their own - that self-service scoping, and multi-tenant company isolation
-generally, are the next phase of work.
+log in via `POST /api/auth/login` first. Multi-tenant company isolation,
+"view only my own data" self-service scoping, full audit coverage with
+retention/export, and dynamic role/permission management are all built now
+(Phases 3-10) - see [SECURITY.md](SECURITY.md) for the phase-by-phase
+detail and the current, much shorter "Not yet built" list (mainly: a true
+self-service password-recovery flow, since there's no email delivery
+infrastructure to build it on - an ADMIN/HR-triggered reset exists instead).
 
 Also worth doing before real use:
 
@@ -734,7 +737,3 @@ Also worth doing before real use:
   own, but cannot drop the old single-column unique index on
   `department`/`designation`/`shift`, so two companies can't share a code
   until that manual step runs.
-
-Multi-tenant company isolation, dynamic role/permission management, and audit
-logging are the next phases of work - see [SECURITY.md](SECURITY.md) for what
-exists today and what is still open.

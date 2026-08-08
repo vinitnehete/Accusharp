@@ -7,9 +7,10 @@ another company's data by id), **Phase 4** (platform company onboarding),
 **Phase 5** (audit logging), **Phase 6** (per-company masters and
 report/dashboard scoping), **Phase 7** (a full re-audit of every remaining
 service, which found and fixed four more cross-company gaps), **Phase 8**
-("view only my own data" self-service scoping), and **Phase 9** (every
-newly created employee now gets a working login, not just a company's
-first admin) of a multi-phase security rollout. Read this
+("view only my own data" self-service scoping), **Phase 9** (working
+employee logins, admin-triggered password reset, full audit coverage, and
+audit log retention/export), and **Phase 10** (dynamic role/permission
+management) of a multi-phase security rollout. Read this
 alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
 
@@ -544,7 +545,9 @@ HTTP, covering the employee directory, team roster, attendance, shift
 roster, leave apply/read, leave balance, salary slips, and the
 supervisor-filtered payroll period list.
 
-## Every new employee gets a working login (Phase 9)
+## Working employee logins, full audit coverage, and retention (Phase 9)
+
+### Every new employee gets a working login
 
 Found while setting up [docs/testing/multi-company-smoke-test.sh](docs/testing/multi-company-smoke-test.sh)
 to actually onboard and use two companies end to end - not a security
@@ -553,8 +556,9 @@ finding, a functional one, but one that blocked real usage outright:
 `CompanyOnboardingService`'s one-time bootstrap step generated a password
 (for a new company's first `ADMIN`). Every employee HR/ADMIN created
 afterward through the ordinary `POST /api/employees` had no password and
-could never log in - permanently, since there was (and still is) no
-admin-reset or forgot-password flow to recover from it.
+could never log in - permanently, since there was no way to recover from
+it (see the password reset feature immediately below, added in this same
+phase to close exactly that gap).
 
 **Fix:** `EmployeeService.create()` now generates a temporary password the
 same way onboarding always has - same generator
@@ -577,26 +581,132 @@ proves the new supervisor/employee immediately exercise Phase 8's
 self-service scoping correctly (own team visible, coworkers not,
 impersonation blocked).
 
+### Admin-triggered password reset
+
+The practical stand-in for self-service forgot-password - this app has no
+email delivery infrastructure to build the real thing on top of.
+`POST /api/employees/{id}/reset-password` (`EMPLOYEE_UPDATE`, same
+permission as every other account-affecting change to an employee)
+generates a fresh one-time temporary password with the same
+`EmployeeCreationResponse` contract as creation, and also clears any
+failed-login lockout and revokes every existing refresh token for that
+principal - a reset that left the account locked, or an old session still
+valid, would not be a real recovery path.
+
+**Proof:** `CompanyOnboardingHttpTest.adminCanResetAnEmployeesPassword` -
+the old password stops working, the new one logs in.
+`TenantIsolationHttpTest.employeePasswordResetCrossTenantIsRejected` -
+Company A's HR cannot reset Company B's employee's password.
+
+### Full audit coverage of every sensitive action
+
+SECURITY.md's Phase 5 write-up named leave approval/rejection, shift
+schedule changes, salary rule changes, and attendance corrections as
+explicitly not yet covered. All four now record one audit row per API call
+(not per affected record, so a bulk shift assignment across 50 employees
+is one row, matching the granularity `EMPLOYEE_CREATE`/`COMPANY_ONBOARD`
+already used): `LeaveService` (`LEAVE_SUPERVISOR_APPROVE`, `LEAVE_APPROVE`,
+`LEAVE_REJECT`, `LEAVE_CANCEL`), `SalaryRuleService.updateRule`
+(`SALARY_RULE_UPDATE`), `AttendanceService` (`ATTENDANCE_CORRECT`,
+`ATTENDANCE_UNLOCK`), and every `ShiftSchedulingService` write (assign,
+bulk-assign, auto-rotate, copy-month, holiday-override, swap,
+delete-range). `CompanyService.update` also now records
+`COMPANY_STATUS_CHANGE` whenever a company's status actually changes -
+closing the "revisit only if a dedicated audit trail per status change is
+needed" note the "Not yet built" list carried for company activate/
+deactivate; `PUT /api/companies/{id}` remains the only endpoint, no new one
+was needed.
+
+**Proof:** `AuditLogHttpTest.salaryRuleChangeIsAudited`,
+`CompanyOnboardingHttpTest.companyStatusChangeIsAudited`.
+
+### Audit log retention and export
+
+Previously an unbounded table with no archival or deletion policy.
+`GET /api/audit-logs/export?fromDate=&toDate=` (`AUDIT_READ`, same
+permission as the existing capped `GET`) returns an unbounded CSV for a
+date range - the existing `GET /api/audit-logs?limit=` stays capped at 200
+rows, which was never meant for archival. `DELETE /api/audit-logs?beforeDate=`
+purges rows older than a date, gated by a **new `AUDIT_MANAGE` permission
+granted only to platform roles, never a company role** - the entity an
+audit trail holds accountable must never be able to erase it, not even a
+company's own `ADMIN`. The purge itself is recorded as its own audit row,
+written *after* the delete completes, so it can never retroactively delete
+itself.
+
+**Proof:** `AuditLogHttpTest.exportProducesCsv`,
+`AuditLogHttpTest.purgeIsPlatformOnly` (a company `ADMIN` gets 403),
+`CompanyOnboardingHttpTest.platformCanPurgeAuditLog`.
+
+## Dynamic role/permission management (Phase 10)
+
+The single largest remaining item on the "not yet built" list - closed as
+an **additive** layer on top of the existing `Role` enum, not a
+replacement for it. The alternative (migrating `Employee.role` itself to a
+relational assignment) would have meant touching every hardcoded `Role`
+check across the app (the self-escalation guard, supervisor-team rules,
+self-service scoping's `isVisibleTo`) with real correctness risk for a
+comparatively narrow benefit; the additive design leaves every one of
+those checks completely untouched.
+
+**What a company ADMIN can now do:** create a named custom role
+(`POST /api/roles`), grant it any set of permissions
+(`PUT /api/roles/{id}/permissions`), and assign it to any number of that
+company's employees (`POST /api/roles/{id}/employees/{userId}`) - on top
+of, never instead of, that employee's fixed `Role`. `ROLE_MANAGE`/
+`ROLE_READ` are ADMIN-only, same trust bar as `AUDIT_READ` (not shared
+with HR).
+
+**How it actually takes effect - `AuthorizationService.can()` gained a
+fallback:** the fast path (checking the principal's base `Role` against
+`PermissionRegistry`'s in-memory, fixed-at-startup cache) is completely
+unchanged. Only if that check fails, and the principal is a company
+`Employee`, does a second query check whatever custom roles they've been
+assigned - always resolved fresh from the database (`EmployeeCustomRoleRepository.findPermissionCodesForEmployeeUserId`),
+never cached, since custom-role grants are edited at runtime and
+`PermissionRegistry`'s cache has no invalidation story (see its own
+Javadoc, written back in Phase 2, anticipating exactly this). A grant or
+revocation takes effect on the assignee's *very next request* - no token
+refresh needed, unlike a base-role or company change, which only self-heal
+on refresh (see Phase 7's JWT-staleness note).
+
+**The one hard guard: platform-only permissions can never be granted
+through a custom role.** `COMPANY_CREATE`/`UPDATE`/`DELETE` and the new
+`AUDIT_MANAGE` are rejected outright by `CustomRoleService.setPermissions`
+- without this, a company `ADMIN` could hand themselves the ability to
+delete *any* company on the platform, or purge the very audit trail meant
+to hold them accountable, through a mechanism meant only to compose
+company-scoped capabilities.
+
+**Schema:** three new tables (`custom_role`, `custom_role_permission`,
+`employee_custom_role`), all brand new - no migration script needed the
+way Phase 6's composite-constraint change did, since `ddl-auto=update`
+adds new tables just fine on any database, fresh or existing.
+
+**Proof:** `CustomRoleHttpTest` - a plain `EMPLOYEE` who cannot call a
+`REPORT_READ`-gated endpoint gains that ability purely through a
+custom-role assignment (no change to their JWT or base role at any point),
+and loses it again on unassignment; a platform-only code is rejected;
+cross-company role management 404s exactly like every other cross-company
+attempt in this app; HR is forbidden from managing roles.
+
 ## Not yet built (next phases)
 
-- Dynamic role/permission management endpoints (create a custom role, assign
-  permissions to it, assign it to a user) - today's grants are fixed at
-  startup by `PermissionSeeder`. Deliberately not attempted in Phase 4: it
-  needs `Employee.role` to move from a plain enum column to a real
-  relational assignment, which is a larger migration than this pass's
-  budget allowed - see Phase 2's `RolePermission` Javadoc for the same point.
-- Company activate/deactivate as dedicated endpoints - `PUT /api/companies/{id}`
-  already accepts a `status` change, so this may already be sufficient;
-  revisit only if a dedicated audit trail per status change is needed.
-- Full audit coverage of every sensitive action listed in the original spec
-  (see "Covered today" above for what Phase 5 actually shipped).
-- Audit log retention/export tooling - today it is an unbounded table with
-  no archival or deletion policy.
 - Platform-owner company onboarding flow beyond raw CRUD.
-- Audit logging.
-- Self-service / admin account unlock.
-- Forgot-password email flow (needs email delivery infrastructure this app
-  does not have yet).
+- **Self-service** account unlock - the admin half exists (Phase 9's
+  password reset also clears lockout), but there's no way for a locked-out
+  employee to recover *without* an ADMIN/HR acting on their behalf, and no
+  standalone "just unlock, don't also reset the password" endpoint.
+- Forgot-password **email** flow specifically - Phase 9's admin-triggered
+  reset is the practical stand-in this project has instead, and remains the
+  only recovery path; a self-service, no-admin-involved flow still needs
+  email delivery infrastructure this app does not have.
+- A UI for assigning/removing an employee's custom roles and browsing
+  what a role grants (Phase 10 shipped the API only, see
+  `CustomRoleController`) - and a decision on whether a custom role should
+  be able to grant *more* than what its own creator (ADMIN) already holds,
+  which today it can (Phase 10 blocks only the platform-only codes, not a
+  general no-privilege-escalation check).
 
 See the original security analysis in this repository's PR/session history
 for the full phased plan.

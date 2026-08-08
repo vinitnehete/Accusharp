@@ -67,6 +67,7 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | `RefreshToken` | `refresh_token` | Opaque, hashed at rest, single-use with rotation - never a JWT itself |
 | `Permission`, `RolePermission` | `permission`, `role_permission` | The data-driven grant table every `@PreAuthorize` check resolves against - see Security below |
 | `AuditLog` | `audit_log` | Flat, scalar-only (no JPA relations, by design) - who did what, when, success or failure |
+| `CustomRole`, `CustomRolePermission`, `EmployeeCustomRole` | `custom_role`, `custom_role_permission`, `employee_custom_role` | Company-defined roles (Phase 10) - a named bundle of permissions assignable to any number of employees, additive on top of their fixed `Role` |
 | `ShiftSchedule` | `emp_attendance_shift` | One shift per employee per day (unique constraint) |
 | `DeviceLog` | `device_logs` | Raw punches, written by the eSSL device. **Read-only here** |
 | `DailyAttendance` | `emp_daily_attendance` | The reviewed attendance day payroll is paid from. Generated from punches, correctable by HR |
@@ -263,11 +264,28 @@ is the summary.
   repeated failed logins, no account-enumeration in login errors, short-lived
   JWT access tokens plus opaque rotating refresh tokens. Every newly created
   employee (not just a company's first admin during onboarding) is issued a
-  one-time temporary password in the create response - there's no
-  self-service or admin-triggered forgot-password recovery yet if it's lost.
-- Not yet built: dynamic (admin-editable) roles - today's role/permission
-  grants are fixed at startup by `PermissionSeeder`. See SECURITY.md's
-  "Not yet built" for the current full list.
+  one-time temporary password in the create response (Phase 9); if it's
+  lost, ADMIN/HR can generate a new one via
+  `POST /api/employees/{id}/reset-password` (also Phase 9) - there is still
+  no *self-service* ("no admin involved") recovery flow, since that needs
+  email delivery infrastructure this app doesn't have.
+- **Audit trail.** Every security-sensitive write is recorded - login/
+  logout/password events, employee/company/payroll changes (Phase 5), and,
+  as of Phase 9, leave decisions, shift schedule writes, salary rule
+  changes, attendance corrections and company status changes too.
+  `GET /api/audit-logs/export` gives an unbounded CSV for a date range (the
+  regular `GET` stays capped at 200 rows); `DELETE /api/audit-logs` purges
+  old rows but is gated by a permission granted only to platform roles,
+  never a company role - the entity a trail holds accountable must never be
+  able to erase it.
+- **Dynamic role/permission management** (Phase 10): a company `ADMIN` can
+  define named custom roles, grant each an arbitrary set of permissions,
+  and assign them to employees - additive on top of the employee's fixed
+  `Role`, never a replacement for it, so every hardcoded `Role` check
+  elsewhere in the app (self-escalation guard, supervisor-team rules,
+  self-service scoping) is untouched by this. Platform-only permissions can
+  never be granted through a custom role. See `CustomRoleController`/
+  `CustomRoleService` and SECURITY.md's Phase 10 write-up.
 
 ## Design decisions worth knowing
 
@@ -288,12 +306,16 @@ is the summary.
 
 ## Not implemented
 
-Authentication, authorization, multi-tenant isolation, self-service scoping
-and audit logging all exist now (see Security &amp; multi-tenancy above and
-[SECURITY.md](SECURITY.md)). Still open: dynamic (admin-editable) roles,
-self-service/admin account unlock, a real forgot-password email flow (no
-email delivery infrastructure exists), audit log retention/export tooling,
-and full audit coverage of every sensitive action (some are covered, not
-all - see SECURITY.md). Also not built: multi-branch support, notification
+Authentication, authorization, multi-tenant isolation, self-service
+scoping, audit logging (now with full coverage and retention/export
+tooling), and dynamic role/permission management all exist now (see
+Security &amp; multi-tenancy above and [SECURITY.md](SECURITY.md)). Still
+open: a self-service ("I forgot my password, no admin involved") recovery
+flow - an ADMIN/HR-triggered reset exists instead, since there's no email
+delivery infrastructure to build the self-service version on; a UI for
+custom-role assignment (the API exists, see `CustomRoleController`); and a
+general no-privilege-escalation check on custom roles (today only
+platform-only permission codes are blocked, not "grant nothing beyond what
+you yourself hold"). Also not built: multi-branch support, notification
 and email services generally, effective-dated salary rule versions, soft
 delete, Flyway migrations, Redis caching, and Swagger/OpenAPI documentation.
