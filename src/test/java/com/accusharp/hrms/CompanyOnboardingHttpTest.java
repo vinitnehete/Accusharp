@@ -106,6 +106,39 @@ class CompanyOnboardingHttpTest {
     }
 
     @Test
+    @DisplayName("HR/ADMIN can reset an employee's password - the old one stops working, the new one logs in")
+    void adminCanResetAnEmployeesPassword() {
+        String platformToken = login("owner1", PLATFORM_PASSWORD);
+        String setupBody = """
+                {"companyCode": "RESETCO", "companyName": "Reset Co", "companyEmail": "hr@resetco.example",
+                 "adminUserId": "RESETCO-ADMIN", "adminEmployeeCode": "RC-ADMIN-1", "adminName": "Admin",
+                 "adminEmail": "admin@resetco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
+        Resp onboarded = send("POST", "/api/companies/onboard", setupBody, platformToken);
+        String adminToken = login("RESETCO-ADMIN", onboarded.body().get("temporaryPassword").asString());
+
+        Resp created = send("POST", "/api/employees", """
+                {"userId": "RESETCO-EMP1", "employeeCode": "RC-EMP-1", "employeeName": "Someone",
+                 "status": "PERMANENT", "role": "EMPLOYEE",
+                 "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0}""",
+                adminToken);
+        String originalPassword = created.body().get("temporaryPassword").asString();
+        long employeeId = created.body().get("employee").get("id").asLong();
+
+        Resp reset = send("POST", "/api/employees/" + employeeId + "/reset-password", null, adminToken);
+        assertThat(reset.status()).isEqualTo(200);
+        String newPassword = reset.body().get("temporaryPassword").asString();
+        assertThat(newPassword).isNotBlank().isNotEqualTo(originalPassword);
+
+        Resp loginWithOld = send("POST", "/api/auth/login",
+                "{\"username\": \"RESETCO-EMP1\", \"password\": \"" + originalPassword + "\"}", null);
+        assertThat(loginWithOld.status()).isEqualTo(401);
+
+        Resp loginWithNew = send("POST", "/api/auth/login",
+                "{\"username\": \"RESETCO-EMP1\", \"password\": \"" + newPassword + "\"}", null);
+        assertThat(loginWithNew.status()).isEqualTo(200);
+    }
+
+    @Test
     @DisplayName("a company-scoped ADMIN cannot onboard a new company")
     void onboardingIsPlatformOnly() {
         // Onboard once to get a company-scoped admin token, then try onboarding again with it.

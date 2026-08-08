@@ -162,6 +162,13 @@ class TenantIsolationHttpTest {
     }
 
     @Test
+    @DisplayName("Company A's HR cannot reset Company B's employee's password")
+    void employeePasswordResetCrossTenantIsRejected() {
+        Resp reset = send("POST", "/api/employees/" + employeeB.getId() + "/reset-password", null, hrAToken);
+        assertThat(reset.status()).isEqualTo(404);
+    }
+
+    @Test
     @DisplayName("Company A's HR gets 404 for Company B's payroll history by employee id")
     void payrollCrossTenantReadIsRejected() {
         Resp history = send("GET", "/api/payroll/employee/EMPB001", null, hrAToken);

@@ -14,6 +14,7 @@ import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.RefreshTokenRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
@@ -23,6 +24,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -55,6 +57,7 @@ public class EmployeeService {
     private final TenantContext tenantContext;
     private final AuditService auditService;
     private final PasswordEncoder passwordEncoder;
+    private final RefreshTokenRepository refreshTokenRepository;
 
     /**
      * Without an initial password, a newly created employee could never log
@@ -81,6 +84,30 @@ public class EmployeeService {
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
         auditService.record("EMPLOYEE_CREATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
                 "role=" + response.role());
+        return new EmployeeCreationResponse(response, temporaryPassword);
+    }
+
+    /**
+     * HR/ADMIN-triggered password reset - the practical stand-in for
+     * self-service forgot-password (this app has no email delivery
+     * infrastructure to build the real thing on). Same one-time-return
+     * contract as {@link #create}: a fresh temporary password, returned
+     * exactly once, never logged. Also clears any failed-login lockout and
+     * revokes every existing refresh token for this principal - a reset
+     * that left the account locked, or an old session still valid, would
+     * not actually be a recovery path.
+     */
+    @Transactional
+    public EmployeeCreationResponse resetPassword(Long id) {
+        Employee employee = getEntityById(id);
+        String temporaryPassword = TemporaryPasswordGenerator.generate();
+        employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
+        employee.setPasswordChangedAt(Instant.now());
+        employee.setAccountLocked(false);
+        employee.setFailedLoginAttempts(0);
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        refreshTokenRepository.revokeAllForPrincipal(PrincipalType.EMPLOYEE, employee.getUserId());
+        auditService.record("EMPLOYEE_PASSWORD_RESET", "Employee", response.userId(), AuditOutcome.SUCCESS, null);
         return new EmployeeCreationResponse(response, temporaryPassword);
     }
 

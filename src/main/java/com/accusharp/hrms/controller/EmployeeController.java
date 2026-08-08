@@ -83,6 +83,19 @@ public class EmployeeController {
     }
 
     /**
+     * Practical stand-in for self-service forgot-password (no email
+     * infrastructure exists to build the real thing) - HR/ADMIN generates a
+     * new temporary password for an employee who's lost theirs or is
+     * locked out. Same permission as every other account-affecting change
+     * to this employee, same one-time-return contract as {@code create}.
+     */
+    @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")
+    @PostMapping("/{id}/reset-password")
+    public EmployeeCreationResponse resetPassword(@PathVariable Long id) {
+        return employeeService.resetPassword(id);
+    }
+
+    /**
      * Self-escalation guard (HRMS spec §7): granting the ADMIN role is
      * itself an ADMIN-only action, so HR - which otherwise has full
      * EMPLOYEE_CREATE/UPDATE rights - cannot mint a new admin account or
