@@ -59,5 +59,7 @@ public enum PermissionCode {
 
     DASHBOARD_READ,
 
-    AUDIT_READ
+    AUDIT_READ,
+    /** Purging old audit rows - deliberately platform-only, never granted alongside AUDIT_READ to a company role: the entity an audit trail holds accountable must never be the one who can erase it. */
+    AUDIT_MANAGE
 }

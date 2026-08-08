@@ -94,9 +94,53 @@ class AuditLogHttpTest {
         assertThat(found).isTrue();
     }
 
+    @Test
+    @DisplayName("audit log CSV export is unbounded and available to ADMIN")
+    void exportProducesCsv() {
+        String adminToken = login("ADMIN01", PASSWORD);
+        // Generate at least one row to export.
+        send("PUT", "/api/salary-rules", """
+                {"basicDaPercent": 50, "hraPercent": 40, "conveyancePercent": 10, "educationPercent": 10,
+                 "pfPercent": 12, "esicPercent": 0.75, "esicWageCeiling": 21000,
+                 "ptUpperThreshold": 10001, "ptUpperAmount": 200, "ptLowerThreshold": 7501, "ptLowerAmount": 175,
+                 "dayWiseDaysInMonth": 26, "standardHoursPerDay": 8, "overtimeRateMultiplier": 1.0}""", adminToken);
+
+        RawResp csv = sendRaw("GET", "/api/audit-logs/export?fromDate=2020-01-01&toDate=2035-01-01", adminToken);
+        assertThat(csv.status()).isEqualTo(200);
+        assertThat(csv.body()).startsWith("timestamp,actor,actorType,companyId,action,resourceType,resourceId,"
+                + "outcome,detail");
+        assertThat(csv.body()).contains("SALARY_RULE_UPDATE");
+    }
+
+    @Test
+    @DisplayName("purging the audit log is platform-only - a company ADMIN is forbidden, even for their own trail")
+    void purgeIsPlatformOnly() {
+        String adminToken = login("ADMIN01", PASSWORD);
+        Resp purge = send("DELETE", "/api/audit-logs?beforeDate=2035-01-01", null, adminToken);
+        assertThat(purge.status()).isEqualTo(403);
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     private record Resp(int status, JsonNode body) {
+    }
+
+    private record RawResp(int status, String body) {
+    }
+
+    private RawResp sendRaw(String method, String path, String bearerToken) {
+        try {
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:" + port() + path))
+                    .method(method, HttpRequest.BodyPublishers.noBody());
+            if (bearerToken != null) {
+                builder.header("Authorization", "Bearer " + bearerToken);
+            }
+            HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            return new RawResp(response.statusCode(), response.body());
+        } catch (Exception ex) {
+            throw new IllegalStateException(method + " " + path + " failed", ex);
+        }
     }
 
     private String login(String userId, String password) {

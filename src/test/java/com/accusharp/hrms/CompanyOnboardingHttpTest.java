@@ -183,6 +183,26 @@ class CompanyOnboardingHttpTest {
         assertThat(found).isTrue();
     }
 
+    @Test
+    @DisplayName("a platform owner can purge old audit rows, and the purge itself is recorded")
+    void platformCanPurgeAuditLog() {
+        String platformToken = login("owner1", PLATFORM_PASSWORD);
+        String setupBody = """
+                {"companyCode": "PURGECO", "companyName": "Purge Co", "companyEmail": "hr@purgeco.example",
+                 "adminUserId": "PURGECO-ADMIN", "adminEmployeeCode": "PC-ADMIN-1", "adminName": "Admin",
+                 "adminEmail": "admin@purgeco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
+        send("POST", "/api/companies/onboard", setupBody, platformToken);
+
+        Resp purge = send("DELETE", "/api/audit-logs?beforeDate=2099-01-01", null, platformToken);
+        assertThat(purge.status()).isEqualTo(200);
+        assertThat(purge.body().get("deleted").asLong()).isGreaterThan(0);
+
+        // Everything before the cutoff is gone; the purge event itself, written after, is not.
+        Resp logs = send("GET", "/api/audit-logs?limit=5", null, platformToken);
+        assertThat(logs.status()).isEqualTo(200);
+        assertThat(logs.body().get(0).get("action").asString()).isEqualTo("AUDIT_LOG_PURGE");
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     private record Resp(int status, JsonNode body) {

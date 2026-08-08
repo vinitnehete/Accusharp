@@ -137,12 +137,12 @@ public class PermissionSeeder {
         grants.put(PlatformRole.PLATFORM_OWNER.name(), EnumSet.of(
                 PermissionCode.COMPANY_CREATE, PermissionCode.COMPANY_READ,
                 PermissionCode.COMPANY_UPDATE, PermissionCode.COMPANY_DELETE,
-                PermissionCode.AUDIT_READ));
+                PermissionCode.AUDIT_READ, PermissionCode.AUDIT_MANAGE));
 
         grants.put(PlatformRole.PLATFORM_ADMIN.name(), EnumSet.of(
                 PermissionCode.COMPANY_CREATE, PermissionCode.COMPANY_READ,
                 PermissionCode.COMPANY_UPDATE, PermissionCode.COMPANY_DELETE,
-                PermissionCode.AUDIT_READ));
+                PermissionCode.AUDIT_READ, PermissionCode.AUDIT_MANAGE));
 
         rolePermissionRepository.deleteAll();
         for (Role role : Role.values()) {

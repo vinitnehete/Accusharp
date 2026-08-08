@@ -78,4 +78,61 @@ public class AuditService {
                         companyId, PageRequest.of(0, bounded)))
                 .orElseGet(() -> auditLogRepository.findAllByOrderByTimestampDesc(PageRequest.of(0, bounded)));
     }
+
+    /**
+     * Every entry in the window, not capped at 200 like {@link #recent} -
+     * for export, where silently truncating history would defeat the point.
+     * Same company scoping as every other read here.
+     */
+    @Transactional(readOnly = true)
+    public List<AuditLog> exportRange(Instant from, Instant to) {
+        return tenantContext.currentCompanyId()
+                .map(companyId -> auditLogRepository
+                        .findAllByCompanyIdAndTimestampBetweenOrderByTimestampDesc(companyId, from, to))
+                .orElseGet(() -> auditLogRepository.findAllByTimestampBetweenOrderByTimestampDesc(from, to));
+    }
+
+    /**
+     * Deletes every row older than {@code cutoff}, unscoped - gated by
+     * {@code AUDIT_MANAGE}, which is deliberately platform-only (see {@code
+     * PermissionCode}'s Javadoc): a company caller can read their own trail
+     * but never erase it, even the parts of it that are about their own
+     * actions. The purge itself is audited, in its own {@code
+     * REQUIRES_NEW} transaction, same as everything else here - so deleting
+     * old rows never erases the fact that a deletion happened.
+     */
+    @Transactional
+    public long purgeOlderThan(Instant cutoff) {
+        long deleted = auditLogRepository.deleteByTimestampBefore(cutoff);
+        record("AUDIT_LOG_PURGE", "AuditLog", null, AuditOutcome.SUCCESS,
+                "cutoff=" + cutoff + " deleted=" + deleted);
+        return deleted;
+    }
+
+    /** Spreadsheet-friendly export of {@link #exportRange}. */
+    @Transactional(readOnly = true)
+    public String renderCsv(Instant from, Instant to) {
+        StringBuilder csv = new StringBuilder(2048);
+        csv.append("timestamp,actor,actorType,companyId,action,resourceType,resourceId,outcome,detail\n");
+        for (AuditLog entry : exportRange(from, to)) {
+            csv.append(csvCell(entry.getTimestamp().toString())).append(',')
+                    .append(csvCell(entry.getActor())).append(',')
+                    .append(csvCell(entry.getActorType() == null ? null : entry.getActorType().name())).append(',')
+                    .append(entry.getCompanyId() == null ? "" : entry.getCompanyId()).append(',')
+                    .append(csvCell(entry.getAction())).append(',')
+                    .append(csvCell(entry.getResourceType())).append(',')
+                    .append(csvCell(entry.getResourceId())).append(',')
+                    .append(csvCell(entry.getOutcome().name())).append(',')
+                    .append(csvCell(entry.getDetail())).append('\n');
+        }
+        return csv.toString();
+    }
+
+    private String csvCell(String value) {
+        if (value == null) {
+            return "";
+        }
+        String cleaned = value.replace("\"", "\"\"");
+        return cleaned.contains(",") ? "\"" + cleaned + "\"" : cleaned;
+    }
 }
