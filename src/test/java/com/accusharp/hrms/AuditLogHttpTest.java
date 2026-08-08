@@ -69,6 +69,31 @@ class AuditLogHttpTest {
         assertThat(asHr.status()).isEqualTo(403);
     }
 
+    @Test
+    @DisplayName("a salary rule change is audited - Phase 10's extended coverage beyond login/employee/payroll")
+    void salaryRuleChangeIsAudited() {
+        String adminToken = login("ADMIN01", PASSWORD);
+
+        String update = """
+                {"basicDaPercent": 55, "hraPercent": 40, "conveyancePercent": 10, "educationPercent": 10,
+                 "pfPercent": 12, "esicPercent": 0.75, "esicWageCeiling": 21000,
+                 "ptUpperThreshold": 10001, "ptUpperAmount": 200, "ptLowerThreshold": 7501, "ptLowerAmount": 175,
+                 "dayWiseDaysInMonth": 26, "standardHoursPerDay": 8, "overtimeRateMultiplier": 1.0}""";
+        Resp updated = send("PUT", "/api/salary-rules", update, adminToken);
+        assertThat(updated.status()).isEqualTo(200);
+
+        Resp logs = send("GET", "/api/audit-logs?limit=10", null, adminToken);
+        assertThat(logs.status()).isEqualTo(200);
+        boolean found = false;
+        for (int i = 0; i < logs.body().size(); i++) {
+            if ("SALARY_RULE_UPDATE".equals(logs.body().get(i).get("action").asString())) {
+                found = true;
+                break;
+            }
+        }
+        assertThat(found).isTrue();
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     private record Resp(int status, JsonNode body) {

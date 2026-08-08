@@ -14,6 +14,7 @@ import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.entity.ShiftSchedule;
 import com.accusharp.hrms.enums.AttendanceRecordStatus;
 import com.accusharp.hrms.enums.AttendanceStatus;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.NotFoundException;
@@ -21,6 +22,7 @@ import com.accusharp.hrms.repository.DailyAttendanceRepository;
 import com.accusharp.hrms.repository.DeviceLogRepository;
 import com.accusharp.hrms.repository.MonthlyAttendanceSummaryRepository;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
+import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.HolidayService;
 import com.accusharp.hrms.service.calculation.AttendanceCalculationService;
@@ -85,6 +87,7 @@ public class AttendanceService {
     private final LopCalculationService lopCalculationService;
     private final HolidayService holidayService;
     private final EmployeeService employeeService;
+    private final AuditService auditService;
 
     // ---- generation --------------------------------------------------------
 
@@ -253,6 +256,8 @@ public class AttendanceService {
 
         log.info("attendance.correct userId={} date={} status={} by={}",
                 userId, date, saved.getStatus(), request.getUpdatedBy());
+        auditService.record("ATTENDANCE_CORRECT", "DailyAttendance", userId + " " + date,
+                AuditOutcome.SUCCESS, "status=" + saved.getStatus() + " remarks=" + request.getRemarks());
         return AttendanceRecordResponse.of(saved);
     }
 
@@ -305,7 +310,10 @@ public class AttendanceService {
         assertHrOrAdmin(actorId);
         employeeService.getEntityByUserId(userId);
         log.info("attendance.unlock userId={} month={} by={}", userId, month, actorId);
-        return setLocked(userId, month, false);
+        int updated = setLocked(userId, month, false);
+        auditService.record("ATTENDANCE_UNLOCK", "DailyAttendance", userId + " " + month,
+                AuditOutcome.SUCCESS, "daysUnlocked=" + updated);
+        return updated;
     }
 
     private int setLocked(String userId, YearMonth month, boolean locked) {

@@ -3,6 +3,7 @@ package com.accusharp.hrms.service;
 import com.accusharp.hrms.dto.SalaryRuleRequest;
 import com.accusharp.hrms.entity.Company;
 import com.accusharp.hrms.entity.SalaryRule;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.SalaryRuleRepository;
 import com.accusharp.hrms.security.TenantContext;
@@ -27,6 +28,7 @@ public class SalaryRuleService {
     private final SalaryRuleRepository salaryRuleRepository;
     private final CompanyRepository companyRepository;
     private final TenantContext tenantContext;
+    private final AuditService auditService;
 
     /** The caller's own company's rule if one exists, else the global default. */
     @Transactional
@@ -56,7 +58,11 @@ public class SalaryRuleService {
                 .map(this::getOrCreateForCompany)
                 .orElseGet(this::globalDefault);
         apply(rule, request);
-        return salaryRuleRepository.save(rule);
+        SalaryRule saved = salaryRuleRepository.save(rule);
+        auditService.record("SALARY_RULE_UPDATE", "SalaryRule",
+                saved.getCompany() == null ? "global-default" : String.valueOf(saved.getCompany().getId()),
+                AuditOutcome.SUCCESS, "basicDaPercent=" + saved.getBasicDaPercent());
+        return saved;
     }
 
     private SalaryRule ruleForCompanyOrDefault(Long companyId) {

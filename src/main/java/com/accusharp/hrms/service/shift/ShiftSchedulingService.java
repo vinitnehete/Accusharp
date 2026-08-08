@@ -10,11 +10,13 @@ import com.accusharp.hrms.dto.ShiftSwapRequest;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.entity.ShiftSchedule;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
 import com.accusharp.hrms.security.TenantContext;
+import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.HolidayService;
 import lombok.RequiredArgsConstructor;
@@ -51,6 +53,7 @@ public class ShiftSchedulingService {
     private final EmployeeService employeeService;
     private final HolidayService holidayService;
     private final TenantContext tenantContext;
+    private final AuditService auditService;
 
     // ---- single assignment -------------------------------------------------
 
@@ -74,6 +77,8 @@ public class ShiftSchedulingService {
         ShiftSchedule saved = shiftScheduleRepository.save(schedule);
         log.info("shift.assign userId={} date={} shift={}", saved.getUserId(), saved.getShiftDate(),
                 shift.getShiftCode());
+        auditService.record("SHIFT_SCHEDULE_ASSIGN", "ShiftSchedule", saved.getUserId() + " " + saved.getShiftDate(),
+                AuditOutcome.SUCCESS, "shift=" + shift.getShiftCode());
         return toResponse(saved);
     }
 
@@ -125,7 +130,13 @@ public class ShiftSchedulingService {
 
         log.info("shift.bulk-assign employees={} days={} shift={}", request.getUserIds().size(),
                 toSave.size(), shift.getShiftCode());
-        return shiftScheduleRepository.saveAll(toSave).stream().map(this::toResponse).toList();
+        List<ShiftScheduleResponse> saved = shiftScheduleRepository.saveAll(toSave).stream()
+                .map(this::toResponse).toList();
+        auditService.record("SHIFT_SCHEDULE_BULK_ASSIGN", "ShiftSchedule",
+                request.getFromDate() + ".." + request.getToDate(), AuditOutcome.SUCCESS,
+                "employees=" + request.getUserIds().size() + " days=" + toSave.size()
+                        + " shift=" + shift.getShiftCode());
+        return saved;
     }
 
     // ---- auto rotation -----------------------------------------------------
@@ -180,7 +191,12 @@ public class ShiftSchedulingService {
             }
         }
 
-        return shiftScheduleRepository.saveAll(toSave).stream().map(this::toResponse).toList();
+        List<ShiftScheduleResponse> saved = shiftScheduleRepository.saveAll(toSave).stream()
+                .map(this::toResponse).toList();
+        auditService.record("SHIFT_SCHEDULE_AUTO_ROTATE", "ShiftSchedule",
+                request.getFromDate() + ".." + request.getToDate(), AuditOutcome.SUCCESS,
+                "employees=" + request.getUserIds().size() + " days=" + toSave.size());
+        return saved;
     }
 
     // ---- copy previous month ----------------------------------------------
@@ -230,7 +246,11 @@ public class ShiftSchedulingService {
             }
         }
 
-        return shiftScheduleRepository.saveAll(toSave).stream().map(this::toResponse).toList();
+        List<ShiftScheduleResponse> saved = shiftScheduleRepository.saveAll(toSave).stream()
+                .map(this::toResponse).toList();
+        auditService.record("SHIFT_SCHEDULE_COPY_MONTH", "ShiftSchedule", source + " -> " + target,
+                AuditOutcome.SUCCESS, "employees=" + request.getUserIds().size() + " days=" + toSave.size());
+        return saved;
     }
 
     // ---- holiday override --------------------------------------------------
@@ -270,6 +290,8 @@ public class ShiftSchedulingService {
                 .toList();
         shiftScheduleRepository.saveAll(affected);
         log.info("shift.holiday-override month={} updated={}", month, affected.size());
+        auditService.record("SHIFT_SCHEDULE_HOLIDAY_OVERRIDE", "ShiftSchedule", month.toString(),
+                AuditOutcome.SUCCESS, "updated=" + affected.size());
         return affected.size();
     }
 
@@ -294,7 +316,11 @@ public class ShiftSchedulingService {
         second.setShift(firstShift);
         second.setWeekOff(firstWeekOff);
 
-        return shiftScheduleRepository.saveAll(List.of(first, second)).stream().map(this::toResponse).toList();
+        List<ShiftScheduleResponse> saved = shiftScheduleRepository.saveAll(List.of(first, second)).stream()
+                .map(this::toResponse).toList();
+        auditService.record("SHIFT_SCHEDULE_SWAP", "ShiftSchedule", request.getShiftDate().toString(),
+                AuditOutcome.SUCCESS, "first=" + request.getFirstUserId() + " second=" + request.getSecondUserId());
+        return saved;
     }
 
     // ---- reads -------------------------------------------------------------
@@ -350,6 +376,8 @@ public class ShiftSchedulingService {
         employeeService.getEntityByUserId(userId);
         assertMaySchedule(assignedBy, userId);
         shiftScheduleRepository.deleteByUserIdAndShiftDateBetween(userId, fromDate, toDate);
+        auditService.record("SHIFT_SCHEDULE_DELETE_RANGE", "ShiftSchedule", userId,
+                AuditOutcome.SUCCESS, "range=" + fromDate + ".." + toDate);
     }
 
     // ---- helpers -----------------------------------------------------------

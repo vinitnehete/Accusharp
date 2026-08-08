@@ -5,12 +5,14 @@ import com.accusharp.hrms.dto.LeaveRequestPayload;
 import com.accusharp.hrms.dto.LeaveResponse;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.LeaveRequest;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.LeaveDuration;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.LeaveRequestRepository;
+import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +43,7 @@ public class LeaveService {
     private final LeaveBalanceService leaveBalanceService;
     private final LeaveCalculationService leaveCalculationService;
     private final EmployeeService employeeService;
+    private final AuditService auditService;
 
     @Transactional
     public LeaveResponse apply(LeaveRequestPayload payload) {
@@ -97,7 +100,10 @@ public class LeaveService {
         request.setStatus(LeaveStatus.SUPERVISOR_APPROVED);
         request.setApproverId(decision.getApproverId());
         request.setApprovalComments(decision.getComments());
-        return toResponse(leaveRequestRepository.save(request));
+        LeaveResponse response = toResponse(leaveRequestRepository.save(request));
+        auditService.record("LEAVE_SUPERVISOR_APPROVE", "LeaveRequest", String.valueOf(id),
+                AuditOutcome.SUCCESS, "userId=" + request.getUserId());
+        return response;
     }
 
     /** Step two: HR gives final approval, which is what consumes balance. */
@@ -119,7 +125,10 @@ public class LeaveService {
         request.setDecidedAt(Instant.now());
 
         log.info("leave.approve id={} userId={} days={}", id, request.getUserId(), request.getTotalDays());
-        return toResponse(leaveRequestRepository.save(request));
+        LeaveResponse response = toResponse(leaveRequestRepository.save(request));
+        auditService.record("LEAVE_APPROVE", "LeaveRequest", String.valueOf(id), AuditOutcome.SUCCESS,
+                "userId=" + request.getUserId() + " days=" + request.getTotalDays());
+        return response;
     }
 
     /** Rejection is a dead end - balance is untouched. */
@@ -134,7 +143,10 @@ public class LeaveService {
         request.setApproverId(decision.getApproverId());
         request.setApprovalComments(decision.getComments());
         request.setDecidedAt(Instant.now());
-        return toResponse(leaveRequestRepository.save(request));
+        LeaveResponse response = toResponse(leaveRequestRepository.save(request));
+        auditService.record("LEAVE_REJECT", "LeaveRequest", String.valueOf(id), AuditOutcome.SUCCESS,
+                "userId=" + request.getUserId());
+        return response;
     }
 
     /** Cancelling an approved leave gives the days back. */
@@ -153,7 +165,10 @@ public class LeaveService {
         request.setApproverId(decision.getApproverId());
         request.setApprovalComments(decision.getComments());
         request.setDecidedAt(Instant.now());
-        return toResponse(leaveRequestRepository.save(request));
+        LeaveResponse response = toResponse(leaveRequestRepository.save(request));
+        auditService.record("LEAVE_CANCEL", "LeaveRequest", String.valueOf(id), AuditOutcome.SUCCESS,
+                "userId=" + request.getUserId());
+        return response;
     }
 
     @Transactional(readOnly = true)
