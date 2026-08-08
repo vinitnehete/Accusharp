@@ -329,6 +329,7 @@ public class AttendanceService {
     @Transactional(readOnly = true)
     public List<DailyAttendanceResponse> getDailyAttendance(String userId, LocalDate fromDate, LocalDate toDate) {
         Employee employee = employeeService.getEntityByUserId(userId);
+        employeeService.assertSelfOrManages(userId);
         if (fromDate.isAfter(toDate)) {
             throw new BusinessRuleException("fromDate must be on or before toDate");
         }
@@ -360,6 +361,7 @@ public class AttendanceService {
     @Transactional(readOnly = true)
     public MonthlyAttendanceResponse getMonthlyAttendance(String userId, YearMonth month) {
         Employee employee = employeeService.getEntityByUserId(userId);
+        employeeService.assertSelfOrManages(userId);
         List<DailyAttendance> stored = storedDays(userId, month);
 
         return stored.isEmpty() ? previewMonth(employee, month) : aggregateStored(employee, month, stored);
@@ -369,6 +371,7 @@ public class AttendanceService {
     @Transactional(readOnly = true)
     public List<AttendanceRecordResponse> getRecords(String userId, YearMonth month) {
         employeeService.getEntityByUserId(userId);
+        employeeService.assertSelfOrManages(userId);
         return storedDays(userId, month).stream().map(AttendanceRecordResponse::of).toList();
     }
 

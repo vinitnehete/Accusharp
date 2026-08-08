@@ -58,7 +58,7 @@ public class EmployeeController {
     @PreAuthorize("@authz.can('EMPLOYEE_READ')")
     @GetMapping
     public List<EmployeeResponse> getAll() {
-        return employeeService.getAll();
+        return employeeService.getVisible();
     }
 
     /** The supervisor's team - the basis of every approval flow. */

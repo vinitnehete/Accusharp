@@ -5,6 +5,7 @@ import com.accusharp.hrms.dto.EmployeeResponse;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.SalaryRule;
 import com.accusharp.hrms.enums.AuditOutcome;
+import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
@@ -13,6 +14,7 @@ import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.security.TenantContext;
+import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -93,24 +95,102 @@ public class EmployeeService {
 
     @Transactional(readOnly = true)
     public EmployeeResponse getById(Long id) {
-        return employeeMapper.toResponse(getEntityById(id));
+        Employee employee = getEntityById(id);
+        assertSelfOrManages(employee.getUserId());
+        return employeeMapper.toResponse(employee);
     }
 
     @Transactional(readOnly = true)
     public EmployeeResponse getByUserId(String userId) {
-        return employeeMapper.toResponse(getEntityByUserId(userId));
+        Employee employee = getEntityByUserId(userId);
+        assertSelfOrManages(employee.getUserId());
+        return employeeMapper.toResponse(employee);
     }
 
+    /**
+     * Company-wide, no self-service restriction - used only by {@code
+     * ReportController.employeeReport()}, which (like every {@code
+     * REPORT_READ} endpoint) intentionally stays company-wide for
+     * SUPERVISOR/HR/ADMIN. See {@link #getVisible()} for the
+     * self-service-restricted list {@code EmployeeController} actually uses.
+     */
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getAll() {
-        return employeeMapper.toResponses(employeeRepository.findAll());
+        return employeeMapper.toResponses(getAllEntities());
     }
 
-    /** The team reporting to a supervisor - the basis of every approval flow. */
+    /**
+     * The employee list a caller may browse directly - unlike {@link
+     * #getAll()}, restricted per SECURITY.md's "view only my own data": an
+     * EMPLOYEE sees only themselves, a SUPERVISOR sees themselves plus their
+     * direct reports, ADMIN/HR see the whole company.
+     */
+    @Transactional(readOnly = true)
+    public List<EmployeeResponse> getVisible() {
+        return employeeMapper.toResponses(getAllEntities().stream()
+                .filter(employee -> isSelfOrManages(employee.getUserId()))
+                .toList());
+    }
+
+    /**
+     * Every employee of the caller's own company, any {@link RecordStatus} -
+     * unlike {@link #getActiveEntities()}, deactivated employees are
+     * included, since payroll/report history for someone no longer active
+     * still needs to resolve for their own company. Scoped the same way as
+     * {@link #getActiveEntities()}: everything, when there is no company in
+     * context.
+     */
+    @Transactional(readOnly = true)
+    public List<Employee> getAllEntities() {
+        return tenantContext.currentCompanyId()
+                .map(employeeRepository::findByCompanyId)
+                .orElseGet(employeeRepository::findAll);
+    }
+
+    /**
+     * The team reporting to a supervisor - the basis of every approval flow.
+     * Self-service restricted the same way as {@link #getVisible()}: only
+     * that supervisor themselves, or ADMIN/HR, may ask for it - otherwise
+     * any EMPLOYEE could bulk-read any team's data by naming its
+     * supervisor's userId.
+     */
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getTeamOf(String supervisorUserId) {
         getEntityByUserId(supervisorUserId);
+        assertSelfOrManages(supervisorUserId);
         return employeeMapper.toResponses(employeeRepository.findBySupervisorUserId(supervisorUserId));
+    }
+
+    /**
+     * The employee set a caller may view in bulk-roster/planner-style
+     * endpoints. Unlike {@link #getTeamOf}, the requested {@code
+     * supervisorUserId} is a hint, not a hard requirement to match the
+     * caller's identity - ADMIN/HR may ask for any team or omit it for the
+     * whole company (unchanged from before self-service scoping existed); a
+     * SUPERVISOR's request is always silently forced to their own team,
+     * same pattern as {@code companyId} being forced server-side elsewhere
+     * in this app; a plain EMPLOYEE always gets a planner of exactly
+     * themselves, regardless of what was requested.
+     */
+    @Transactional(readOnly = true)
+    public List<Employee> plannerScope(String requestedSupervisorUserId) {
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> switch (Role.valueOf(principal.getRole())) {
+                    case ADMIN, HR -> teamOrCompany(requestedSupervisorUserId);
+                    case SUPERVISOR -> teamOrCompany(principal.getUsername());
+                    case EMPLOYEE -> List.of(getEntityByUserId(principal.getUsername()));
+                })
+                .orElseGet(() -> teamOrCompany(requestedSupervisorUserId));
+    }
+
+    private List<Employee> teamOrCompany(String supervisorUserId) {
+        return supervisorUserId == null
+                ? getActiveEntities()
+                : getActiveEntities().stream()
+                        .filter(employee -> employee.getSupervisor() != null
+                                && supervisorUserId.equals(employee.getSupervisor().getUserId()))
+                        .toList();
     }
 
     @Transactional
@@ -191,6 +271,49 @@ public class EmployeeService {
         Employee employee = getEntityByUserId(userId);
         return employee.getSupervisor() != null
                 && employee.getSupervisor().getUserId().equals(supervisorUserId);
+    }
+
+    /**
+     * "View only my own data" (SECURITY.md): the caller must be the target
+     * themselves, a SUPERVISOR who directly supervises the target, or
+     * ADMIN/HR (unrestricted within their own company - the tenant check
+     * that runs upstream of every call site already covers that axis). 404,
+     * not 403, on failure - same rationale as {@link #assertAccessible}: a
+     * 403 would confirm the record exists, just not to this caller.
+     *
+     * <p>No-ops under the same three conditions {@link #assertAccessible}
+     * no-ops under (no principal, a platform principal, or - moot here,
+     * since a principal always has its own username - no company of its
+     * own), so every existing service-level test that calls services
+     * directly with no {@code SecurityContext} is unaffected.
+     */
+    public void assertSelfOrManages(String targetUserId) {
+        tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .ifPresent(principal -> {
+                    if (!isVisibleTo(principal, targetUserId)) {
+                        throw NotFoundException.of("Employee", "userId " + targetUserId);
+                    }
+                });
+    }
+
+    /** Non-throwing form of {@link #assertSelfOrManages}, for filtering a list rather than rejecting a single lookup. */
+    public boolean isSelfOrManages(String targetUserId) {
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> isVisibleTo(principal, targetUserId))
+                .orElse(true);
+    }
+
+    private boolean isVisibleTo(UserPrincipal principal, String targetUserId) {
+        if (principal.getUsername().equals(targetUserId)) {
+            return true;
+        }
+        Role role = Role.valueOf(principal.getRole());
+        if (role == Role.ADMIN || role == Role.HR) {
+            return true;
+        }
+        return role == Role.SUPERVISOR && supervises(principal.getUsername(), targetUserId);
     }
 
     private void recalculate(Employee employee) {

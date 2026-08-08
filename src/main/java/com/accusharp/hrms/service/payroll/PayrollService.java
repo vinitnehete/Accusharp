@@ -27,6 +27,8 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.YearMonth;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * The final aggregation layer. Payroll consumes employee master data,
@@ -61,9 +63,18 @@ public class PayrollService {
     private final LopCalculationService lopCalculationService;
     private final AuditService auditService;
 
-    /** Generates the period once; a second call is a conflict. */
+    /**
+     * Generates the period once; a second call is a conflict.
+     *
+     * <p>Tenant-checks {@code employeeId} before the existence check below,
+     * not after - otherwise a cross-company id's 409-vs-404 would leak
+     * whether that other company already generated payroll for this period,
+     * a one-bit information leak {@code build()}'s own (later) check
+     * wouldn't have prevented.
+     */
     @Transactional
     public Payroll generate(PayrollRequest request) {
+        employeeService.getEntityByUserId(request.getEmployeeId());
         payrollRepository.findByEmployeeIdAndMonthAndYearAndStatus(
                         request.getEmployeeId(), request.getMonth(), request.getYear(), PayrollStatus.GENERATED)
                 .ifPresent(existing -> {
@@ -77,9 +88,17 @@ public class PayrollService {
     /**
      * Recomputes the period from current data. The previous revision is kept
      * and marked superseded rather than edited.
+     *
+     * <p>Tenant-checks {@code employeeId} before touching {@code current} -
+     * otherwise a cross-company id would get marked {@link
+     * PayrollStatus#SUPERSEDED} and persisted before {@code build()}'s own
+     * check ever ran, saved from actually happening only by this whole
+     * method being one transaction that then rolls back - correct by
+     * accident, not by design.
      */
     @Transactional
     public Payroll regenerate(PayrollRequest request) {
+        employeeService.getEntityByUserId(request.getEmployeeId());
         Payroll current = payrollRepository.findByEmployeeIdAndMonthAndYearAndStatus(
                         request.getEmployeeId(), request.getMonth(), request.getYear(), PayrollStatus.GENERATED)
                 .orElseThrow(() -> NotFoundException.of("Payroll",
@@ -121,12 +140,14 @@ public class PayrollService {
     public Payroll getById(Long id) {
         Payroll payroll = payrollRepository.findById(id).orElseThrow(() -> NotFoundException.of("Payroll", id));
         employeeService.getEntityByUserId(payroll.getEmployeeId());
+        employeeService.assertSelfOrManages(payroll.getEmployeeId());
         return payroll;
     }
 
     @Transactional(readOnly = true)
     public Payroll getCurrent(String employeeId, int month, int year) {
         employeeService.getEntityByUserId(employeeId);
+        employeeService.assertSelfOrManages(employeeId);
         return payrollRepository.findByEmployeeIdAndMonthAndYearAndStatus(
                         employeeId, month, year, PayrollStatus.GENERATED)
                 .orElseThrow(() -> NotFoundException.of("Payroll", employeeId + " " + month + "/" + year));
@@ -135,18 +156,52 @@ public class PayrollService {
     @Transactional(readOnly = true)
     public List<Payroll> getRevisions(String employeeId, int month, int year) {
         employeeService.getEntityByUserId(employeeId);
+        employeeService.assertSelfOrManages(employeeId);
         return payrollRepository.findAllByEmployeeIdAndMonthAndYearOrderByRevisionDesc(employeeId, month, year);
     }
 
     @Transactional(readOnly = true)
     public List<Payroll> getHistory(String employeeId) {
         employeeService.getEntityByUserId(employeeId);
+        employeeService.assertSelfOrManages(employeeId);
         return payrollRepository.findAllByEmployeeIdOrderByYearDescMonthDesc(employeeId);
     }
 
+    /**
+     * Scoped to the caller's own company - {@code Payroll} has no
+     * {@code company_id} column of its own (only a denormalized
+     * {@code companyName} string), so this filters by the caller's
+     * company's employee {@code userId}s instead, via {@link
+     * EmployeeService#getAllEntities()} rather than {@link
+     * EmployeeService#getActiveEntities()}: payroll history for a
+     * since-deactivated employee must stay visible to their own company's
+     * reports.
+     */
     @Transactional(readOnly = true)
     public List<Payroll> getPeriod(int month, int year) {
-        return payrollRepository.findAllByMonthAndYearAndStatus(month, year, PayrollStatus.GENERATED);
+        List<Payroll> period = payrollRepository.findAllByMonthAndYearAndStatus(month, year, PayrollStatus.GENERATED);
+        Set<String> companyUserIds = employeeService.getAllEntities().stream()
+                .map(Employee::getUserId)
+                .collect(Collectors.toSet());
+        return period.stream().filter(payroll -> companyUserIds.contains(payroll.getEmployeeId())).toList();
+    }
+
+    /**
+     * Same company scoping as {@link #getPeriod}, plus self-service
+     * restriction on top - for raw individual-record list/export endpoints
+     * ({@code PayrollController.getPeriod}, {@code SalarySlipService}'s
+     * period methods), not for {@code ReportService}'s aggregate reports,
+     * which deliberately stay company-wide for SUPERVISOR/HR/ADMIN (see
+     * SECURITY.md's self-service scoping note for why the two are treated
+     * differently) - so {@link #getPeriod} itself is intentionally left
+     * unrestricted and every {@code ReportService} caller keeps using it
+     * directly.
+     */
+    @Transactional(readOnly = true)
+    public List<Payroll> getPeriodForCaller(int month, int year) {
+        return getPeriod(month, year).stream()
+                .filter(payroll -> employeeService.isSelfOrManages(payroll.getEmployeeId()))
+                .toList();
     }
 
     // ---- the calculation ---------------------------------------------------

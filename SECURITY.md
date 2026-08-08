@@ -4,7 +4,11 @@ This covers **Phase 1** (authentication: login, password hashing, JWT),
 **Phase 2** (authorization: permissions, `@PreAuthorize` on every business
 endpoint), **Phase 3** (multi-tenant isolation: a company cannot reach
 another company's data by id), **Phase 4** (platform company onboarding),
-and **Phase 5** (audit logging) of a multi-phase security rollout. Read this
+**Phase 5** (audit logging), **Phase 6** (per-company masters and
+report/dashboard scoping), **Phase 7** (a full re-audit of every remaining
+service, which found and fixed four more cross-company gaps), and **Phase
+8** ("view only my own data" self-service scoping) of a multi-phase
+security rollout. Read this
 alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
 
@@ -295,12 +299,251 @@ would be self-auditing.
 **Never put a password, token, or secret in an audit `detail` field** - it
 is stored in plain text and returned verbatim by the read endpoint.
 
-## Not yet built (next phases)
+## Multi-tenant masters and reports (Phase 6)
 
-See also [SECURITY_AUDIT.md](SECURITY_AUDIT.md#open-findings-not-fixed) for
-the two items there with an assigned severity and a recommended interim
-mitigation (`Department`/`Designation`/`Shift` tenant isolation, and
-list/report endpoint scoping) - both restated below for completeness.
+Closes the two findings [SECURITY_AUDIT.md](SECURITY_AUDIT.md) left open
+after the Phase 5 audit - both needed a decision Phase 5 didn't have
+authority to make alone; see that file's history for why they were left
+open rather than rushed.
+
+### `Department`, `Designation`, `Shift` are now per-company
+
+Each of the three now carries a nullable `company` (`@ManyToOne`,
+`@JsonIgnore` - same pattern as `SalaryRule.company`/`Holiday.company`), and
+their single-column unique constraint (`department_code` etc.) became a
+composite `(company_id, code)` one, mirroring `Holiday`'s shape.
+
+Unlike `SalaryRule` - a singleton settings row every company falls back to
+until it customizes its own - these three are *lists*, so `company = null`
+means something different here: a **shared, read-only-to-companies**
+catalog (today, exactly `DataSeeder`'s standard four shifts and demo
+departments/designations), not a "default until overridden." Concretely:
+
+- **Read** (`getById`/`getAll`): a company sees its own rows plus every
+  shared row. A cross-company row (belonging to a *different* company, not
+  the shared catalog) 404s, same as every other tenant check in this app.
+- **Write** (`create`/`update`/`delete`): only the caller's own company's
+  rows are writable - a company can never edit or delete a shared row,
+  closing the exact gap [SECURITY_AUDIT.md](SECURITY_AUDIT.md) flagged: an
+  in-place edit to a shared `Shift`'s times used to be completely
+  unguarded and would have silently corrupted every company's attendance
+  the next time it was calculated. `create` still checks for a code
+  collision against both the caller's own rows and the shared catalog, so a
+  company can't shadow a shared code with a private one of the same name.
+- `EmployeeService.create`/`update` already resolved `departmentId`/
+  `designationId` through `DepartmentService.getById`/
+  `DesignationService.getById` - so the moment those carry the tenant check,
+  an employee can no longer be assigned another company's private
+  department or designation, with zero changes to `EmployeeService` itself.
+  Same choke-point-inheritance pattern Phase 3 established.
+- `ShiftService.getByCode` gained a `companyId` parameter (mirrors
+  `HolidayService.mandatoryHolidayDates`): the caller's own company's shift
+  with that code, falling back to the shared catalog. `ShiftSchedulingService`
+  threads the same `companyId` it already computed for holiday resolution
+  through to this too.
+
+**Schema note:** `ddl-auto=update` adds the new `company_id` column to an
+existing database automatically, but cannot drop the old single-column
+unique index - see
+[`docs/migrations/2026-08-08-per-company-masters.sql`](docs/migrations/2026-08-08-per-company-masters.sql)
+for the manual `ALTER TABLE` steps any pre-Phase-6 database needs (not
+required for a fresh install or the test suite, which build the schema from
+the entities directly).
+
+**Proof:** `TenantIsolationHttpTest.departmentCrossTenantAccessIsRejected`,
+`.shiftCrossTenantEditIsRejected`.
+
+### List/report endpoints stop leaking cross-company data
+
+`EmployeeService.getAll()` (new `getAllEntities()`, the same
+`tenantContext.currentCompanyId()`-scoped shape as `getActiveEntities()` but
+without the active-only filter - deactivated employees' payroll history must
+stay visible to their own company) and `PayrollService.getPeriod()` (filters
+by the caller's company's employee `userId`s, since `Payroll` has no
+`company_id` column of its own) are now scoped. Every `ReportService` method
+that calls `payrollService.getPeriod` (`payrollReport`, `pfReport`,
+`professionalTaxReport`, `esicReport`, `departmentPayrollReport`,
+`companyPayrollReport`) inherited the fix for free, the same
+choke-point pattern `EmployeeService.getEntityById` gave the rest of this
+app in Phase 3.
+
+`DashboardService` had six separate unscoped spots - fixed by reusing data
+the method already had scoped rather than adding new queries: employee and
+payroll counts now come from the already-scoped `active` list and
+`PayrollService.getPeriod` (replacing direct `PayrollRepository` calls
+entirely), and pending-leave counts, today's-leave, leave-usage, birthdays
+and anniversaries are now filtered against the caller's company's employee
+`userId`s before being counted or returned.
+
+**Proof:** `TenantIsolationHttpTest.payrollReportIsScopedPerCompany`.
+
+## Full-surface re-audit (Phase 7)
+
+After Phase 6, every service and controller in the app was re-audited from
+scratch (not by re-reading this file) specifically for cross-company leaks
+and, separately, for "does a caller need to own the record it's touching."
+Four real cross-company gaps were found and fixed; a full inventory of the
+remaining, larger "view only my own data" intra-company gap is now recorded
+below for the next phase to close.
+
+### `ShiftSchedulingService.deleteRange` had no tenant or team check at all
+
+Unlike every other mutating method in the class, `deleteRange` never
+resolved `userId` through `EmployeeService` and never called
+`assertMaySchedule`. Any HR/ADMIN/SUPERVISOR in any company could delete
+another company's employee's shift schedule for an arbitrary date range -
+and a SUPERVISOR could do it outside their own team too, bypassing the
+"own team only" rule every sibling method enforces. Fixed by adding both
+checks, matching `assign`/`assignBulk`/`autoRotate`/`copyMonth`/`swap`
+exactly; `assignedBy` is now threaded through
+`DELETE /api/shift-schedules/{userId}` the same way it already was for
+every `POST` in this controller.
+
+### `LeaveBalanceService.setQuota` had no tenant check anywhere in its call chain
+
+`getOrCreate` is a raw, unscoped repository lookup by `userId`; every other
+caller of it (`getBalances`, `consume`, `restore`) is reached only after an
+upstream tenant check already ran, but `setQuota` had none of its own. Any
+HR/ADMIN could permanently overwrite another company's employee's leave
+quota via `PUT /api/leave-balances/{userId}`. Fixed with an
+`employeeService.getEntityByUserId(userId)` check, matching `getBalances`.
+
+### Two "mutate-then-check" ordering gaps, hardened
+
+`LeaveService.approve/reject/cancel/supervisorApprove` (the ADMIN/HR branch)
+and `PayrollService.regenerate` all resolved and mutated their target
+record *before* tenant-checking it - the check only ever ran at the very
+end (inside `toResponse()`/`build()`), by which point a balance had already
+been consumed/restored or a payroll row already marked `SUPERSEDED` and
+saved. This was not independently exploitable - each method is one
+`@Transactional` block, and the terminal `NotFoundException` rolled the
+whole thing back - but it was correct by accident (dependent on default
+rollback-on-unchecked-exception) rather than by the checked-then-mutate
+choke-point pattern used everywhere else. Both now check first,
+unconditionally, before touching anything: `LeaveService` via a new
+`assertTargetAccessible` helper called first in all four decision methods,
+`PayrollService.regenerate` via `employeeService.getEntityByUserId` as its
+first line.
+
+### `PayrollService.generate` leaked one bit cross-company via 409 vs 404
+
+The "already generated this period" existence check ran *before* the
+tenant check inside `build()`, so a cross-company `employeeId` that already
+had payroll generated got a distinguishable `409` instead of the `404`
+every other cross-company attempt gets - confirming a fact about another
+company's payroll state. Fixed by moving the tenant check to the top of
+`generate()`, before the existence check.
+
+**Proof:** `TenantIsolationHttpTest.shiftScheduleDeleteRangeCrossTenantIsRejected`,
+`.leaveBalanceSetQuotaCrossTenantIsRejected`, `.leaveDecisionCrossTenantIsRejected`,
+`.payrollGenerateCrossTenantIsRejected`.
+
+### What Phase 7 also confirmed clean
+
+Every other Phase 1-6 fix was re-verified intact with no missed call site:
+`Employee`/`Company`/`Department`/`Designation`/`Shift`/`Holiday`/`SalaryRule`/
+`AuditLog` access, `CompanyOnboardingService`, every `AttendanceService` and
+remaining `ShiftSchedulingService` method, every `ReportService`/
+`DashboardService` method, and `SalarySlipService` (routes entirely through
+the now-scoped `PayrollService`). JWT-embedded `companyId`/`role` are
+trusted for the access token's life with no DB re-check by design (same
+short-expiry tradeoff already documented for disabled/locked accounts); a
+refresh cycle re-fetches fresh from the database and self-heals.
+
+### The bigger remaining gap: "view only my own data"
+
+Confirmed and catalogued, not fixed in this phase - see [Not yet
+built](#not-yet-built-next-phases) below. In short: `EMPLOYEE_READ`,
+`ATTENDANCE_READ`, `SHIFT_SCHEDULE_READ`, `LEAVE_READ`,
+`LEAVE_BALANCE_READ`, and `SALARY_SLIP_READ` are all granted to plain
+`Role.EMPLOYEE`, and none of the methods they gate restrict the target to
+the caller's own record (or, for `SUPERVISOR`, their own team). Widest
+blast radius: `SalarySlipController` (any employee can read or bulk-export
+any coworker's full payslip) and `EmployeeController.getTeamOf` (any
+employee can bulk-read a whole team's compensation by naming any
+`supervisorUserId`). This needs a product decision on shape, not just code
+- see the next-phases entry.
+
+## "View only my own data" self-service scoping (Phase 8)
+
+Closes the gap Phase 7 catalogued but deliberately didn't fix without a
+product decision. Confirmed shape:
+
+- **Plain `EMPLOYEE`**: sees only their own record - no coworker directory,
+  no other employee's attendance, leave, leave balance, salary slip, or
+  shift roster, by id or by list.
+- **`SUPERVISOR`**: sees themselves plus their own direct reports for the
+  same set of endpoints - not the whole company.
+- **`ADMIN`/`HR`**: unrestricted within their own company, unchanged.
+- **`ReportService`/`DashboardService` (`REPORT_READ`/`DASHBOARD_READ`)
+  deliberately excluded**: these stay company-wide for SUPERVISOR/HR/ADMIN
+  exactly as before - they're aggregate reports, not individual-record
+  access, and restricting them wasn't part of what this phase was asked to
+  fix.
+
+### The mechanism: one pair of methods on `EmployeeService`
+
+`assertSelfOrManages(targetUserId)` (throws, 404 not 403 - same rationale
+as `assertAccessible`) and `isSelfOrManages(targetUserId)` (non-throwing,
+for filtering a list) both resolve to: the caller is the target themselves,
+or a `SUPERVISOR` who directly supervises the target (via the existing
+`supervises()` check already used for scheduling/approvals), or `ADMIN`/HR.
+No-ops under the same conditions `assertAccessible` no-ops under (no
+principal, a platform principal) - so every existing service-level test
+that calls services directly with no `SecurityContext` is unaffected; all
+80 pre-existing tests passed unchanged.
+
+Every single-record read added one line right after the tenant check it
+already had: `AttendanceService` (`getDailyAttendance`/
+`getMonthlyAttendance`/`getRecords`), `ShiftSchedulingService.getRoster`,
+`LeaveBalanceService.getBalances`, `PayrollService` (`getById`/
+`getCurrent`/`getRevisions`/`getHistory`), and `EmployeeService`
+(`getById`/`getByUserId`). `LeaveService` needed only one change, in
+`toResponse()` - every read method (`getById`, `getHistory`,
+`getPendingFor`, `getByStatus`, `getCalendar`) already funnels through it,
+and the existing `toResponseIfAccessible` filter-not-propagate wrapper
+(Phase 3) already turns the resulting `NotFoundException` into "drop this
+row" for the list endpoints, for free.
+
+### List/bulk endpoints needed their own logic, not just the one-liner
+
+- `EmployeeService.getVisible()` (new) - the self-service-restricted list
+  `EmployeeController.getAll()` now calls, filtering `getAllEntities()` by
+  `isSelfOrManages`. Deliberately **not** the same method as
+  `EmployeeService.getAll()`, which `ReportController.employeeReport()`
+  still calls unrestricted - see the reports exclusion above.
+- `EmployeeService.getTeamOf` gained `assertSelfOrManages(supervisorUserId)`
+  - only that supervisor, or ADMIN/HR, may fetch a team roster.
+- `EmployeeService.plannerScope(requestedSupervisorUserId)` (new) replaces
+  the ad-hoc filter `ShiftSchedulingService.getMonthlyPlanner` used to build
+  inline: the requested `supervisorUserId` is trusted as-is only for
+  ADMIN/HR (unchanged behavior); a `SUPERVISOR`'s request is silently
+  forced to their own team regardless of what was asked for (same
+  overwrite-not-reject pattern as `companyId` elsewhere in this app); a
+  plain `EMPLOYEE` always gets a planner of exactly themselves. Before this
+  fix, omitting `supervisorUserId` entirely handed back the whole company's
+  roster to any caller.
+- `LeaveService.apply` gained `assertSelfOrManages(payload.getUserId())` -
+  blocks a plain `EMPLOYEE` filing leave as an unrelated coworker, while
+  still letting a `SUPERVISOR` file on behalf of their own team (a
+  legitimate use, e.g. an employee who called in sick without portal
+  access) and `ADMIN`/HR file for anyone.
+- `PayrollService.getPeriodForCaller` (new) - `getPeriod` itself is left
+  untouched and still company-wide (every `ReportService` caller keeps
+  using it directly, per the reports exclusion above); the new method adds
+  the `isSelfOrManages` filter on top, for the two places that needed it:
+  `PayrollController.getPeriod` and `SalarySlipService`'s two period
+  methods (`getSlipsForPeriod`, `renderPeriodCsv` - the CSV bulk-export the
+  Phase 7 audit called out as the widest blast radius of any endpoint
+  reviewed).
+
+**Proof:** `SelfServiceScopingHttpTest` (new, 10 tests) - one company, an
+`EMPLOYEE`, a `SUPERVISOR`, and the `SUPERVISOR`'s direct report, over real
+HTTP, covering the employee directory, team roster, attendance, shift
+roster, leave apply/read, leave balance, salary slips, and the
+supervisor-filtered payroll period list.
+
+## Not yet built (next phases)
 
 - Dynamic role/permission management endpoints (create a custom role, assign
   permissions to it, assign it to a user) - today's grants are fixed at
@@ -315,23 +558,6 @@ list/report endpoint scoping) - both restated below for completeness.
   (see "Covered today" above for what Phase 5 actually shipped).
 - Audit log retention/export tooling - today it is an unbounded table with
   no archival or deletion policy.
-- `Department`/`Designation`/`Shift` are still global masters shared by every
-  company - unlike `SalaryRule`, these were **not** migrated to per-company
-  rows in Phase 3. Their unique constraints are single-column
-  (`department_code`, `designation_code`, `shift_code`); making them
-  per-company means a composite `(company_id, code)` constraint, and this
-  project has no migration tool (`ddl-auto=update` only - see README §13) to
-  safely alter an existing unique index on a live database. Doing this
-  without one means either a manual `ALTER TABLE` step documented for
-  operators, or waiting for Flyway/Liquibase to land first.
-- "View only my own data" self-service scoping - today any authenticated
-  principal holding a `_READ` permission can read *any* employee's records by
-  id/userId, not only their own (the choke point stops *cross-company*
-  reads, not *cross-employee-within-a-company* reads).
-- List/report endpoints still return cross-company data where no natural
-  choke point caught them: `EmployeeService.getAll()`, every
-  `ReportService.*` method, `DashboardService`, `PayrollService.getPeriod`.
-  (`LeaveService`'s list methods are the exception - see above.)
 - Platform-owner company onboarding flow beyond raw CRUD.
 - Audit logging.
 - Self-service / admin account unlock.

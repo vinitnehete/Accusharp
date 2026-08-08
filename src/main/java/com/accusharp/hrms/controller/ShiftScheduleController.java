@@ -107,10 +107,11 @@ public class ShiftScheduleController {
     @PreAuthorize("@authz.can('SHIFT_SCHEDULE_MANAGE')")
     @DeleteMapping("/{userId}")
     public ResponseEntity<Void> deleteRange(
+            @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable String userId,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate) {
-        shiftSchedulingService.deleteRange(userId, fromDate, toDate);
+        shiftSchedulingService.deleteRange(userId, fromDate, toDate, principal.getUsername());
         return ResponseEntity.noContent().build();
     }
 }

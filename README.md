@@ -719,6 +719,12 @@ Also worth doing before real use:
   [SECURITY.md](SECURITY.md). The values in `application.properties` are
   local-development defaults only.
 - Move off `ddl-auto=update` to managed migrations.
+- If this database predates Phase 6 (`SECURITY.md`), run
+  [`docs/migrations/2026-08-08-per-company-masters.sql`](docs/migrations/2026-08-08-per-company-masters.sql)
+  by hand once - `ddl-auto=update` adds the new `company_id` columns on its
+  own, but cannot drop the old single-column unique index on
+  `department`/`designation`/`shift`, so two companies can't share a code
+  until that manual step runs.
 
 Multi-tenant company isolation, dynamic role/permission management, and audit
 logging are the next phases of work - see [SECURITY.md](SECURITY.md) for what

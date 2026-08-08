@@ -3,13 +3,24 @@ package com.accusharp.hrms;
 import com.accusharp.hrms.entity.Company;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.Holiday;
+import com.accusharp.hrms.entity.LeaveRequest;
+import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.enums.EmployeeStatus;
+import com.accusharp.hrms.enums.LeaveDuration;
+import com.accusharp.hrms.enums.LeaveStatus;
+import com.accusharp.hrms.enums.LeaveType;
+import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.repository.CompanyRepository;
+import com.accusharp.hrms.repository.DepartmentRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.HolidayRepository;
+import com.accusharp.hrms.repository.LeaveBalanceRepository;
+import com.accusharp.hrms.repository.LeaveRequestRepository;
+import com.accusharp.hrms.repository.PayrollRepository;
 import com.accusharp.hrms.repository.SalaryRuleRepository;
+import com.accusharp.hrms.repository.ShiftRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,6 +60,11 @@ class TenantIsolationHttpTest {
     @Autowired private EmployeeRepository employeeRepository;
     @Autowired private HolidayRepository holidayRepository;
     @Autowired private SalaryRuleRepository salaryRuleRepository;
+    @Autowired private DepartmentRepository departmentRepository;
+    @Autowired private ShiftRepository shiftRepository;
+    @Autowired private PayrollRepository payrollRepository;
+    @Autowired private LeaveRequestRepository leaveRequestRepository;
+    @Autowired private LeaveBalanceRepository leaveBalanceRepository;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private SalaryRuleService salaryRuleService;
     @Autowired private SalaryCalculationService salaryCalculationService;
@@ -66,6 +82,11 @@ class TenantIsolationHttpTest {
     void setUp() {
         holidayRepository.deleteAll();
         salaryRuleRepository.deleteAll();
+        departmentRepository.deleteAll();
+        shiftRepository.deleteAll();
+        payrollRepository.deleteAll();
+        leaveRequestRepository.deleteAll();
+        leaveBalanceRepository.deleteAll();
         employeeRepository.deleteAll();
         companyRepository.deleteAll();
 
@@ -202,6 +223,151 @@ class TenantIsolationHttpTest {
                 .isEqualByComparingTo(new BigDecimal("50"));
     }
 
+    @Test
+    @DisplayName("Company A's HR cannot read, update or delete Company B's department by id, "
+            + "and Company B's list doesn't include it")
+    void departmentCrossTenantAccessIsRejected() {
+        Resp created = send("POST", "/api/departments", """
+                {"departmentCode": "TENANT-DEPT", "departmentName": "Tenant A Only Dept"}""", hrAToken);
+        assertThat(created.status()).isEqualTo(201);
+        Long departmentId = created.body().get("id").asLong();
+
+        Resp listAsB = send("GET", "/api/departments", null, hrBToken);
+        assertThat(listAsB.status()).isEqualTo(200);
+        assertThat(listAsB.body().size()).isZero();
+
+        Resp getAsB = send("GET", "/api/departments/" + departmentId, null, hrBToken);
+        assertThat(getAsB.status()).isEqualTo(404);
+
+        Resp updateAsB = send("PUT", "/api/departments/" + departmentId, """
+                {"departmentCode": "TENANT-DEPT", "departmentName": "Overwritten"}""", hrBToken);
+        assertThat(updateAsB.status()).isEqualTo(404);
+
+        Resp deleteAsB = send("DELETE", "/api/departments/" + departmentId, null, hrBToken);
+        assertThat(deleteAsB.status()).isEqualTo(404);
+
+        // The record survives, untouched, for Company A.
+        Resp getAsA = send("GET", "/api/departments/" + departmentId, null, hrAToken);
+        assertThat(getAsA.status()).isEqualTo(200);
+        assertThat(getAsA.body().get("departmentName").asString()).isEqualTo("Tenant A Only Dept");
+    }
+
+    @Test
+    @DisplayName("Company A's HR cannot edit or delete Company B's shift - "
+            + "specifically closing the 'edit is not guarded at all' gap from the audit")
+    void shiftCrossTenantEditIsRejected() {
+        Resp created = send("POST", "/api/shifts", """
+                {"shiftCode": "TENANT-SHIFT", "shiftName": "Tenant A Only Shift",
+                 "startTime": "09:00:00", "endTime": "17:00:00", "workingHours": 8,
+                 "breakMinutes": 30, "graceMinutes": 10, "overtimeWindowMinutes": 240}""", hrAToken);
+        assertThat(created.status()).isEqualTo(201);
+        Long shiftId = created.body().get("id").asLong();
+
+        Resp listAsB = send("GET", "/api/shifts", null, hrBToken);
+        assertThat(listAsB.status()).isEqualTo(200);
+        assertThat(listAsB.body().size()).isZero();
+
+        // The edit path the audit found completely unguarded.
+        Resp editAsB = send("PUT", "/api/shifts/" + shiftId, """
+                {"shiftCode": "TENANT-SHIFT", "shiftName": "Corrupted",
+                 "startTime": "00:00:00", "endTime": "23:59:00", "workingHours": 23,
+                 "breakMinutes": 0, "graceMinutes": 0, "overtimeWindowMinutes": 0}""", hrBToken);
+        assertThat(editAsB.status()).isEqualTo(404);
+
+        Resp deleteAsB = send("DELETE", "/api/shifts/" + shiftId, null, hrBToken);
+        assertThat(deleteAsB.status()).isEqualTo(404);
+
+        Resp getAsA = send("GET", "/api/shifts/" + shiftId, null, hrAToken);
+        assertThat(getAsA.status()).isEqualTo(200);
+        assertThat(getAsA.body().get("shiftName").asString()).isEqualTo("Tenant A Only Shift");
+    }
+
+    @Test
+    @DisplayName("GET /api/reports/payroll only returns the caller's own company's payroll rows")
+    void payrollReportIsScopedPerCompany() {
+        payrollRepository.save(minimalPayroll("HRA001"));
+        payrollRepository.save(minimalPayroll("EMPB001"));
+
+        Resp report = send("GET", "/api/reports/payroll?month=3&year=2031", null, hrAToken);
+        assertThat(report.status()).isEqualTo(200);
+        assertThat(report.body().size()).isEqualTo(1);
+        assertThat(report.body().get(0).get("userId").asString()).isEqualTo("HRA001");
+    }
+
+    @Test
+    @DisplayName("Company A's HR cannot delete Company B's shift schedule by naming its userId")
+    void shiftScheduleDeleteRangeCrossTenantIsRejected() {
+        Resp delete = send("DELETE",
+                "/api/shift-schedules/EMPB001?fromDate=2026-01-01&toDate=2026-01-31", null, hrAToken);
+        assertThat(delete.status()).isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("Company A's HR cannot overwrite Company B's employee's leave quota")
+    void leaveBalanceSetQuotaCrossTenantIsRejected() {
+        Resp setQuota = send("PUT",
+                "/api/leave-balances/EMPB001?year=2026&leaveType=SICK_LEAVE&quota=999", null, hrAToken);
+        assertThat(setQuota.status()).isEqualTo(404);
+
+        // No balance row was ever created for Company B by this attempt.
+        assertThat(leaveBalanceRepository.findByUserIdAndLeaveYearAndLeaveType(
+                "EMPB001", 2026, LeaveType.SICK_LEAVE)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Company A's HR cannot approve, reject or cancel Company B's leave request")
+    void leaveDecisionCrossTenantIsRejected() {
+        LeaveRequest crossCompanyLeave = leaveRequestRepository.save(LeaveRequest.builder()
+                .userId("EMPB001").leaveType(LeaveType.CASUAL_LEAVE)
+                .fromDate(LocalDate.of(2026, 6, 1)).toDate(LocalDate.of(2026, 6, 1))
+                .duration(LeaveDuration.FULL_DAY).totalDays(new BigDecimal("1.0"))
+                .status(LeaveStatus.PENDING).appliedAt(java.time.Instant.now())
+                .build());
+
+        // approverId is required by validation even though the controller always
+        // overwrites it with the caller's own username before it reaches the service.
+        String decisionBody = """
+                {"approverId": "ignored", "comments": "attempted cross-tenant decision"}""";
+        assertThat(send("POST", "/api/leaves/" + crossCompanyLeave.getId() + "/supervisor-approve",
+                decisionBody, hrAToken).status()).isEqualTo(404);
+        assertThat(send("POST", "/api/leaves/" + crossCompanyLeave.getId() + "/approve",
+                decisionBody, hrAToken).status()).isEqualTo(404);
+        assertThat(send("POST", "/api/leaves/" + crossCompanyLeave.getId() + "/reject",
+                decisionBody, hrAToken).status()).isEqualTo(404);
+        assertThat(send("POST", "/api/leaves/" + crossCompanyLeave.getId() + "/cancel",
+                decisionBody, hrAToken).status()).isEqualTo(404);
+
+        // Untouched: still PENDING, no approver recorded, balance never consumed.
+        LeaveRequest stillPending = leaveRequestRepository.findById(crossCompanyLeave.getId()).orElseThrow();
+        assertThat(stillPending.getStatus()).isEqualTo(LeaveStatus.PENDING);
+        assertThat(stillPending.getApproverId()).isNull();
+    }
+
+    @Test
+    @DisplayName("Company A's HR cannot generate or regenerate payroll for Company B's employee, "
+            + "and generate() 404s rather than leaking existence via 409")
+    void payrollGenerateCrossTenantIsRejected() {
+        String generateBody = """
+                {"employeeId": "EMPB001", "month": 4, "year": 2031}""";
+        Resp generate = send("POST", "/api/payroll/generate", generateBody, hrAToken);
+        assertThat(generate.status()).isEqualTo(404);
+
+        // Even though Company B already has a GENERATED row for this exact period -
+        // this must still 404, not 409, or it would leak that fact across tenants.
+        Payroll existing = payrollRepository.save(minimalPayroll("EMPB001"));
+        Resp generateAgain = send("POST", "/api/payroll/generate", """
+                {"employeeId": "EMPB001", "month": 3, "year": 2031}""", hrAToken);
+        assertThat(generateAgain.status()).isEqualTo(404);
+
+        Resp regenerate = send("POST", "/api/payroll/regenerate", """
+                {"employeeId": "EMPB001", "month": 3, "year": 2031}""", hrAToken);
+        assertThat(regenerate.status()).isEqualTo(404);
+
+        // Untouched: still GENERATED, not flipped to SUPERSEDED.
+        Payroll stillGenerated = payrollRepository.findById(existing.getId()).orElseThrow();
+        assertThat(stillGenerated.getStatus()).isEqualTo(PayrollStatus.GENERATED);
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     private record Resp(int status, JsonNode body) {
@@ -258,5 +424,17 @@ class TenantIsolationHttpTest {
                 .build();
         salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRuleForCompany(company));
         return employeeRepository.save(employee);
+    }
+
+    /** A payroll row with just enough set to satisfy the entity's NOT NULL columns - the generation flow itself is out of scope here. */
+    private Payroll minimalPayroll(String employeeId) {
+        BigDecimal zero = BigDecimal.ZERO;
+        return Payroll.builder()
+                .employeeId(employeeId).month(3).year(2031).revision(1).status(PayrollStatus.GENERATED)
+                .daysInMonth(31).workingDays(26)
+                .presentDays(zero).paidLeaveDays(zero).lopDays(zero).payableDays(zero)
+                .earnGrossSalary(zero).totalEarnings(zero).totalDeduction(zero).netSalary(zero)
+                .generatedAt(java.time.Instant.now())
+                .build();
     }
 }

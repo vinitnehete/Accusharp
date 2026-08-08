@@ -59,7 +59,7 @@ public class ShiftSchedulingService {
         employeeService.getEntityByUserId(request.getUserId());
         assertMaySchedule(request.getAssignedBy(), request.getUserId());
 
-        Shift shift = shiftService.getByCode(request.getShiftCode());
+        Shift shift = shiftService.getByCode(request.getShiftCode(), tenantContext.currentCompanyId().orElse(null));
 
         ShiftSchedule schedule = shiftScheduleRepository
                 .findByUserIdAndShiftDate(request.getUserId(), request.getShiftDate())
@@ -82,10 +82,10 @@ public class ShiftSchedulingService {
     @Transactional
     public List<ShiftScheduleResponse> assignBulk(BulkShiftAssignmentRequest request) {
         validateRange(request.getFromDate(), request.getToDate());
-        Shift shift = shiftService.getByCode(request.getShiftCode());
         // Every userId below is individually tenant-checked (assertMaySchedule -> getEntityByUserId),
         // so a single successful call can only ever span one company - the caller's own.
         Long companyId = tenantContext.currentCompanyId().orElse(null);
+        Shift shift = shiftService.getByCode(request.getShiftCode(), companyId);
         Set<LocalDate> holidays = request.isSkipHolidays()
                 ? holidayService.mandatoryHolidayDates(companyId, request.getFromDate(), request.getToDate())
                 : Set.of();
@@ -139,8 +139,9 @@ public class ShiftSchedulingService {
     public List<ShiftScheduleResponse> autoRotate(ShiftRotationRequest request) {
         validateRange(request.getFromDate(), request.getToDate());
 
-        List<Shift> cycle = request.getShiftCycle().stream().map(shiftService::getByCode).toList();
         Long companyId = tenantContext.currentCompanyId().orElse(null);
+        List<Shift> cycle = request.getShiftCycle().stream()
+                .map(code -> shiftService.getByCode(code, companyId)).toList();
         Set<LocalDate> holidays = request.isSkipHolidays()
                 ? holidayService.mandatoryHolidayDates(companyId, request.getFromDate(), request.getToDate())
                 : Set.of();
@@ -301,6 +302,7 @@ public class ShiftSchedulingService {
     @Transactional(readOnly = true)
     public List<ShiftScheduleResponse> getRoster(String userId, LocalDate fromDate, LocalDate toDate) {
         employeeService.getEntityByUserId(userId);
+        employeeService.assertSelfOrManages(userId);
         List<ShiftSchedule> schedules = (fromDate == null || toDate == null)
                 ? shiftScheduleRepository.findAllByUserIdOrderByShiftDateAsc(userId)
                 : shiftScheduleRepository.findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
@@ -308,15 +310,16 @@ public class ShiftSchedulingService {
         return schedules.stream().map(this::toResponse).toList();
     }
 
-    /** Calendar-shaped roster for the planner UI. */
+    /**
+     * Calendar-shaped roster for the planner UI. {@code supervisorUserId} is
+     * only a hint for ADMIN/HR - see {@link EmployeeService#plannerScope}
+     * for why a SUPERVISOR/EMPLOYEE's request is silently narrowed instead
+     * of trusted as-is; without that, omitting it used to hand back the
+     * whole company's roster to any caller.
+     */
     @Transactional(readOnly = true)
     public MonthlyPlannerResponse getMonthlyPlanner(YearMonth month, String supervisorUserId) {
-        List<Employee> employees = supervisorUserId == null
-                ? employeeService.getActiveEntities()
-                : employeeService.getActiveEntities().stream()
-                        .filter(e -> e.getSupervisor() != null
-                                && supervisorUserId.equals(e.getSupervisor().getUserId()))
-                        .toList();
+        List<Employee> employees = employeeService.plannerScope(supervisorUserId);
 
         List<LocalDate> dates = month.atDay(1).datesUntil(month.atEndOfMonth().plusDays(1)).toList();
         if (employees.isEmpty()) {
@@ -342,8 +345,10 @@ public class ShiftSchedulingService {
     }
 
     @Transactional
-    public void deleteRange(String userId, LocalDate fromDate, LocalDate toDate) {
+    public void deleteRange(String userId, LocalDate fromDate, LocalDate toDate, String assignedBy) {
         validateRange(fromDate, toDate);
+        employeeService.getEntityByUserId(userId);
+        assertMaySchedule(assignedBy, userId);
         shiftScheduleRepository.deleteByUserIdAndShiftDateBetween(userId, fromDate, toDate);
     }
 

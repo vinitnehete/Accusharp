@@ -81,6 +81,6 @@ public class PayrollController {
     @PreAuthorize("@authz.can('PAYROLL_READ')")
     @GetMapping
     public List<Payroll> getPeriod(@RequestParam int month, @RequestParam int year) {
-        return payrollService.getPeriod(month, year);
+        return payrollService.getPeriodForCaller(month, year);
     }
 }

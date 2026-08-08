@@ -45,6 +45,10 @@ public class LeaveService {
     @Transactional
     public LeaveResponse apply(LeaveRequestPayload payload) {
         Employee employee = employeeService.getEntityByUserId(payload.getUserId());
+        // Also blocks a plain EMPLOYEE filing leave as an unrelated coworker -
+        // a SUPERVISOR may still file on behalf of their own directly-supervised
+        // team, same relation this app already uses for approvals and scheduling.
+        employeeService.assertSelfOrManages(payload.getUserId());
 
         if (payload.getFromDate().isAfter(payload.getToDate())) {
             throw new BusinessRuleException("fromDate must be on or before toDate");
@@ -86,6 +90,7 @@ public class LeaveService {
     @Transactional
     public LeaveResponse supervisorApprove(Long id, LeaveDecisionRequest decision) {
         LeaveRequest request = getEntity(id);
+        assertTargetAccessible(request);
         assertStatus(request, LeaveStatus.PENDING);
         assertSupervisorOf(decision.getApproverId(), request.getUserId());
 
@@ -99,6 +104,7 @@ public class LeaveService {
     @Transactional
     public LeaveResponse approve(Long id, LeaveDecisionRequest decision) {
         LeaveRequest request = getEntity(id);
+        assertTargetAccessible(request);
         if (!request.getStatus().isOpen()) {
             throw new BusinessRuleException("Leave is already " + request.getStatus());
         }
@@ -120,6 +126,7 @@ public class LeaveService {
     @Transactional
     public LeaveResponse reject(Long id, LeaveDecisionRequest decision) {
         LeaveRequest request = getEntity(id);
+        assertTargetAccessible(request);
         if (!request.getStatus().isOpen()) {
             throw new BusinessRuleException("Leave is already " + request.getStatus());
         }
@@ -134,6 +141,7 @@ public class LeaveService {
     @Transactional
     public LeaveResponse cancel(Long id, LeaveDecisionRequest decision) {
         LeaveRequest request = getEntity(id);
+        assertTargetAccessible(request);
         if (request.getStatus() == LeaveStatus.CANCELLED || request.getStatus() == LeaveStatus.REJECTED) {
             throw new BusinessRuleException("Leave is already " + request.getStatus());
         }
@@ -187,6 +195,21 @@ public class LeaveService {
         return leaveRequestRepository.findById(id).orElseThrow(() -> NotFoundException.of("Leave request", id));
     }
 
+    /**
+     * Called first, before any status/balance mutation, in every decision
+     * method ({@code supervisorApprove}/{@code approve}/{@code reject}/
+     * {@code cancel}) - {@code getEntity} is a raw {@code findById} with no
+     * company filter, and {@code assertHrOrAdmin}/the ADMIN-or-HR branch of
+     * {@code assertSupervisorOf} only check the *approver's* company, never
+     * the leave's own target employee. Without this call up front, a
+     * cross-company decision was only ever caught incidentally, by {@code
+     * toResponse}'s tenant check at the very end rolling back the whole
+     * transaction - correct by accident, not by design.
+     */
+    private void assertTargetAccessible(LeaveRequest request) {
+        employeeService.getEntityByUserId(request.getUserId());
+    }
+
     private void assertStatus(LeaveRequest request, LeaveStatus expected) {
         if (request.getStatus() != expected) {
             throw new BusinessRuleException("Leave is " + request.getStatus() + ", expected " + expected);
@@ -235,6 +258,11 @@ public class LeaveService {
 
     private LeaveResponse toResponse(LeaveRequest request) {
         String employeeName = employeeService.getEntityByUserId(request.getUserId()).getEmployeeName();
+        // Self-service scoping: reads (getById/getHistory/getPendingFor/getByStatus/
+        // getCalendar) all funnel through here, so one check covers all of them. A
+        // no-op for the HR/ADMIN-only decision methods and for supervisorApprove
+        // (assertSupervisorOf already enforced the identical rule before mutation).
+        employeeService.assertSelfOrManages(request.getUserId());
         return new LeaveResponse(request.getId(), request.getUserId(), employeeName, request.getLeaveType(),
                 request.getFromDate(), request.getToDate(), request.getDuration(), request.getTotalDays(),
                 request.getReason(), request.getStatus(), request.getSupervisorId(), request.getApproverId(),

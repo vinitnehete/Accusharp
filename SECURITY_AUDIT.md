@@ -1,5 +1,10 @@
 # Security Audit — Accusharp HRMS
 
+**Update (2026-08-08):** both findings this document left open below were
+closed in Phase 6 - see [SECURITY.md](SECURITY.md#multi-tenant-masters-and-reports-phase-6).
+The rest of this document is kept as-written, an accurate record of the
+2026-08-07 audit pass.
+
 **Date:** 2026-08-07 (Phases 1–5 of the security rollout, plus this audit pass)
 **Scope:** Everything under `src/main/java/com/accusharp/hrms/security`, `config`,
 `controller`, and every service/repository those controllers reach — i.e. the
@@ -277,7 +282,13 @@ These are real, and deliberately left open rather than rushed - both need a
 product decision or infrastructure this project doesn't have yet, not just
 more code.
 
-### HIGH (open) — `Department`, `Designation`, `Shift` are still global masters shared by every company
+### HIGH (closed in Phase 6) — `Department`, `Designation`, `Shift` are still global masters shared by every company
+
+**Closed in [SECURITY.md](SECURITY.md#multi-tenant-masters-and-reports-phase-6)**
+- the finding below is kept verbatim as the historical record of what was
+found and why it was left open at the time; it is no longer current state.
+The recommended interim mitigation was **not** the path taken - the full
+per-company migration was, per that section.
 
 Unlike `Holiday` and `SalaryRule`, these three have no `company_id` column
 at all - they were flagged as out of scope for Phase 3 because their unique
@@ -303,7 +314,10 @@ same pattern as `COMPANY_CREATE`), trading "companies can self-serve their
 own shift definitions" for "no company can corrupt another's." This is a
 product tradeoff, not a technical one - I did not make it unilaterally.
 
-### MEDIUM (open) — Most list/report endpoints still return cross-company data
+### MEDIUM (closed in Phase 6) — Most list/report endpoints still return cross-company data
+
+**Closed in [SECURITY.md](SECURITY.md#multi-tenant-masters-and-reports-phase-6)**
+- kept verbatim as the historical record; no longer current state.
 
 `EmployeeService.getAll()`, every `ReportService.*` method,
 `DashboardService`, `PayrollService.getPeriod`, `HolidayService`'s two

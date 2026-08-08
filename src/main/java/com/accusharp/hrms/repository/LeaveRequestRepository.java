@@ -13,6 +13,8 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
 
     List<LeaveRequest> findAllByStatus(LeaveStatus status);
 
+    List<LeaveRequest> findAllByStatusIn(List<LeaveStatus> statuses);
+
     List<LeaveRequest> findAllBySupervisorIdAndStatus(String supervisorId, LeaveStatus status);
 
     /** Any request whose range overlaps [fromDate, toDate]. */
