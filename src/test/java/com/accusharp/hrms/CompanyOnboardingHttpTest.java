@@ -155,6 +155,34 @@ class CompanyOnboardingHttpTest {
         assertThat(forbidden.status()).isEqualTo(403);
     }
 
+    @Test
+    @DisplayName("deactivating a company via PUT leaves a COMPANY_STATUS_CHANGE audit row")
+    void companyStatusChangeIsAudited() {
+        String platformToken = login("owner1", PLATFORM_PASSWORD);
+        String setupBody = """
+                {"companyCode": "AUDITCO", "companyName": "Audit Co", "companyEmail": "hr@auditco.example",
+                 "adminUserId": "AUDITCO-ADMIN", "adminEmployeeCode": "AC-ADMIN-1", "adminName": "Admin",
+                 "adminEmail": "admin@auditco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
+        Resp onboarded = send("POST", "/api/companies/onboard", setupBody, platformToken);
+        long companyId = onboarded.body().get("company").get("id").asLong();
+
+        Resp deactivated = send("PUT", "/api/companies/" + companyId, """
+                {"companyCode": "AUDITCO", "companyName": "Audit Co", "status": "INACTIVE"}""", platformToken);
+        assertThat(deactivated.status()).isEqualTo(200);
+        assertThat(deactivated.body().get("status").asString()).isEqualTo("INACTIVE");
+
+        Resp logs = send("GET", "/api/audit-logs?limit=20", null, platformToken);
+        assertThat(logs.status()).isEqualTo(200);
+        boolean found = false;
+        for (int i = 0; i < logs.body().size(); i++) {
+            if ("COMPANY_STATUS_CHANGE".equals(logs.body().get(i).get("action").asString())) {
+                found = true;
+                break;
+            }
+        }
+        assertThat(found).isTrue();
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     private record Resp(int status, JsonNode body) {
