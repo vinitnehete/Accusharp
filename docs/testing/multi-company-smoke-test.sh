@@ -134,18 +134,20 @@ expect_status 404 "$STATUS" "Acme reading Globex's company by id"
 
 # ---- each company hires a supervisor and two employees ---------------------
 
-log "Acme hires a supervisor and two employees (one reports to the supervisor)"
+log "Acme hires a supervisor and two employees (one reports to the supervisor) - each gets a real login"
 call POST /api/employees "$ACME_TOKEN" "{\"userId\": \"ACME-SUP\", \"employeeCode\": \"ACME-E002\",
   \"employeeName\": \"Acme Supervisor\", \"departmentId\": $ACME_DEPT_ID, \"status\": \"PERMANENT\",
   \"role\": \"SUPERVISOR\", \"grossSalary\": 45000, \"pfBasic\": 12000, \"medicalAllowance\": 1000,
   \"otherAllowance\": 0}"
 expect_status 201 "$STATUS" "Acme creates a supervisor"
+ACME_SUP_PASSWORD=$(echo "$BODY" | jq -r .temporaryPassword)
 
 call POST /api/employees "$ACME_TOKEN" "{\"userId\": \"ACME-EMP\", \"employeeCode\": \"ACME-E003\",
   \"employeeName\": \"Acme Employee\", \"departmentId\": $ACME_DEPT_ID, \"supervisorUserId\": \"ACME-SUP\",
   \"status\": \"PERMANENT\", \"role\": \"EMPLOYEE\", \"grossSalary\": 25000, \"pfBasic\": 8000,
   \"medicalAllowance\": 500, \"otherAllowance\": 0}"
 expect_status 201 "$STATUS" "Acme creates an employee reporting to the supervisor"
+ACME_EMP_PASSWORD=$(echo "$BODY" | jq -r .temporaryPassword)
 
 call POST /api/employees "$GLOBEX_TOKEN" "{\"userId\": \"GLOBEX-EMP\", \"employeeCode\": \"GLOBEX-E002\",
   \"employeeName\": \"Globex Employee\", \"departmentId\": $GLOBEX_DEPT_ID, \"status\": \"PERMANENT\",
@@ -153,16 +155,12 @@ call POST /api/employees "$GLOBEX_TOKEN" "{\"userId\": \"GLOBEX-EMP\", \"employe
   \"otherAllowance\": 0}"
 expect_status 201 "$STATUS" "Globex creates an employee"
 
-# NOTE: ACME-SUP/ACME-EMP/GLOBEX-EMP can never log in - EmployeeService.create()
-# never sets a passwordHash (only CompanyOnboardingService's first admin gets one,
-# via generateTemporaryPassword()). There is no admin-set-initial-password field
-# on EmployeeRequest and no self-service password-setup flow. This is a real gap
-# for actually onboarding and using a company, not a security issue - flagged in
-# the script's own summary below rather than worked around with a direct DB
-# write, which would test something this app's API cannot actually do today.
-# Self-service scoping itself (a plain EMPLOYEE only ever seeing their own data)
-# is already proven end-to-end by SelfServiceScopingHttpTest, which seeds a
-# real password hash directly since it's a JUnit test, not a live-API smoke test.
+# Every employee HR/ADMIN creates now gets a real initial password (same
+# one-time-return contract as company onboarding's admin), so they can
+# actually log in - previously only the onboarding admin ever could.
+ACME_SUP_TOKEN=$(login ACME-SUP "$ACME_SUP_PASSWORD")
+ACME_EMP_TOKEN=$(login ACME-EMP "$ACME_EMP_PASSWORD")
+echo "  Acme's new supervisor and employee both logged in with their own generated passwords"
 
 log "Cross-company: Acme's admin cannot read Globex's employee, and Globex's employee list stays Globex-only"
 call GET /api/employees/by-user-id/GLOBEX-EMP "$ACME_TOKEN"
@@ -171,6 +169,17 @@ call GET /api/employees "$GLOBEX_TOKEN"
 expect_status 200 "$STATUS" "Globex admin listing employees"
 COUNT=$(echo "$BODY" | jq 'length')
 expect_status 2 "$COUNT" "  ...and sees exactly Globex's 2 employees (admin + GLOBEX-EMP), not Acme's"
+
+log "Self-service (Phase 8): Acme's plain employee sees only themselves, the supervisor sees their own team"
+call GET /api/employees/by-user-id/ACME-SUP "$ACME_EMP_TOKEN"
+expect_status 404 "$STATUS" "Acme employee reading their own supervisor's record"
+call GET /api/employees/by-user-id/ACME-EMP "$ACME_EMP_TOKEN"
+expect_status 200 "$STATUS" "Acme employee reading their own record"
+call GET "/api/employees/ACME-SUP/team" "$ACME_SUP_TOKEN"
+expect_status 200 "$STATUS" "Acme supervisor reading their own team"
+call POST /api/leaves "$ACME_EMP_TOKEN" '{"userId": "ACME-SUP", "leaveType": "CASUAL_LEAVE",
+  "fromDate": "2031-07-01", "toDate": "2031-07-01", "duration": "FULL_DAY"}'
+expect_status 404 "$STATUS" "Employee filing leave as their supervisor (blocked impersonation)"
 
 log "Summary"
 echo "  $PASS passed, $FAIL failed"

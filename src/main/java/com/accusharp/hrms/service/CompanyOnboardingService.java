@@ -13,6 +13,7 @@ import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import com.accusharp.hrms.util.TemporaryPasswordGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -20,9 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.security.SecureRandom;
 import java.time.LocalDate;
-import java.util.Base64;
 
 /**
  * Platform-only company onboarding: creates the {@link Company} and its
@@ -35,8 +34,6 @@ import java.util.Base64;
 @RequiredArgsConstructor
 @Slf4j
 public class CompanyOnboardingService {
-
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final CompanyRepository companyRepository;
     private final EmployeeRepository employeeRepository;
@@ -67,7 +64,7 @@ public class CompanyOnboardingService {
                 .status(RecordStatus.ACTIVE)
                 .build());
 
-        String temporaryPassword = generateTemporaryPassword();
+        String temporaryPassword = TemporaryPasswordGenerator.generate();
 
         Employee admin = Employee.builder()
                 .userId(request.getAdminUserId())
@@ -98,12 +95,5 @@ public class CompanyOnboardingService {
         auditService.record("COMPANY_ONBOARD", "Company", company.getCompanyCode(), AuditOutcome.SUCCESS,
                 "admin=" + admin.getUserId());
         return new CompanyOnboardingResponse(company, employeeMapper.toResponse(admin), temporaryPassword);
-    }
-
-    private String generateTemporaryPassword() {
-        byte[] bytes = new byte[18];
-        RANDOM.nextBytes(bytes);
-        // Guarantees at least one digit and one uppercase letter so it always passes typical password policy.
-        return "Tp7-" + Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 }

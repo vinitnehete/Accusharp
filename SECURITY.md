@@ -6,9 +6,10 @@ endpoint), **Phase 3** (multi-tenant isolation: a company cannot reach
 another company's data by id), **Phase 4** (platform company onboarding),
 **Phase 5** (audit logging), **Phase 6** (per-company masters and
 report/dashboard scoping), **Phase 7** (a full re-audit of every remaining
-service, which found and fixed four more cross-company gaps), and **Phase
-8** ("view only my own data" self-service scoping) of a multi-phase
-security rollout. Read this
+service, which found and fixed four more cross-company gaps), **Phase 8**
+("view only my own data" self-service scoping), and **Phase 9** (every
+newly created employee now gets a working login, not just a company's
+first admin) of a multi-phase security rollout. Read this
 alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
 
@@ -542,6 +543,39 @@ row" for the list endpoints, for free.
 HTTP, covering the employee directory, team roster, attendance, shift
 roster, leave apply/read, leave balance, salary slips, and the
 supervisor-filtered payroll period list.
+
+## Every new employee gets a working login (Phase 9)
+
+Found while setting up [docs/testing/multi-company-smoke-test.sh](docs/testing/multi-company-smoke-test.sh)
+to actually onboard and use two companies end to end - not a security
+finding, a functional one, but one that blocked real usage outright:
+`EmployeeService.create()` never set a `passwordHash` at all. Only
+`CompanyOnboardingService`'s one-time bootstrap step generated a password
+(for a new company's first `ADMIN`). Every employee HR/ADMIN created
+afterward through the ordinary `POST /api/employees` had no password and
+could never log in - permanently, since there was (and still is) no
+admin-reset or forgot-password flow to recover from it.
+
+**Fix:** `EmployeeService.create()` now generates a temporary password the
+same way onboarding always has - same generator
+(`TemporaryPasswordGenerator`, extracted so both call sites share the exact
+algorithm rather than duplicating it), same one-time-return contract
+(`EmployeeCreationResponse{employee, temporaryPassword}`, never logged, the
+employee changes it via the existing `POST /api/auth/change-password`).
+`PUT /api/employees/{id}` (updating an existing employee) is unaffected -
+only creation needed this.
+
+**Response shape change:** `POST /api/employees` now returns `{"employee":
+{...}, "temporaryPassword": "..."}` instead of a bare employee object - the
+same shape `POST /api/companies/onboard` already used. Every other
+employee endpoint (`GET`, `PUT`) is unchanged.
+
+**Proof:** `CompanyOnboardingHttpTest.onboardingCreatesCompanyAndWorkingAdmin`
+now also creates a second employee and logs in as them with the returned
+password; the smoke test script does the same against a live server plus
+proves the new supervisor/employee immediately exercise Phase 8's
+self-service scoping correctly (own team visible, coworkers not,
+impersonation blocked).
 
 ## Not yet built (next phases)
 

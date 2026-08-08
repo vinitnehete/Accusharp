@@ -181,7 +181,8 @@ class TenantIsolationHttpTest {
 
         Resp created = send("POST", "/api/employees", body, hrAToken);
         assertThat(created.status()).isEqualTo(201);
-        assertThat(created.body().get("companyName").asString()).isEqualTo(companyA.getCompanyName());
+        assertThat(created.body().get("employee").get("companyName").asString())
+                .isEqualTo(companyA.getCompanyName());
     }
 
     @Test

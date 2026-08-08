@@ -1,5 +1,6 @@
 package com.accusharp.hrms.controller;
 
+import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
 import com.accusharp.hrms.enums.PrincipalType;
@@ -27,8 +28,8 @@ public class EmployeeController {
 
     @PreAuthorize("@authz.can('EMPLOYEE_CREATE')")
     @PostMapping
-    public ResponseEntity<EmployeeResponse> create(@AuthenticationPrincipal UserPrincipal principal,
-                                                    @Valid @RequestBody EmployeeRequest request) {
+    public ResponseEntity<EmployeeCreationResponse> create(@AuthenticationPrincipal UserPrincipal principal,
+                                                            @Valid @RequestBody EmployeeRequest request) {
         assertNotGrantingAdminUnlessAdmin(principal, request);
         applyTenantScope(principal, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(employeeService.create(request));

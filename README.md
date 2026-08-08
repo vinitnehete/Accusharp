@@ -160,6 +160,15 @@ curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/j
 joins the device, attendance, leave and payroll together. Get it wrong and the
 employee will show zero attendance forever.
 
+**The response is `{"employee": {...}, "temporaryPassword": "..."}`, not a bare
+employee** - `temporaryPassword` is generated server-side and returned exactly
+once; capture it now and relay it to the new hire out of band. There is no
+admin-reset-password endpoint yet (see SECURITY.md's "Not yet built"), so if
+it's lost, `PUT /api/employees/{id}` and creating them again is not an
+option either (userId/employeeCode would collide) - today the only recovery
+is a direct database update. See [SECURITY.md](SECURITY.md) for the same
+one-time-password contract on `POST /api/companies/onboard`.
+
 You send only these money fields:
 
 | You send | Server derives |

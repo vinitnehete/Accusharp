@@ -94,7 +94,15 @@ class CompanyOnboardingHttpTest {
                  "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0}""",
                 adminToken);
         assertThat(createsOwnEmployee.status()).isEqualTo(201);
-        assertThat(createsOwnEmployee.body().get("companyName").asString()).isEqualTo("New Co Industries");
+        assertThat(createsOwnEmployee.body().get("employee").get("companyName").asString())
+                .isEqualTo("New Co Industries");
+
+        // The new hire is not left with no password - they can actually log in too.
+        String newHirePassword = createsOwnEmployee.body().get("temporaryPassword").asString();
+        assertThat(newHirePassword).isNotBlank();
+        Resp newHireLogin = send("POST", "/api/auth/login",
+                "{\"username\": \"NEWCO-EMP1\", \"password\": \"" + newHirePassword + "\"}", null);
+        assertThat(newHireLogin.status()).isEqualTo(200);
     }
 
     @Test

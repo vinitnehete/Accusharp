@@ -1,5 +1,6 @@
 package com.accusharp.hrms.service;
 
+import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
 import com.accusharp.hrms.entity.Employee;
@@ -16,7 +17,9 @@ import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import com.accusharp.hrms.util.TemporaryPasswordGenerator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,9 +54,18 @@ public class EmployeeService {
     private final EmployeeMapper employeeMapper;
     private final TenantContext tenantContext;
     private final AuditService auditService;
+    private final PasswordEncoder passwordEncoder;
 
+    /**
+     * Without an initial password, a newly created employee could never log
+     * in at all - only {@link com.accusharp.hrms.service.CompanyOnboardingService}'s
+     * first admin got one before this existed. Same one-time-return contract
+     * as onboarding's {@code temporaryPassword}: never logged, relayed out
+     * of band, changed via {@code POST /api/auth/change-password} on first
+     * login.
+     */
     @Transactional
-    public EmployeeResponse create(EmployeeRequest request) {
+    public EmployeeCreationResponse create(EmployeeRequest request) {
         if (employeeRepository.existsByUserId(request.getUserId())) {
             throw new ConflictException("Employee already exists with userId " + request.getUserId());
         }
@@ -61,13 +73,15 @@ public class EmployeeService {
             throw new ConflictException("Employee already exists with code " + request.getEmployeeCode());
         }
 
+        String temporaryPassword = TemporaryPasswordGenerator.generate();
         Employee employee = new Employee();
         apply(employee, request);
+        employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
         recalculate(employee);
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
         auditService.record("EMPLOYEE_CREATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
                 "role=" + response.role());
-        return response;
+        return new EmployeeCreationResponse(response, temporaryPassword);
     }
 
     @Transactional
