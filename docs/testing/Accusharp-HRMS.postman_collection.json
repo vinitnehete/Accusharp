@@ -1,10 +1,15 @@
 {
  "info": {
   "name": "Accusharp HRMS - Full Walkthrough",
-  "description": "One complete payroll cycle for one employee (EMP005, Priya Kulkarni, September 2026).\n\nRUN THE FOLDERS IN ORDER 00 -> 08. Between folder 02 and 03 you must load the punch SQL into device_logs - there is no API for punches.\n\nSet the `baseUrl` variable if the app is not on http://localhost:8080.\n\nOnly POST/PUT/PATCH need a header, and only ever `Content-Type: application/json`. There is no authentication.",
+  "description": "One complete payroll cycle for one employee (EMP005, Priya Kulkarni, September 2026).\n\nRUN THE FOLDERS IN ORDER 00 -> 09. Run '00 - Login' first - it logs in as the seeded HR001 user and stores the access token in the {{accessToken}} collection variable, which every other request in this collection now sends as a Bearer token (collection-level auth, inherited by every folder/request below - nothing else needs to change). The token expires in 15 minutes; rerun '00 - Login' if requests start failing with 401 partway through.\n\nBetween folder 02 and 03 you must load the punch SQL into device_logs - there is no API for punches.\n\nSet the `baseUrl` variable if the app is not on http://localhost:8080.\n\nOnly POST/PUT/PATCH need a Content-Type header beyond auth, and only ever `Content-Type: application/json`.",
   "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
  },
  "variable": [
+  {
+   "key": "accessToken",
+   "value": "",
+   "type": "string"
+  },
   {
    "key": "baseUrl",
    "value": "http://localhost:8080",
@@ -57,6 +62,55 @@
   }
  ],
  "item": [
+  {
+   "name": "00 - Login",
+   "item": [
+    {
+     "name": "Login as HR001",
+     "request": {
+      "auth": {
+       "type": "noauth"
+      },
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"username\": \"HR001\",\n  \"password\": \"Accusharp@123\"\n}"
+      },
+      "url": {
+       "raw": "{{baseUrl}}/api/auth/login",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "auth",
+        "login"
+       ]
+      },
+      "description": "Every other request in this collection is a bearer-token call - this is the one exception (auth: none, on purpose, you don't have a token yet). Seeded HR001's password is documented in SECURITY.md."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('status 200', () => pm.response.to.have.status(200));",
+         "const body = pm.response.json();",
+         "pm.collectionVariables.set('accessToken', body.accessToken);"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
   {
    "name": "00 - Look around",
    "description": "Read-only. Note the ids you get back - you need them when creating an employee.",
@@ -2980,5 +3034,15 @@
     }
    ]
   }
- ]
+ ],
+ "auth": {
+  "type": "bearer",
+  "bearer": [
+   {
+    "key": "token",
+    "value": "{{accessToken}}",
+    "type": "string"
+   }
+  ]
+ }
 }

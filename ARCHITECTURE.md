@@ -22,7 +22,7 @@ single-purpose services rather than inside the CRUD services, so a rule can be
 changed and tested in one place.
 
 ```
-config/       startup seeding
+config/       SecurityConfig (filter chain, CORS, password encoder), PermissionSeeder, startup seeding
 controller/   REST endpoints
 dto/          validated request payloads and response records
 entity/       JPA entities
@@ -30,6 +30,10 @@ enums/        domain enums that carry rules, not just labels
 exception/    ApiError + GlobalExceptionHandler
 mapper/       entity -> response flattening
 repository/   Spring Data JPA
+security/     JwtService, RefreshTokenService, JwtAuthenticationFilter, UserPrincipal,
+              CustomUserDetailsService, TenantContext, PermissionRegistry,
+              AuthorizationService, RestAuthenticationEntryPoint, RestAccessDeniedHandler -
+              see SECURITY.md, this package is the whole auth/authz/multi-tenancy story
 service/
   calculation/  SalaryCalculationService, DeductionCalculationService,
                 AttendanceCalculationService, LopCalculationService
@@ -38,7 +42,7 @@ service/
   leave/        LeaveService, LeaveBalanceService, LeaveCalculationService
   payroll/      PayrollService, SalarySlipService
   report/       ReportService, DashboardService
-util/         AmountInWords
+util/         AmountInWords, TemporaryPasswordGenerator
 ```
 
 Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
@@ -56,9 +60,13 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 
 | Entity | Table | Notes |
 |---|---|---|
-| `Company`, `Department`, `Designation` | `company`, `department`, `designation` | Masters, unique on their code |
-| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor` |
-| `Shift` | `shift` | Shift master. End time not after start time means it crosses midnight |
+| `Company` | `company` | The tenant. Every company-scoped entity below resolves back to one, directly or via its owning `Employee` |
+| `Department`, `Designation`, `Shift` | `department`, `designation`, `shift` | One row per company, plus rows with `company = null` - a shared, read-only-to-companies catalog (the seeded defaults). Unique on `(company_id, code)`, not code alone - see [SECURITY.md](SECURITY.md) Phase 6 |
+| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below) |
+| `PlatformUser` | `platform_user` | The other principal type - platform-level accounts (company onboarding etc.), not tied to any company |
+| `RefreshToken` | `refresh_token` | Opaque, hashed at rest, single-use with rotation - never a JWT itself |
+| `Permission`, `RolePermission` | `permission`, `role_permission` | The data-driven grant table every `@PreAuthorize` check resolves against - see Security below |
+| `AuditLog` | `audit_log` | Flat, scalar-only (no JPA relations, by design) - who did what, when, success or failure |
 | `ShiftSchedule` | `emp_attendance_shift` | One shift per employee per day (unique constraint) |
 | `DeviceLog` | `device_logs` | Raw punches, written by the eSSL device. **Read-only here** |
 | `DailyAttendance` | `emp_daily_attendance` | The reviewed attendance day payroll is paid from. Generated from punches, correctable by HR |
@@ -218,17 +226,48 @@ approved requests are refused, half days are only valid on a single-day request,
 and the balance is checked at application time so the approver never hits an
 empty quota.
 
-## Roles
+## Security &amp; multi-tenancy
 
-`ADMIN`, `HR`, `SUPERVISOR`, `EMPLOYEE` are carried on the employee record.
-Every `/api/**` endpoint requires authentication (`POST /api/auth/login`
-issues a JWT) and a specific permission via `@PreAuthorize`, resolved from a
-data-driven Role → Permission grant table rather than hardcoded `if (role ==
-Role.HR)` checks - see [SECURITY.md](SECURITY.md) for the full authorization
-matrix. Ownership-level rules (a supervisor may only schedule or approve their
-own team) remain enforced in the service layer beneath that, as defense in
-depth. Not yet enforced: "view only my own data" self-service scoping, and
-dynamic (admin-editable) roles - today's grants are fixed at startup.
+Full detail lives in [SECURITY.md](SECURITY.md) (a phase-by-phase build log)
+and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) (an independent audit pass) - this
+is the summary.
+
+- **Two principal types.** An `Employee` (a company user - `ADMIN`, `HR`,
+  `SUPERVISOR`, or `EMPLOYEE`) or a `PlatformUser` (`PLATFORM_OWNER`/
+  `PLATFORM_ADMIN`, not tied to any company). Both authenticate through the
+  same `POST /api/auth/login`, and the JWT carries which type of principal
+  issued it.
+- **Every `/api/**` endpoint** requires that JWT and a specific permission via
+  `@PreAuthorize("@authz.can('...')")`, resolved from a data-driven
+  `Permission`/`RolePermission` grant table (`PermissionRegistry`,
+  `AuthorizationService`) rather than hardcoded `if (role == Role.HR)`
+  checks - see SECURITY.md for the full matrix. Ownership-level rules (a
+  supervisor may only schedule or approve their own team) remain enforced in
+  the service layer beneath that, as defense in depth.
+- **Multi-tenant isolation.** `TenantContext` resolves the caller's company
+  from the JWT. Every single-resource lookup resolves its target through a
+  tenant-checked choke point (`EmployeeService.getEntityById`/
+  `getEntityByUserId` for most services; the same pattern independently on
+  `Company`/`Department`/`Designation`/`Shift`/`Holiday`) and returns 404, not
+  403, on a cross-company id - a 403 would confirm the record exists
+  somewhere, a 404 does not.
+- **"View only my own data" self-service scoping** (Phase 8): a plain
+  `EMPLOYEE` sees only their own record across the employee directory,
+  attendance, leave, leave balance, salary slips and shift roster; a
+  `SUPERVISOR` sees themselves plus their own direct reports for the same
+  set; `ADMIN`/`HR` are unrestricted within their own company.
+  `ReportService`/`DashboardService` are a deliberate exception - those stay
+  company-wide for SUPERVISOR/HR/ADMIN, since they're aggregate reports, not
+  individual-record access.
+- **Account security.** BCrypt password hashing, account lockout after
+  repeated failed logins, no account-enumeration in login errors, short-lived
+  JWT access tokens plus opaque rotating refresh tokens. Every newly created
+  employee (not just a company's first admin during onboarding) is issued a
+  one-time temporary password in the create response - there's no
+  self-service or admin-triggered forgot-password recovery yet if it's lost.
+- Not yet built: dynamic (admin-editable) roles - today's role/permission
+  grants are fixed at startup by `PermissionSeeder`. See SECURITY.md's
+  "Not yet built" for the current full list.
 
 ## Design decisions worth knowing
 
@@ -249,9 +288,12 @@ dynamic (admin-editable) roles - today's grants are fixed at startup.
 
 ## Not implemented
 
-Login and JWT issuance exist (see [SECURITY.md](SECURITY.md)); endpoint-level
-authorization (`@PreAuthorize`), a dynamic role/permission model, multi-tenant
-company isolation, and audit logging do not yet. Also not built: multi-branch
-support, employee self-service, notification and email services, effective-dated
-salary rule versions, soft delete, Flyway migrations, Redis caching, and
-Swagger/OpenAPI documentation.
+Authentication, authorization, multi-tenant isolation, self-service scoping
+and audit logging all exist now (see Security &amp; multi-tenancy above and
+[SECURITY.md](SECURITY.md)). Still open: dynamic (admin-editable) roles,
+self-service/admin account unlock, a real forgot-password email flow (no
+email delivery infrastructure exists), audit log retention/export tooling,
+and full audit coverage of every sensitive action (some are covered, not
+all - see SECURITY.md). Also not built: multi-branch support, notification
+and email services generally, effective-dated salary rule versions, soft
+delete, Flyway migrations, Redis caching, and Swagger/OpenAPI documentation.

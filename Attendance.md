@@ -37,6 +37,19 @@ Two ideas carry the whole design:
 | Holiday calendar | `holiday` | HR, via the API | Which days are not working days |
 | Approved leave | `leave_request` | The leave workflow | Why an absence is excused |
 
+**Shifts and holidays are per-company.** `Shift` carries a nullable `company`
+- `company = null` rows are a shared, read-only-to-companies catalog (the
+four seeded standard shifts); a company's own HR can add custom shifts on top
+but can never edit or delete the shared ones (see SECURITY.md Phase 6).
+Holidays have no shared/global concept - every holiday belongs to exactly one
+company. `HolidayService.mandatoryHolidayDates` takes an explicit
+`companyId` and is threaded through every attendance/roster call site that
+needs it; an employee with **no company of their own** (`companyId == null`,
+an edge case, not the normal path) falls back to every company's holidays
+merged together - the pre-fix behavior for a real gap once found here (two
+companies' calendars bleeding into each other's attendance), see
+SECURITY_AUDIT.md finding 3.
+
 `device_logs` is **read-only to this application.** There is no endpoint to
 create or edit a punch, and there never will be - corrections are recorded
 against the generated attendance day instead, so the original device reading
@@ -254,13 +267,16 @@ months later. A UI badge is `locked ? "LOCKED" : recordStatus`.
 
 ```
 POST /api/attendance/generate
-{ "month": "2026-06", "userIds": ["SE10012"], "generatedBy": "HR001",
-  "overwriteManual": false }
+{ "month": "2026-06", "userIds": ["SE10012"], "overwriteManual": false }
 ```
 
-Omit `userIds` to run the whole company. Writes one row per **rostered** day -
-employees with no roster come back in `employeesWithoutRoster` rather than
-failing the run.
+`generatedBy` is not a request field to set - it is always the authenticated
+caller (from the bearer token), never client-supplied. See [SECURITY.md](SECURITY.md)
+for the full auth model; every endpoint on this page requires it.
+
+Omit `userIds` to run the whole company - "whole company" here means the
+*caller's own* company specifically, scoped via `TenantContext`, not every
+employee on the platform.
 
 **Safe to rerun.** This is how late-arriving or corrected device data gets picked
 up. Two rules govern a rerun:
@@ -282,6 +298,15 @@ read cannot overwrite a correction - which was a real hazard in an earlier
 design, where a plain GET and payroll itself both recomputed and destroyed
 whatever HR had fixed.
 
+**Who can read whose attendance.** `GET /{userId}` (daily), `GET /{userId}/monthly`
+and `GET /{userId}/records` are all self-service restricted: a plain `EMPLOYEE`
+token can only ever read their own `userId`, a `SUPERVISOR` token only their
+own direct reports plus themselves, and `HR`/`ADMIN` unrestricted within their
+own company. Requesting someone else's attendance without that relationship
+returns 404 (not 403 - see the tenant-isolation note in section 6), the exact
+same shape a nonexistent `userId` would return. See [SECURITY.md](SECURITY.md)'s
+self-service scoping section.
+
 ---
 
 ## 6. Corrections
@@ -290,8 +315,19 @@ whatever HR had fixed.
 PUT /api/attendance/{userId}/{date}
 ```
 
-HR or ADMIN only. `remarks` is mandatory - a correction without a reason is not
-auditable. `updatedBy` and `updatedAt` are recorded and survive locking.
+HR or ADMIN only (enforced by `@PreAuthorize`, not just a role field in the
+body). `remarks` is mandatory - a correction without a reason is not
+auditable. `updatedBy` (always the caller, not client-supplied - see the
+Generate section above) and `updatedAt` are recorded and survive locking.
+
+**Tenant-checked before anything else touches the record.** `{userId}` is
+resolved through the same choke point every cross-company check in this app
+uses, *before* the correction is applied - naming another company's `userId`
+here 404s exactly like an unknown one would. This was a real gap found and
+fixed in an earlier audit pass (`correctDay` and the lock/unlock endpoints
+below resolved the record by `(userId, date)` directly, without ever
+confirming the target belonged to the caller's own company - see
+SECURITY_AUDIT.md, finding 2).
 
 Devices miss punches. When one does, the day reads `INVALID_PUNCH` and would
 silently become LOP. Two correction modes, because the real cases differ:
@@ -357,8 +393,12 @@ already-paid month reproducible. To change it afterwards:
 
 ```
 unlock  ->  correct  ->  regenerate payroll
-POST /api/attendance/{userId}/unlock?month=2026-06&actorId=HR001
+POST /api/attendance/{userId}/unlock?month=2026-06
 ```
+
+(No `actorId` parameter - same as `generatedBy`/`updatedBy` above, the actor
+is always the bearer token's own identity. HR/ADMIN only, and tenant-checked
+the same way corrections are.)
 
 Regenerating supersedes the previous payroll revision rather than editing it, so
 a slip printed last month can always be reproduced exactly.
@@ -483,9 +523,6 @@ Things the system guarantees, each covered by a test:
 ## 12. Not covered
 
 - **No rest-gap validation** between consecutive shift assignments (section 2).
-- **No authentication.** `generatedBy` / `updatedBy` are checked against the
-  employee's role, but nothing proves the caller is who they claim to be. All
-  endpoints are unauthenticated until Spring Security lands.
 - **No approval workflow on corrections** - an HR user's edit takes effect
   immediately. The audit trail records who and why, but nobody countersigns.
 - **No partial-month proration on joining or leaving.** An employee who joins
