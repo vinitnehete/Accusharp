@@ -32,10 +32,24 @@ Two ideas carry the whole design:
 | Input | Table | Who writes it | Role |
 |---|---|---|---|
 | Raw punches | `device_logs` | The eSSL device's middleware, directly | What actually happened |
-| Roster | `emp_attendance_shift` | HR / supervisors, via the API | What was expected |
+| Roster | `emp_attendance_shift` | HR / supervisors, via the API, or `DefaultRosterService` for PERMANENT employees | What was expected |
 | Shift master | `shift` | HR, via the API | How to interpret the punches |
 | Holiday calendar | `holiday` | HR, via the API | Which days are not working days |
 | Approved leave | `leave_request` | The leave workflow | Why an absence is excused |
+
+**PERMANENT employees roster themselves onto `GENERAL` automatically.**
+`DefaultRosterService` tops up every active PERMANENT employee's roster to two
+months ahead - once at creation (or whenever an update makes an employee
+PERMANENT again), and monthly after that (`@Scheduled`, the 1st of the month).
+It only ever fills gaps: a day HR already assigned, edited, swapped or holiday
+-overrode is never touched, so `ShiftScheduleController`'s single-day
+assign/override still works exactly as before. Sunday is the only day written
+as a week off; the holiday calendar still applies on top, independently, the
+same as any other roster row. If the `GENERAL` shift is missing for a company
+(an unseeded environment, or a renamed/removed code), the employee is simply
+skipped with a warning - this default is a convenience, never a precondition
+for creating or updating an employee. Every other employment type is
+unaffected and still requires an explicit assignment.
 
 **Shifts and holidays are per-company.** `Shift` carries a nullable `company`
 - `company = null` rows are a shared, read-only-to-companies catalog (the

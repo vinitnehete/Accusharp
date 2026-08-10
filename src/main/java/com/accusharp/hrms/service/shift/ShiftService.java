@@ -65,14 +65,26 @@ public class ShiftService {
     /** The caller's own company's shift with this code, falling back to a shared shift. */
     @Transactional(readOnly = true)
     public Shift getByCode(String shiftCode, Long companyId) {
+        return findByCodeIfPresent(shiftCode, companyId)
+                .orElseThrow(() -> NotFoundException.of("Shift", "code " + shiftCode));
+    }
+
+    /**
+     * Same resolution as {@link #getByCode}, but empty instead of throwing
+     * when nothing matches. For callers where a missing shift means "skip
+     * this", not "fail this request" - throwing from inside a transaction a
+     * caller doesn't own marks it rollback-only the instant it's thrown, so
+     * a try/catch around {@link #getByCode} in that situation is too late.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Shift> findByCodeIfPresent(String shiftCode, Long companyId) {
         if (companyId != null) {
             Optional<Shift> own = shiftRepository.findByShiftCodeAndCompanyId(shiftCode, companyId);
             if (own.isPresent()) {
-                return own.get();
+                return own;
             }
         }
-        return shiftRepository.findByShiftCodeAndCompanyIsNull(shiftCode)
-                .orElseThrow(() -> NotFoundException.of("Shift", "code " + shiftCode));
+        return shiftRepository.findByShiftCodeAndCompanyIsNull(shiftCode);
     }
 
     @Transactional(readOnly = true)

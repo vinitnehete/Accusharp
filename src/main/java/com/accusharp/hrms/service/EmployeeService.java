@@ -18,6 +18,7 @@ import com.accusharp.hrms.repository.RefreshTokenRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import com.accusharp.hrms.service.shift.DefaultRosterService;
 import com.accusharp.hrms.util.TemporaryPasswordGenerator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -58,6 +59,7 @@ public class EmployeeService {
     private final AuditService auditService;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final DefaultRosterService defaultRosterService;
 
     /**
      * Without an initial password, a newly created employee could never log
@@ -81,9 +83,12 @@ public class EmployeeService {
         apply(employee, request);
         employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
         recalculate(employee);
-        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        Employee saved = employeeRepository.save(employee);
+        EmployeeResponse response = employeeMapper.toResponse(saved);
         auditService.record("EMPLOYEE_CREATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
                 "role=" + response.role());
+        // Permanent employees default onto the GENERAL shift for every day - see DefaultRosterService.
+        defaultRosterService.ensureForEmployee(saved);
         return new EmployeeCreationResponse(response, temporaryPassword);
     }
 
@@ -128,9 +133,12 @@ public class EmployeeService {
 
         apply(employee, request);
         recalculate(employee);
-        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        Employee saved = employeeRepository.save(employee);
+        EmployeeResponse response = employeeMapper.toResponse(saved);
         auditService.record("EMPLOYEE_UPDATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
                 "role=" + response.role());
+        // Covers status changing to PERMANENT or a re-activation - a no-op otherwise.
+        defaultRosterService.ensureForEmployee(saved);
         return response;
     }
 

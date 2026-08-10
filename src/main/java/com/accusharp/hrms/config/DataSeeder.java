@@ -88,7 +88,7 @@ public class DataSeeder {
                 .startTime(start)
                 .endTime(end)
                 .workingHours(8)
-                .breakMinutes(60)
+                .breakMinutes(0)
                 .graceMinutes(120)
                 .overtimeWindowMinutes(240)
                 .build());
@@ -100,46 +100,46 @@ public class DataSeeder {
             return;
         }
 
-        Company company = companyRepository.findByCompanyCode("ACC")
-                .orElseGet(() -> companyRepository.save(Company.builder()
-                        .companyCode("ACC")
-                        .companyName("Accusharp Industries")
-                        .address("Pune, Maharashtra")
-                        .phone("020-00000000")
-                        .email("hr@accusharp.example")
-                        .status(RecordStatus.ACTIVE)
-                        .build()));
-
-        Department production = department("PROD", "Production");
-        Department admin = department("ADMIN", "Administration");
-
-        Designation operator = designation("OPR", "Machine Operator");
-        Designation manager = designation("MGR", "Manager");
-
-        Employee hr = saveEmployee("HR001", "EMP-HR-001", "Meera Joshi", company, admin, manager,
-                null, EmployeeStatus.PERMANENT, Role.HR, new BigDecimal("45000"),
-                new BigDecimal("15000"), LocalDate.of(2019, 4, 1), false);
-
-        Employee supervisor = saveEmployee("SUP001", "EMP-SUP-001", "Rakesh Patil", company, production,
-                manager, hr, EmployeeStatus.PERMANENT, Role.SUPERVISOR, new BigDecimal("38000"),
-                new BigDecimal("13000"), LocalDate.of(2020, 6, 15), false);
-
-        saveEmployee("EMP001", "EMP-001", "Sunil Kadam", company, production, operator, supervisor,
-                EmployeeStatus.PERMANENT, Role.EMPLOYEE, new BigDecimal("22000"),
-                new BigDecimal("9000"), LocalDate.of(2022, 1, 10), true);
-
-        saveEmployee("EMP002", "EMP-002", "Anita Shinde", company, production, operator, supervisor,
-                EmployeeStatus.DAY_WISE, Role.EMPLOYEE, new BigDecimal("18000"),
-                new BigDecimal("7500"), LocalDate.of(2023, 3, 5), true);
-
-        log.info("seed.organisation company={} employees={}", company.getCompanyCode(),
-                employeeRepository.count());
-        // Never interpolate the actual password into a log line, even a demo one - see SECURITY.md
-        // for the value. Logging credential material at INFO is the exact anti-pattern this app's
-        // own security docs require every other code path to avoid; a fixed demo password is not
-        // an exemption from that, only a reason the consequence of doing it anyway is low.
-        log.info("seed.credentials note=\"every seeded employee and the platform owner share one "
-                + "fixed demo password - see SECURITY.md, not this log\"");
+//        Company company = companyRepository.findByCompanyCode("ACC")
+//                .orElseGet(() -> companyRepository.save(Company.builder()
+//                        .companyCode("ACC")
+//                        .companyName("Accusharp Industries")
+//                        .address("Pune, Maharashtra")
+//                        .phone("020-00000000")
+//                        .email("hr@accusharp.example")
+//                        .status(RecordStatus.ACTIVE)
+//                        .build()));
+//
+//        Department production = department("PROD", "Production");
+//        Department admin = department("ADMIN", "Administration");
+//
+//        Designation operator = designation("OPR", "Machine Operator");
+//        Designation manager = designation("MGR", "Manager");
+//
+//        Employee hr = saveEmployee("HR001", "EMP-HR-001", "Meera Joshi", company, admin, manager,
+//                null, EmployeeStatus.PERMANENT, Role.HR, new BigDecimal("45000"),
+//                new BigDecimal("15000"), LocalDate.of(2019, 4, 1), false);
+//
+//        Employee supervisor = saveEmployee("SUP001", "EMP-SUP-001", "Rakesh Patil", company, production,
+//                manager, hr, EmployeeStatus.PERMANENT, Role.SUPERVISOR, new BigDecimal("38000"),
+//                new BigDecimal("13000"), LocalDate.of(2020, 6, 15), false);
+//
+//        saveEmployee("EMP001", "EMP-001", "Sunil Kadam", company, production, operator, supervisor,
+//                EmployeeStatus.PERMANENT, Role.EMPLOYEE, new BigDecimal("22000"),
+//                new BigDecimal("9000"), LocalDate.of(2022, 1, 10), true);
+//
+//        saveEmployee("EMP002", "EMP-002", "Anita Shinde", company, production, operator, supervisor,
+//                EmployeeStatus.DAY_WISE, Role.EMPLOYEE, new BigDecimal("18000"),
+//                new BigDecimal("7500"), LocalDate.of(2023, 3, 5), true);
+//
+//        log.info("seed.organisation company={} employees={}", company.getCompanyCode(),
+//                employeeRepository.count());
+//        // Never interpolate the actual password into a log line, even a demo one - see SECURITY.md
+//        // for the value. Logging credential material at INFO is the exact anti-pattern this app's
+//        // own security docs require every other code path to avoid; a fixed demo password is not
+//        // an exemption from that, only a reason the consequence of doing it anyway is low.
+//        log.info("seed.credentials note=\"every seeded employee and the platform owner share one "
+//                + "fixed demo password - see SECURITY.md, not this log\"");
     }
 
     /** A platform-level account for company onboarding, separate from any Employee. */
