@@ -84,12 +84,21 @@ drift from configuration. `basicDA`, `hra`, `conveyanceAllowance`,
 `educationAllowance` and `grossSalaryWage` are **not** accepted from the API.
 
 ```
-basicDA              = grossSalary x basicDaPercent      (default 50%)
+basicDA              = max(grossSalary x basicDaPercent, basicDaMinimumThreshold)
 hra                  = basicDA x hraPercent              (default 40%)
 conveyanceAllowance  = basicDA x conveyancePercent       (default 10%)
 educationAllowance   = basicDA x educationPercent        (default 10%)
 grossSalaryWage      = sum of all of the above + medical + other
 ```
+
+`basicDaMinimumThreshold` is the government-notified minimum wage for
+Basic+DA (default 50% of gross). It changes on its own schedule, independent
+of the percentage, so it is a separate `SalaryRule` field rather than folded
+into `basicDaPercent`. Zero (the default) disables the floor entirely -
+existing companies are unaffected until they set one. Because HRA,
+conveyance and education all derive from `basicDA`, they rise with it
+whenever the threshold wins, exactly as if the percentage itself had
+produced that higher figure.
 
 ## How the calculations work
 
@@ -193,7 +202,7 @@ Two payment models:
 ```
 earn<component>  = component x payableDays / prorationBase
 totalEarnings    = sum of earnings + bonus + incentive + overtime
-totalDeduction   = PF + ESIC + PT + TDS + advance + loan + canteen
+totalDeduction   = PF + ESIC + PT + MLWF + TDS + advance + loan + canteen
 netSalary        = totalEarnings - totalDeduction
 ```
 
@@ -201,6 +210,10 @@ netSalary        = totalEarnings - totalDeduction
   full-month `pf` figure is reported for information only.
 - **ESIC** applies only up to the configured wage ceiling.
 - **Professional tax** follows the two-step slab in `SalaryRule`.
+- **MLWF** (Labour Welfare Fund) is a single flat `SalaryRule.mlwfAmount`,
+  deducted from the employee only in the June and December payroll runs
+  (`Payroll.month == 6 || 12`) - zero every other month. Revised whenever the
+  state notifies a new figure, same as every other `SalaryRule` field.
 - **LOP deduction** is reported on the slip for transparency but is *not* added
   to the deduction total - the earnings were already prorated down by the same
   days, so adding it would deduct twice.

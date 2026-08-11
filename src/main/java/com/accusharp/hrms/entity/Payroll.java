@@ -168,6 +168,10 @@ public class Payroll {
     @Column(name = "professional_tax", precision = 15, scale = 2)
     private BigDecimal professionalTax;
 
+    /** Labour Welfare Fund - non-zero only in the June and December cycle. */
+    @Column(precision = 15, scale = 2)
+    private BigDecimal mlwf;
+
     @Column(precision = 15, scale = 2)
     private BigDecimal tds;
 

@@ -101,4 +101,52 @@ class SalaryAndDeductionCalculationTest {
         assertThat(earnPf).isEqualByComparingTo("4500.00");
         assertThat(deductions.calculatePfDeduction(earnPf, rule)).isEqualByComparingTo("540.00");
     }
+
+    @Test
+    @DisplayName("basic+DA falls back to the statutory minimum when the percentage lands below it")
+    void basicDaFloorsAtMinimumThreshold() {
+        SalaryRule withFloor = SalaryRule.defaultRule();
+        withFloor.setBasicDaMinimumThreshold(new BigDecimal("9000"));
+        Employee employee = employee(new BigDecimal("15000")); // 50% -> 7500, below the 9000 floor
+
+        salary.applyCalculatedFields(employee, withFloor);
+
+        assertThat(employee.getBasicDA()).isEqualByComparingTo("9000.00");
+        // HRA etc. derive from the floored basic, not the raw percentage result.
+        assertThat(employee.getHra()).isEqualByComparingTo("3600.00");
+    }
+
+    @Test
+    @DisplayName("basic+DA is untouched when the percentage already clears the threshold")
+    void basicDaIgnoresThresholdWhenAlreadyAbove() {
+        SalaryRule withFloor = SalaryRule.defaultRule();
+        withFloor.setBasicDaMinimumThreshold(new BigDecimal("9000"));
+        Employee employee = employee(new BigDecimal("20000")); // 50% -> 10000, above the floor
+
+        salary.applyCalculatedFields(employee, withFloor);
+
+        assertThat(employee.getBasicDA()).isEqualByComparingTo("10000.00");
+    }
+
+    @Test
+    @DisplayName("a zero threshold never overrides the percentage")
+    void zeroThresholdDisablesFloor() {
+        Employee employee = employee(new BigDecimal("1000")); // 50% -> 500
+
+        salary.applyCalculatedFields(employee, rule); // defaultRule() ships with threshold 0
+
+        assertThat(employee.getBasicDA()).isEqualByComparingTo("500.00");
+    }
+
+    @Test
+    @DisplayName("MLWF deducts only in June and December")
+    void mlwfDeductsOnlyInJuneAndDecember() {
+        SalaryRule withMlwf = SalaryRule.defaultRule();
+        withMlwf.setMlwfAmount(new BigDecimal("25"));
+
+        assertThat(deductions.calculateMlwf(6, withMlwf)).isEqualByComparingTo("25.00");
+        assertThat(deductions.calculateMlwf(12, withMlwf)).isEqualByComparingTo("25.00");
+        assertThat(deductions.calculateMlwf(7, withMlwf)).isEqualByComparingTo("0.00");
+        assertThat(deductions.calculateMlwf(1, rule)).isEqualByComparingTo("0.00");
+    }
 }

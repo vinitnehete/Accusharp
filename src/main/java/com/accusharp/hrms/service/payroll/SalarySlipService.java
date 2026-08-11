@@ -61,6 +61,7 @@ public class SalarySlipService {
         addLine(deductions, "Provident Fund", payroll.getPfDeduction());
         addLine(deductions, "ESIC", payroll.getEsic());
         addLine(deductions, "Professional Tax", payroll.getProfessionalTax());
+        addLine(deductions, "MLWF", payroll.getMlwf());
         addLine(deductions, "TDS", payroll.getTds());
         addLine(deductions, "Advance", payroll.getAdvanceDeduction());
         addLine(deductions, "Loan", payroll.getLoanDeduction());

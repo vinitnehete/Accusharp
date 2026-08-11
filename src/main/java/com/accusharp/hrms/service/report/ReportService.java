@@ -129,7 +129,7 @@ public class ReportService {
                                 : departmentName(employees.get(payroll.getEmployeeId())),
                         payroll.getPayableDays(), payroll.getLopDays(), payroll.getTotalEarnings(),
                         payroll.getPfDeduction(), payroll.getEsic(), payroll.getProfessionalTax(),
-                        payroll.getTotalDeduction(), payroll.getNetSalary()))
+                        payroll.getMlwf(), payroll.getTotalDeduction(), payroll.getNetSalary()))
                 .toList();
     }
 

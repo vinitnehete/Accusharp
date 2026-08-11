@@ -298,6 +298,7 @@ public class PayrollService {
         payroll.setEsic(deductionCalculationService.calculateEsic(earnGross, rule));
         payroll.setProfessionalTax(
                 deductionCalculationService.calculateProfessionalTax(employee.getGrossSalary(), rule));
+        payroll.setMlwf(deductionCalculationService.calculateMlwf(request.getMonth(), rule));
         payroll.setTds(salaryCalculationService.scaled(request.getTds()));
         payroll.setAdvanceDeduction(salaryCalculationService.scaled(request.getAdvanceDeduction()));
         payroll.setLoanDeduction(salaryCalculationService.scaled(request.getLoanDeduction()));
@@ -309,8 +310,8 @@ public class PayrollService {
                 employee.getGrossSalaryWage(), totalDays, lopDays));
 
         BigDecimal totalDeduction = deductionCalculationService.sum(
-                payroll.getPfDeduction(), payroll.getEsic(), payroll.getProfessionalTax(), payroll.getTds(),
-                payroll.getAdvanceDeduction(), payroll.getLoanDeduction(), payroll.getCanteen());
+                payroll.getPfDeduction(), payroll.getEsic(), payroll.getProfessionalTax(), payroll.getMlwf(),
+                payroll.getTds(), payroll.getAdvanceDeduction(), payroll.getLoanDeduction(), payroll.getCanteen());
         payroll.setTotalDeduction(totalDeduction);
 
         payroll.setNetSalary(totalEarnings.subtract(totalDeduction).setScale(SCALE, RoundingMode.HALF_UP));

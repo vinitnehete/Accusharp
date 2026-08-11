@@ -84,6 +84,7 @@ public class SalaryRuleService {
 
     private void apply(SalaryRule rule, SalaryRuleRequest request) {
         rule.setBasicDaPercent(request.getBasicDaPercent());
+        rule.setBasicDaMinimumThreshold(request.getBasicDaMinimumThreshold());
         rule.setHraPercent(request.getHraPercent());
         rule.setConveyancePercent(request.getConveyancePercent());
         rule.setEducationPercent(request.getEducationPercent());
@@ -97,5 +98,6 @@ public class SalaryRuleService {
         rule.setDayWiseDaysInMonth(request.getDayWiseDaysInMonth());
         rule.setStandardHoursPerDay(request.getStandardHoursPerDay());
         rule.setOvertimeRateMultiplier(request.getOvertimeRateMultiplier());
+        rule.setMlwfAmount(request.getMlwfAmount());
     }
 }

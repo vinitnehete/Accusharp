@@ -23,6 +23,10 @@ public class SalaryCalculationService {
     /** Recomputes every derived field on the employee in place. */
     public void applyCalculatedFields(Employee employee, SalaryRule rule) {
         BigDecimal basicDA = percentOf(employee.getGrossSalary(), rule.getBasicDaPercent());
+        BigDecimal threshold = rule.getBasicDaMinimumThreshold();
+        if (threshold != null && basicDA.compareTo(threshold) < 0) {
+            basicDA = threshold.setScale(SCALE, RoundingMode.HALF_UP);
+        }
 
         employee.setBasicDA(basicDA);
         employee.setHra(percentOf(basicDA, rule.getHraPercent()));

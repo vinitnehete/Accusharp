@@ -116,12 +116,13 @@ curl http://localhost:8080/api/salary-rules
 To change it:
 
 ```bash
-curl -X PUT http://localhost:8080/api/salary-rules -H 'Content-Type: application/json' -d '{"basicDaPercent":50,"hraPercent":40,"conveyancePercent":10,"educationPercent":10,"pfPercent":12,"esicPercent":0.75,"esicWageCeiling":21000,"ptUpperThreshold":10001,"ptUpperAmount":200,"ptLowerThreshold":7501,"ptLowerAmount":175,"dayWiseDaysInMonth":26,"standardHoursPerDay":8,"overtimeRateMultiplier":1.00}'
+curl -X PUT http://localhost:8080/api/salary-rules -H 'Content-Type: application/json' -d '{"basicDaPercent":50,"basicDaMinimumThreshold":0,"hraPercent":40,"conveyancePercent":10,"educationPercent":10,"pfPercent":12,"esicPercent":0.75,"esicWageCeiling":21000,"ptUpperThreshold":10001,"ptUpperAmount":200,"ptLowerThreshold":7501,"ptLowerAmount":175,"dayWiseDaysInMonth":26,"standardHoursPerDay":8,"overtimeRateMultiplier":1.00,"mlwfAmount":0}'
 ```
 
 | Field | Meaning |
 |---|---|
 | `basicDaPercent` | Basic + DA as a share of gross salary |
+| `basicDaMinimumThreshold` | Government-notified minimum Basic+DA - wins over the percentage when the percentage lands below it (HRA/conveyance/education still derive from whichever value was used). `0` disables the floor. Revise this whenever the state notifies a new minimum wage. |
 | `hraPercent`, `conveyancePercent`, `educationPercent` | Shares of **basic**, not gross |
 | `pfPercent` | PF rate, applied to the prorated PF basic |
 | `esicPercent` / `esicWageCeiling` | ESIC rate; no ESIC above the ceiling |
@@ -129,6 +130,7 @@ curl -X PUT http://localhost:8080/api/salary-rules -H 'Content-Type: application
 | `dayWiseDaysInMonth` | Payable-day base for `DAY_WISE` staff (26 by convention) |
 | `standardHoursPerDay` | Divisor for the per-hour overtime rate |
 | `overtimeRateMultiplier` | `1.00` = plain rate, `1.50` = time-and-a-half |
+| `mlwfAmount` | Flat Labour Welfare Fund amount deducted from the employee in June and December only, `0` every other month. `0` disables it. |
 
 ### 3.2 Company
 
@@ -517,7 +519,8 @@ canteen amount, generate them individually.
 | `totalEarnings` | Earnings + bonus + incentive + overtime |
 | `pf` vs `pfDeduction` | Full-month PF (informational) vs what is actually deducted |
 | `lopDeduction` | **Shown for transparency, not added to the total** |
-| `totalDeduction` | PF + ESIC + PT + TDS + advance + loan + canteen |
+| `mlwf` | Labour Welfare Fund - non-zero only in the June and December payroll run |
+| `totalDeduction` | PF + ESIC + PT + MLWF + TDS + advance + loan + canteen |
 | `netSalary` | `totalEarnings - totalDeduction` |
 
 `lopDeduction` is not subtracted because the earnings were already prorated down

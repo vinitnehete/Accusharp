@@ -75,10 +75,11 @@ class AuditLogHttpTest {
         String adminToken = login("ADMIN01", PASSWORD);
 
         String update = """
-                {"basicDaPercent": 55, "hraPercent": 40, "conveyancePercent": 10, "educationPercent": 10,
-                 "pfPercent": 12, "esicPercent": 0.75, "esicWageCeiling": 21000,
+                {"basicDaPercent": 55, "basicDaMinimumThreshold": 0, "hraPercent": 40, "conveyancePercent": 10,
+                 "educationPercent": 10, "pfPercent": 12, "esicPercent": 0.75, "esicWageCeiling": 21000,
                  "ptUpperThreshold": 10001, "ptUpperAmount": 200, "ptLowerThreshold": 7501, "ptLowerAmount": 175,
-                 "dayWiseDaysInMonth": 26, "standardHoursPerDay": 8, "overtimeRateMultiplier": 1.0}""";
+                 "dayWiseDaysInMonth": 26, "standardHoursPerDay": 8, "overtimeRateMultiplier": 1.0,
+                 "mlwfAmount": 0}""";
         Resp updated = send("PUT", "/api/salary-rules", update, adminToken);
         assertThat(updated.status()).isEqualTo(200);
 
@@ -100,10 +101,11 @@ class AuditLogHttpTest {
         String adminToken = login("ADMIN01", PASSWORD);
         // Generate at least one row to export.
         send("PUT", "/api/salary-rules", """
-                {"basicDaPercent": 50, "hraPercent": 40, "conveyancePercent": 10, "educationPercent": 10,
-                 "pfPercent": 12, "esicPercent": 0.75, "esicWageCeiling": 21000,
+                {"basicDaPercent": 50, "basicDaMinimumThreshold": 0, "hraPercent": 40, "conveyancePercent": 10,
+                 "educationPercent": 10, "pfPercent": 12, "esicPercent": 0.75, "esicWageCeiling": 21000,
                  "ptUpperThreshold": 10001, "ptUpperAmount": 200, "ptLowerThreshold": 7501, "ptLowerAmount": 175,
-                 "dayWiseDaysInMonth": 26, "standardHoursPerDay": 8, "overtimeRateMultiplier": 1.0}""", adminToken);
+                 "dayWiseDaysInMonth": 26, "standardHoursPerDay": 8, "overtimeRateMultiplier": 1.0,
+                 "mlwfAmount": 0}""", adminToken);
 
         RawResp csv = sendRaw("GET", "/api/audit-logs/export?fromDate=2020-01-01&toDate=2035-01-01", adminToken);
         assertThat(csv.status()).isEqualTo(200);

@@ -15,6 +15,10 @@ public class SalaryRuleRequest {
     @NotNull @DecimalMin("0") @DecimalMax("100")
     private BigDecimal basicDaPercent;
 
+    /** Government-notified minimum Basic+DA; 0 means no floor applies. */
+    @NotNull @DecimalMin("0")
+    private BigDecimal basicDaMinimumThreshold;
+
     @NotNull @DecimalMin("0") @DecimalMax("100")
     private BigDecimal hraPercent;
 
@@ -53,4 +57,8 @@ public class SalaryRuleRequest {
 
     @NotNull @DecimalMin("0")
     private BigDecimal overtimeRateMultiplier;
+
+    /** Flat MLWF amount deducted from the employee in June and December only; 0 means not applicable. */
+    @NotNull @DecimalMin("0")
+    private BigDecimal mlwfAmount;
 }

@@ -56,6 +56,18 @@ public class SalaryRule {
     @Column(name = "basic_da_percent", nullable = false, precision = 6, scale = 2)
     private BigDecimal basicDaPercent;
 
+    /**
+     * Government-notified minimum wage for Basic+DA. When the percentage
+     * calculation above lands below this figure, the threshold wins instead -
+     * HRA, conveyance and education still derive from whichever value was
+     * used, so they rise with it. Zero (the default) means no floor applies.
+     * This changes on its own schedule (state minimum-wage notifications),
+     * independent of {@code basicDaPercent}, which is why it is its own
+     * field rather than folded into the percentage.
+     */
+    @Column(name = "basic_da_minimum_threshold", nullable = false, precision = 15, scale = 2)
+    private BigDecimal basicDaMinimumThreshold;
+
     /** hra, conveyance and education are percentages of basicDA. */
     @Column(name = "hra_percent", nullable = false, precision = 6, scale = 2)
     private BigDecimal hraPercent;
@@ -101,10 +113,20 @@ public class SalaryRule {
     @Column(name = "overtime_rate_multiplier", nullable = false, precision = 4, scale = 2)
     private BigDecimal overtimeRateMultiplier;
 
+    /**
+     * Flat amount deducted from the employee in the state's two Labour
+     * Welfare Fund cycles (June and December) only - zero every other month.
+     * A single figure per company, revised whenever the state notifies a new
+     * one; see {@link com.accusharp.hrms.service.calculation.DeductionCalculationService#calculateMlwf}.
+     */
+    @Column(name = "mlwf_amount", nullable = false, precision = 15, scale = 2)
+    private BigDecimal mlwfAmount;
+
     /** Sane starting values for a new rule row - the global default, or a fresh per-company one. */
     public static SalaryRule defaultRule() {
         return SalaryRule.builder()
                 .basicDaPercent(new BigDecimal("50"))
+                .basicDaMinimumThreshold(BigDecimal.ZERO)
                 .hraPercent(new BigDecimal("40"))
                 .conveyancePercent(new BigDecimal("10"))
                 .educationPercent(new BigDecimal("10"))
@@ -118,6 +140,7 @@ public class SalaryRule {
                 .dayWiseDaysInMonth(26)
                 .standardHoursPerDay(new BigDecimal("8"))
                 .overtimeRateMultiplier(new BigDecimal("1.00"))
+                .mlwfAmount(BigDecimal.ZERO)
                 .build();
     }
 }
