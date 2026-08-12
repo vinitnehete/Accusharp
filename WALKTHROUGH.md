@@ -179,9 +179,27 @@ education  = 13000 x 10%   =  1300
 grossSalaryWage            = 22050
 ```
 
-You cannot send `basicDA` or `hra` yourself - they are not on the request at
-all. That is deliberate: it means a salary breakup can never be inconsistent
-with the configured rule.
+You cannot send `basicDA` or `hra` yourself on this request - they are not on
+the create/update DTO at all. That is deliberate: it means a salary breakup
+can never be inconsistent with the configured rule *unless you explicitly say
+so*.
+
+Sometimes a real payslip does need to differ from the formula. For that,
+there's a dedicated pair of endpoints:
+
+```bash
+curl -X PUT http://localhost:8080/api/employees/5/salary-structure -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"basicDA":13500,"hra":5400,"conveyanceAllowance":1350,"educationAllowance":1350}'
+```
+
+sets those four fields by hand and marks the employee `salaryStructureOverridden: true` -
+from then on neither a plain employee update nor a salary rule change touches
+them. To go back to the formula's numbers:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/5/salary-structure/regenerate -H "Authorization: Bearer $TOKEN"
+```
+
+See the callout after the next table for the whole-company version of this.
 
 ### Three fields that decide everything downstream
 
@@ -194,10 +212,15 @@ with the configured rule.
 Also note **`supervisorUserId`** - without it, nobody can approve her leave and
 no supervisor can schedule her.
 
-> **Change the salary rule *before* adding people.** The breakup is calculated at
-> the moment you save. Changing a percentage later does not touch anyone who
-> already exists - you would have to re-save each employee. Check it first with
-> `GET /api/salary-rules`.
+> **Changing the salary rule does not retroactively touch anyone who already
+> exists.** The breakup is calculated at the moment you save, so check the
+> rule first with `GET /api/salary-rules` if you can. If you change it after
+> people already exist, fix them with
+> `POST /api/employees/salary-structure/regenerate-all` (or
+> `/api/employees/{id}/salary-structure/regenerate` for just one) rather than
+> re-saving every employee by hand. It skips anyone already
+> `salaryStructureOverridden`, so a deliberate manual value is never
+> silently discarded by a rule-driven refresh.
 
 > **Granting `"role":"ADMIN"` requires an ADMIN caller.** HR otherwise has full
 > employee create/update rights, but cannot mint a new admin account or
@@ -688,7 +711,8 @@ regeneration preserves them.
    before you look at attendance.
 4. **Only final HR approval counts.** `SUPERVISOR_APPROVED` still costs the
    employee a day.
-5. **Salary breakup is fixed at save time.** Change the salary rule before
-   adding people, not after.
+5. **Salary breakup is fixed at save time.** A salary rule change doesn't
+   reach existing employees on its own - run
+   `POST /api/employees/salary-structure/regenerate-all` after changing it.
 6. **Use `/regenerate`, not `/generate`, to correct a month.** Generate is
    deliberately one-shot.

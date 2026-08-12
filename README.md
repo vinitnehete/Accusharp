@@ -210,6 +210,40 @@ curl -X PATCH "http://localhost:8080/api/employees/EMP003/supervisor?supervisorU
 `DELETE /api/employees/{id}` **deactivates** rather than deletes - payroll
 history has to keep resolving names.
 
+#### 3.4.1 Manual salary structure override and regeneration
+
+`basicDA`/`hra`/`conveyanceAllowance`/`educationAllowance` are normally
+derived, but a real payslip sometimes needs to differ from what the formula
+gives. Override them by hand:
+
+```bash
+curl -X PUT http://localhost:8080/api/employees/3/salary-structure -H 'Content-Type: application/json' -d '{"basicDA":12500,"hra":5200,"conveyanceAllowance":1100,"educationAllowance":1100}'
+```
+
+This marks the employee as overridden - `grossSalaryWage` still refreshes
+(so a later change to `medicalAllowance`/`otherAllowance` is reflected), but
+the four components above no longer move, even across a plain `PUT
+/api/employees/{id}` or a `SalaryRule` change.
+
+To go back to rule-derived values - after correcting the override, or after
+a `SalaryRule` change you actually want applied:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/3/salary-structure/regenerate
+```
+
+or for every non-overridden employee in the company at once:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/salary-structure/regenerate-all
+```
+
+Employees currently overridden are skipped by the bulk call, so it never
+silently discards a deliberate manual value - regenerate those individually
+if that's really what you want. Neither call touches payroll history; run
+`/api/payroll/regenerate` for any already-generated period afterwards to
+pick up the corrected structure.
+
 ### 3.5 Holidays
 
 Load the year's calendar up front. A mandatory holiday is removed from working
@@ -699,8 +733,11 @@ holiday is not consumed and does not offset LOP.
 Use `/api/payroll/regenerate` instead of `/generate`.
 
 **Salary breakup looks wrong after changing the salary rule**
-The breakup is computed at write time. Re-save the employee (`PUT
-/api/employees/{id}`) to recalculate with the new percentages.
+The breakup is computed at write time, so an existing employee is not
+recomputed just because the rule changed. Fix one employee with `POST
+/api/employees/{id}/salary-structure/regenerate`, or every non-overridden
+employee at once with `POST /api/employees/salary-structure/regenerate-all`.
+See §3.4.1.
 
 **Overtime hours are recorded but nothing is paid**
 The employee has `overtimeEligible: false`.

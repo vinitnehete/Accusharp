@@ -20,23 +20,31 @@ public class SalaryCalculationService {
     public static final int SCALE = 2;
     private static final BigDecimal HUNDRED = new BigDecimal("100");
 
-    /** Recomputes every derived field on the employee in place. */
+    /**
+     * Recomputes every derived field on the employee in place - unless
+     * {@link Employee#isSalaryStructureOverridden()}, in which case the
+     * manually-set basicDA/hra/conveyance/education are left untouched and
+     * only the gross-wage sum is refreshed, so it still reflects any change
+     * to medical/other allowance.
+     */
     public void applyCalculatedFields(Employee employee, SalaryRule rule) {
-        BigDecimal basicDA = percentOf(employee.getGrossSalary(), rule.getBasicDaPercent());
-        BigDecimal threshold = rule.getBasicDaMinimumThreshold();
-        if (threshold != null && basicDA.compareTo(threshold) < 0) {
-            basicDA = threshold.setScale(SCALE, RoundingMode.HALF_UP);
+        if (!employee.isSalaryStructureOverridden()) {
+            BigDecimal basicDA = percentOf(employee.getGrossSalary(), rule.getBasicDaPercent());
+            BigDecimal threshold = rule.getBasicDaMinimumThreshold();
+            if (threshold != null && basicDA.compareTo(threshold) < 0) {
+                basicDA = threshold.setScale(SCALE, RoundingMode.HALF_UP);
+            }
+
+            employee.setBasicDA(basicDA);
+            employee.setHra(percentOf(basicDA, rule.getHraPercent()));
+            employee.setConveyanceAllowance(percentOf(basicDA, rule.getConveyancePercent()));
+            employee.setEducationAllowance(percentOf(basicDA, rule.getEducationPercent()));
         }
 
-        employee.setBasicDA(basicDA);
-        employee.setHra(percentOf(basicDA, rule.getHraPercent()));
-        employee.setConveyanceAllowance(percentOf(basicDA, rule.getConveyancePercent()));
-        employee.setEducationAllowance(percentOf(basicDA, rule.getEducationPercent()));
-
-        employee.setGrossSalaryWage(basicDA
-                .add(employee.getHra())
-                .add(employee.getConveyanceAllowance())
-                .add(employee.getEducationAllowance())
+        employee.setGrossSalaryWage(nullSafe(employee.getBasicDA())
+                .add(nullSafe(employee.getHra()))
+                .add(nullSafe(employee.getConveyanceAllowance()))
+                .add(nullSafe(employee.getEducationAllowance()))
                 .add(nullSafe(employee.getMedicalAllowance()))
                 .add(nullSafe(employee.getOtherAllowance())));
     }

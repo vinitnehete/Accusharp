@@ -3,6 +3,7 @@ package com.accusharp.hrms.service;
 import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
+import com.accusharp.hrms.dto.SalaryStructureRequest;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.SalaryRule;
 import com.accusharp.hrms.enums.AuditOutcome;
@@ -140,6 +141,70 @@ public class EmployeeService {
         // Covers status changing to PERMANENT or a re-activation - a no-op otherwise.
         defaultRosterService.ensureForEmployee(saved);
         return response;
+    }
+
+    /**
+     * Manual override for basicDA/hra/conveyance/education - the escape
+     * hatch for when a real payslip needs to differ from what {@link
+     * SalaryRule}'s percentages would derive. Marks the employee overridden
+     * so a later plain {@link #update} (or a company-wide rule change) never
+     * silently clobbers it - see {@link #regenerateSalaryStructure} to go
+     * back to rule-derived values.
+     */
+    @Transactional
+    public EmployeeResponse updateSalaryStructure(Long id, SalaryStructureRequest request) {
+        Employee employee = getEntityById(id);
+        employee.setBasicDA(salaryCalculationService.scaled(request.getBasicDA()));
+        employee.setHra(salaryCalculationService.scaled(request.getHra()));
+        employee.setConveyanceAllowance(salaryCalculationService.scaled(request.getConveyanceAllowance()));
+        employee.setEducationAllowance(salaryCalculationService.scaled(request.getEducationAllowance()));
+        employee.setSalaryStructureOverridden(true);
+        recalculate(employee); // overridden, so this only refreshes grossSalaryWage
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_SALARY_STRUCTURE_OVERRIDE", "Employee", response.userId(),
+                AuditOutcome.SUCCESS, null);
+        return response;
+    }
+
+    /**
+     * Clears any manual override and recomputes basicDA/hra/conveyance/
+     * education from the employee's current gross salary and their
+     * company's <em>current</em> {@link SalaryRule} - the fix for a rule
+     * change (or an override) not being reflected until this is called.
+     */
+    @Transactional
+    public EmployeeResponse regenerateSalaryStructure(Long id) {
+        Employee employee = getEntityById(id);
+        employee.setSalaryStructureOverridden(false);
+        recalculate(employee);
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_SALARY_STRUCTURE_REGENERATE", "Employee", response.userId(),
+                AuditOutcome.SUCCESS, null);
+        return response;
+    }
+
+    /**
+     * Same regeneration as {@link #regenerateSalaryStructure}, for every
+     * active employee of the caller's company - the practical response to a
+     * {@code SALARY_RULE_MANAGE} change: without this, each employee's
+     * structure stays whatever it was last computed as until their record
+     * is next saved one at a time. Employees already overridden are left
+     * alone; a bulk rule-driven refresh silently discarding a deliberate
+     * per-employee override would be a surprise, not a fix - regenerate
+     * those individually via {@link #regenerateSalaryStructure} instead.
+     */
+    @Transactional
+    public int regenerateAllSalaryStructures() {
+        List<Employee> employees = getActiveEntities().stream()
+                .filter(employee -> !employee.isSalaryStructureOverridden())
+                .toList();
+        for (Employee employee : employees) {
+            recalculate(employee);
+        }
+        employeeRepository.saveAll(employees);
+        auditService.record("EMPLOYEE_SALARY_STRUCTURE_REGENERATE_ALL", "Employee", null,
+                AuditOutcome.SUCCESS, "count=" + employees.size());
+        return employees.size();
     }
 
     @Transactional(readOnly = true)

@@ -119,6 +119,16 @@ public class Employee {
     @Column(name = "gross_salary_wage", precision = 15, scale = 2)
     private BigDecimal grossSalaryWage;
 
+    /**
+     * When true, basicDA/hra/conveyanceAllowance/educationAllowance were set
+     * by hand (see {@code EmployeeService#updateSalaryStructure}) and are no
+     * longer derived from {@link SalaryRule} on save - until
+     * {@code EmployeeService#regenerateSalaryStructure} clears it.
+     */
+    @Column(name = "salary_structure_overridden", nullable = false)
+    @Builder.Default
+    private boolean salaryStructureOverridden = false;
+
     @Column(name = "overtime_eligible", nullable = false)
     private boolean overtimeEligible;
 

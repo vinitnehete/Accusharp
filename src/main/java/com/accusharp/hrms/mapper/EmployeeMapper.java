@@ -38,7 +38,8 @@ public class EmployeeMapper {
                 employee.getMedicalAllowance(),
                 employee.getOtherAllowance(),
                 employee.getGrossSalaryWage(),
-                employee.isOvertimeEligible());
+                employee.isOvertimeEligible(),
+                employee.isSalaryStructureOverridden());
     }
 
     public List<EmployeeResponse> toResponses(List<Employee> employees) {

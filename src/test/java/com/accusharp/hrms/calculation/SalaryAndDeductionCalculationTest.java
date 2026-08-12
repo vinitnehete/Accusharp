@@ -139,6 +139,27 @@ class SalaryAndDeductionCalculationTest {
     }
 
     @Test
+    @DisplayName("an overridden structure keeps its manual values across recalculation, but gross wage still refreshes")
+    void overriddenStructureSkipsDerivationButRefreshesGrossWage() {
+        Employee employee = employee(new BigDecimal("20000"));
+        employee.setSalaryStructureOverridden(true);
+        employee.setBasicDA(new BigDecimal("11000.00"));
+        employee.setHra(new BigDecimal("5000.00"));
+        employee.setConveyanceAllowance(new BigDecimal("900.00"));
+        employee.setEducationAllowance(new BigDecimal("900.00"));
+
+        salary.applyCalculatedFields(employee, rule);
+
+        // Untouched - not the 50%/40%/10%/10% the rule would have derived.
+        assertThat(employee.getBasicDA()).isEqualByComparingTo("11000.00");
+        assertThat(employee.getHra()).isEqualByComparingTo("5000.00");
+        assertThat(employee.getConveyanceAllowance()).isEqualByComparingTo("900.00");
+        assertThat(employee.getEducationAllowance()).isEqualByComparingTo("900.00");
+        // Still the sum of whatever the components currently are, medical/other included.
+        assertThat(employee.getGrossSalaryWage()).isEqualByComparingTo("19050.00");
+    }
+
+    @Test
     @DisplayName("MLWF deducts only in June and December")
     void mlwfDeductsOnlyInJuneAndDecember() {
         SalaryRule withMlwf = SalaryRule.defaultRule();

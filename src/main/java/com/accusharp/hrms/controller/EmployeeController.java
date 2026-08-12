@@ -3,6 +3,7 @@ package com.accusharp.hrms.controller;
 import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
+import com.accusharp.hrms.dto.SalaryStructureRequest;
 import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
@@ -18,6 +19,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/employees")
@@ -48,6 +50,45 @@ public class EmployeeController {
     @GetMapping("/{id}")
     public EmployeeResponse getById(@PathVariable Long id) {
         return employeeService.getById(id);
+    }
+
+    /**
+     * Manually overrides basicDA/hra/conveyance/education for this employee,
+     * in place of whatever {@code SalaryRule} would otherwise derive - the
+     * rest of the salary structure (grossSalary, pfBasic, medical/other
+     * allowance) is still edited via the regular {@link #update}. Sticky
+     * across future updates and rule changes until {@link
+     * #regenerateSalaryStructure} is called.
+     */
+    @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")
+    @PutMapping("/{id}/salary-structure")
+    public EmployeeResponse updateSalaryStructure(@PathVariable Long id,
+                                                   @Valid @RequestBody SalaryStructureRequest request) {
+        return employeeService.updateSalaryStructure(id, request);
+    }
+
+    /**
+     * Clears any manual override and recomputes this employee's salary
+     * structure from their current gross salary and the company's current
+     * {@code SalaryRule} - use after a rule change (or to undo an override)
+     * so the structure stops drifting from the formula.
+     */
+    @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")
+    @PostMapping("/{id}/salary-structure/regenerate")
+    public EmployeeResponse regenerateSalaryStructure(@PathVariable Long id) {
+        return employeeService.regenerateSalaryStructure(id);
+    }
+
+    /**
+     * Same regeneration, for every active employee of the caller's company
+     * at once - the practical fix for "the salary rule changed but the
+     * structure didn't." Employees with an active manual override are
+     * skipped; see {@link EmployeeService#regenerateAllSalaryStructures}.
+     */
+    @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")
+    @PostMapping("/salary-structure/regenerate-all")
+    public Map<String, Integer> regenerateAllSalaryStructures() {
+        return Map.of("regenerated", employeeService.regenerateAllSalaryStructures());
     }
 
     @PreAuthorize("@authz.can('EMPLOYEE_READ')")

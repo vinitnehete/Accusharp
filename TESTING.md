@@ -39,6 +39,7 @@ this document is for a human working through the same cycle by hand.
 - [Step 0 — Look around](#step-0--look-around)
 - [Step 1 — Create a designation](#step-1--create-a-designation)
 - [Step 2 — Create the employee](#step-2--create-the-employee)
+  - [Manual salary structure override and regenerate](#manual-salary-structure-override-and-regenerate)
 - [Step 3 — Create a holiday](#step-3--create-a-holiday)
 - [Step 4 — Roster the month](#step-4--roster-the-month)
 - [Step 5 — Load punches (DB, not API)](#step-5--load-punches-db-not-api)
@@ -339,6 +340,59 @@ grossSalaryWage           = 22050
 | `role` | no | Defaults to `EMPLOYEE` |
 | `overtimeEligible` | no | Overtime is *measured* for everyone but only **paid** if `true` |
 | `joiningDate`, `dateOfBirth` | no | Feed the dashboard's anniversary and birthday cards |
+
+### Manual salary structure override and regenerate
+
+`basicDA`/`hra`/`conveyanceAllowance`/`educationAllowance` are derived at
+creation from the fields above and the active `SalaryRule` - but a real
+payslip sometimes needs to differ from the formula. Override them by hand:
+
+```
+PUT http://localhost:8080/api/employees/5/salary-structure
+Headers: Authorization: Bearer <token>, Content-Type: application/json
+```
+
+```json
+{
+  "basicDA": 13500,
+  "hra": 5400,
+  "conveyanceAllowance": 1350,
+  "educationAllowance": 1350
+}
+```
+
+**200 OK** — the employee, with `salaryStructureOverridden: true` and
+`grossSalaryWage` recomputed as the new sum (13500 + 5400 + 1350 + 1350 +
+1250 medical + 0 other = **22850**). From this point on, neither a plain
+`PUT /api/employees/5` nor a `SalaryRule` change will touch those four
+fields — only `grossSalaryWage` keeps refreshing if you edit
+`medicalAllowance`/`otherAllowance`.
+
+To go back to what `SalaryRule` derives — either to undo the override, or to
+pick up a rule change:
+
+```
+POST http://localhost:8080/api/employees/5/salary-structure/regenerate
+```
+
+**200 OK** — `salaryStructureOverridden: false`, `basicDA`/`hra`/etc. back to
+the formula's numbers.
+
+For a whole-company refresh after a `SalaryRule` change (the fix for "I
+updated the salary rule and nothing changed"):
+
+```
+POST http://localhost:8080/api/employees/salary-structure/regenerate-all
+```
+
+**200 OK** — `{"regenerated": 4}`. Every **active, non-overridden** employee
+of the caller's company is recomputed; anyone currently overridden is left
+alone on purpose — a bulk, rule-driven refresh silently discarding a
+deliberate manual value would be a surprise, not a fix. Regenerate an
+overridden employee individually if you actually want that.
+
+Neither call touches already-generated payroll. Re-run `/api/payroll/regenerate`
+(Step 11) for any period you want to reflect the corrected structure.
 
 ---
 
@@ -1188,7 +1242,15 @@ PATCH /api/employees/EMP005/supervisor?supervisorUserId=SUP001
 GET   /api/employees/SUP001/team
 PUT   /api/leave-balances/EMP005?year=2026&leaveType=CASUAL_LEAVE&quota=15
 POST  /api/attendance/summaries/refresh?month=2026-09
+
+PUT  /api/employees/5/salary-structure
+{ "basicDA": 13500, "hra": 5400, "conveyanceAllowance": 1350, "educationAllowance": 1350 }
+POST /api/employees/5/salary-structure/regenerate
+POST /api/employees/salary-structure/regenerate-all
 ```
+
+See [Step 2](#step-2--create-the-employee)'s "Manual salary structure override
+and regenerate" for what each of the three does and why.
 
 ---
 

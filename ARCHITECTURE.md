@@ -100,6 +100,37 @@ conveyance and education all derive from `basicDA`, they rise with it
 whenever the threshold wins, exactly as if the percentage itself had
 produced that higher figure.
 
+#### Manual override and regeneration
+
+`Employee.salaryStructureOverridden` is the escape hatch for the real-world
+case a fixed formula never quite covers - a payslip that needs to differ from
+what the percentages derive. `PUT /api/employees/{id}/salary-structure` sets
+`basicDA`/`hra`/`conveyanceAllowance`/`educationAllowance` by hand and flips
+the flag on; `SalaryCalculationService.applyCalculatedFields` then skips
+re-deriving those four fields on every later employee write (a plain update,
+or a rule change), leaving them exactly as set - only `grossSalaryWage` keeps
+refreshing, since medical/other allowance can still change underneath it.
+
+Because the derivation is skipped rather than never run, a `SalaryRule`
+change is picked up automatically by every employee **not** overridden the
+next time each is saved - but nothing pushes that recompute out on its own,
+so a rule edit alone does not touch existing employees. Two endpoints force
+it:
+
+- `POST /api/employees/{id}/salary-structure/regenerate` - clears the
+  override (if any) and recomputes one employee from their current gross
+  salary and the company's current rule.
+- `POST /api/employees/salary-structure/regenerate-all` - the same, for
+  every active employee of the caller's company at once (the practical
+  response to a rule change). Employees currently overridden are skipped -
+  a bulk, rule-driven refresh silently discarding a deliberate per-employee
+  override would be a surprise, not a fix.
+
+Payroll itself needs no separate refresh: `PayrollService.build()` always
+reads `basicDA`/`hra`/etc. straight off the `Employee` row at generate/
+regenerate time, so once the employee's structure is corrected, the next
+`POST /api/payroll/regenerate` for that period picks it up.
+
 ## How the calculations work
 
 ### Attendance
