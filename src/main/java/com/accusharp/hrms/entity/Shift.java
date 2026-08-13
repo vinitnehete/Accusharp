@@ -1,5 +1,6 @@
 package com.accusharp.hrms.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -10,11 +11,15 @@ import java.time.Duration;
 import java.time.LocalTime;
 
 /**
- * Shift master. The four standard shifts are seeded; admins may add custom
- * ones. A shift whose end time is not after its start time crosses midnight.
+ * Shift master. The four standard shifts are seeded with {@code company =
+ * null} - a shared catalog every company can see and roster against, but
+ * only a platform caller can edit; admins add their own company's custom
+ * shifts on top. A shift whose end time is not after its start time crosses
+ * midnight. See {@code Department}'s Javadoc for the full company/null
+ * rationale.
  */
 @Entity
-@Table(name = "shift", uniqueConstraints = @UniqueConstraint(columnNames = "shift_code"))
+@Table(name = "shift", uniqueConstraints = @UniqueConstraint(columnNames = {"company_id", "shift_code"}))
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -24,6 +29,12 @@ public class Shift {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    /** Null means a shared row every company can see. See class Javadoc. */
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "company_id")
+    private Company company;
 
     @Column(name = "shift_code", nullable = false, length = 30)
     private String shiftCode;

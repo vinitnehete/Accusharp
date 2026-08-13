@@ -7,14 +7,12 @@ import com.accusharp.hrms.entity.LeaveRequest;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.enums.AttendanceStatus;
 import com.accusharp.hrms.enums.LeaveStatus;
-import com.accusharp.hrms.enums.PayrollStatus;
-import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.LeaveRequestRepository;
-import com.accusharp.hrms.repository.PayrollRepository;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.attendance.AttendanceService;
+import com.accusharp.hrms.service.payroll.PayrollService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +33,13 @@ import java.util.stream.Collectors;
 /**
  * Admin dashboard. Every figure is derived live from the owning module, so the
  * dashboard cannot drift from the underlying reports.
+ *
+ * <p>Every query here is scoped to the caller's own company - either by
+ * building on {@code active} (already company-scoped via {@link
+ * EmployeeService#getActiveEntities()}) or, for {@code Payroll}, by routing
+ * through {@link PayrollService#getPeriod} instead of {@code
+ * PayrollRepository} directly, the same choke-point pattern used everywhere
+ * else in this app - see SECURITY_AUDIT.md's "list/report endpoints" finding.
  */
 @Service
 @RequiredArgsConstructor
@@ -45,10 +50,10 @@ public class DashboardService {
 
     private final EmployeeRepository employeeRepository;
     private final LeaveRequestRepository leaveRequestRepository;
-    private final PayrollRepository payrollRepository;
     private final ShiftScheduleRepository shiftScheduleRepository;
     private final EmployeeService employeeService;
     private final AttendanceService attendanceService;
+    private final PayrollService payrollService;
 
     @Transactional
     public ReportDtos.DashboardResponse getDashboard(LocalDate asOf) {
@@ -59,10 +64,14 @@ public class DashboardService {
     }
 
     private ReportDtos.Cards buildCards(LocalDate today, List<Employee> active) {
+        Set<String> companyUserIds = Set.copyOf(userIds(active));
+
         Set<String> onLeaveToday = leaveRequestRepository
                 .findAllByStatusInAndFromDateLessThanEqualAndToDateGreaterThanEqual(
                         List.of(LeaveStatus.APPROVED), today, today)
-                .stream().map(LeaveRequest::getUserId).collect(Collectors.toSet());
+                .stream().map(LeaveRequest::getUserId)
+                .filter(companyUserIds::contains)
+                .collect(Collectors.toSet());
 
         long presentToday = active.stream()
                 .filter(employee -> isPresentOn(employee.getUserId(), today))
@@ -83,23 +92,28 @@ public class DashboardService {
         long unscheduledTomorrow = active.size() - scheduledTomorrow.size();
 
         YearMonth thisMonth = YearMonth.from(today);
-        long payrollGenerated = payrollRepository.countByMonthAndYearAndStatus(
-                thisMonth.getMonthValue(), thisMonth.getYear(), PayrollStatus.GENERATED);
+        long payrollGenerated = payrollService.getPeriod(thisMonth.getMonthValue(), thisMonth.getYear()).size();
+
+        long pendingLeave = leaveRequestRepository
+                .findAllByStatusIn(List.of(LeaveStatus.PENDING, LeaveStatus.SUPERVISOR_APPROVED)).stream()
+                .filter(request -> companyUserIds.contains(request.getUserId()))
+                .count();
 
         return new ReportDtos.Cards(
-                employeeRepository.countByRecordStatus(RecordStatus.ACTIVE),
+                active.size(),
                 presentToday,
                 absentToday,
                 onLeaveToday.size(),
-                leaveRequestRepository.countByStatus(LeaveStatus.PENDING)
-                        + leaveRequestRepository.countByStatus(LeaveStatus.SUPERVISOR_APPROVED),
+                pendingLeave,
                 unscheduledTomorrow,
                 payrollGenerated,
-                upcomingBirthdays(today),
-                upcomingAnniversaries(today));
+                upcomingBirthdays(today, companyUserIds),
+                upcomingAnniversaries(today, companyUserIds));
     }
 
     private ReportDtos.Charts buildCharts(LocalDate today, List<Employee> active) {
+        Set<String> companyUserIds = Set.copyOf(userIds(active));
+
         List<ReportDtos.PointLong> attendanceTrend = new ArrayList<>();
         for (int offset = ATTENDANCE_TREND_DAYS - 1; offset >= 0; offset--) {
             LocalDate date = today.minusDays(offset);
@@ -120,8 +134,7 @@ public class DashboardService {
         List<ReportDtos.PointAmount> payrollCost = new ArrayList<>();
         for (int offset = PAYROLL_COST_MONTHS - 1; offset >= 0; offset--) {
             YearMonth period = YearMonth.from(today).minusMonths(offset);
-            BigDecimal cost = payrollRepository.findAllByMonthAndYearAndStatus(
-                            period.getMonthValue(), period.getYear(), PayrollStatus.GENERATED).stream()
+            BigDecimal cost = payrollService.getPeriod(period.getMonthValue(), period.getYear()).stream()
                     .map(Payroll::getNetSalary)
                     .filter(java.util.Objects::nonNull)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -132,6 +145,8 @@ public class DashboardService {
         LocalDate yearStart = LocalDate.of(today.getYear(), 1, 1);
         leaveRequestRepository.findAllByStatusInAndFromDateLessThanEqualAndToDateGreaterThanEqual(
                         List.of(LeaveStatus.APPROVED), today, yearStart)
+                .stream()
+                .filter(request -> companyUserIds.contains(request.getUserId()))
                 .forEach(request -> leaveUsage.merge(request.getLeaveType().name(),
                         request.getTotalDays(), BigDecimal::add));
         List<ReportDtos.PointAmount> leaveUsagePoints = leaveUsage.entrySet().stream()
@@ -147,19 +162,21 @@ public class DashboardService {
                 || day.status() == AttendanceStatus.HALF_DAY);
     }
 
-    private List<ReportDtos.PersonEvent> upcomingBirthdays(LocalDate today) {
+    private List<ReportDtos.PersonEvent> upcomingBirthdays(LocalDate today, Set<String> companyUserIds) {
         Month month = today.getMonth();
         return employeeRepository.findBirthdaysInMonth(month.getValue()).stream()
+                .filter(employee -> companyUserIds.contains(employee.getUserId()))
                 .filter(employee -> employee.getDateOfBirth().getDayOfMonth() >= today.getDayOfMonth())
                 .map(employee -> new ReportDtos.PersonEvent(employee.getUserId(), employee.getEmployeeName(),
                         employee.getDateOfBirth().withYear(today.getYear()), null))
                 .toList();
     }
 
-    private List<ReportDtos.PersonEvent> upcomingAnniversaries(LocalDate today) {
+    private List<ReportDtos.PersonEvent> upcomingAnniversaries(LocalDate today, Set<String> companyUserIds) {
         Month month = today.getMonth();
         LocalDate monthStart = today.withDayOfMonth(1);
         return employeeRepository.findWorkAnniversariesInMonth(month.getValue(), monthStart).stream()
+                .filter(employee -> companyUserIds.contains(employee.getUserId()))
                 .filter(employee -> employee.getJoiningDate().getDayOfMonth() >= today.getDayOfMonth())
                 .map(employee -> new ReportDtos.PersonEvent(employee.getUserId(), employee.getEmployeeName(),
                         employee.getJoiningDate().withYear(today.getYear()),

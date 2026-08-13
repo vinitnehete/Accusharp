@@ -1,5 +1,6 @@
 package com.accusharp.hrms.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -22,6 +23,15 @@ public class Holiday {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /**
+     * {@code @JsonIgnore}: {@code HolidayController} returns this entity
+     * directly, and with {@code spring.jpa.open-in-view=false} (the
+     * production setting) the Hibernate session is already closed by
+     * serialization time, so touching this lazy proxy throws instead of
+     * returning null - proven empirically while fixing the identical issue
+     * on {@code SalaryRule.company}, see that class's Javadoc.
+     */
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "company_id")
     private Company company;

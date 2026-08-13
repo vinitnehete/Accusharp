@@ -10,10 +10,13 @@ import com.accusharp.hrms.dto.ShiftSwapRequest;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.entity.ShiftSchedule;
+import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
+import com.accusharp.hrms.security.TenantContext;
+import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.HolidayService;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Everything that puts an employee on a shift: single and bulk assignment, the
@@ -48,6 +52,8 @@ public class ShiftSchedulingService {
     private final ShiftService shiftService;
     private final EmployeeService employeeService;
     private final HolidayService holidayService;
+    private final TenantContext tenantContext;
+    private final AuditService auditService;
 
     // ---- single assignment -------------------------------------------------
 
@@ -56,7 +62,7 @@ public class ShiftSchedulingService {
         employeeService.getEntityByUserId(request.getUserId());
         assertMaySchedule(request.getAssignedBy(), request.getUserId());
 
-        Shift shift = shiftService.getByCode(request.getShiftCode());
+        Shift shift = shiftService.getByCode(request.getShiftCode(), tenantContext.currentCompanyId().orElse(null));
 
         ShiftSchedule schedule = shiftScheduleRepository
                 .findByUserIdAndShiftDate(request.getUserId(), request.getShiftDate())
@@ -71,6 +77,8 @@ public class ShiftSchedulingService {
         ShiftSchedule saved = shiftScheduleRepository.save(schedule);
         log.info("shift.assign userId={} date={} shift={}", saved.getUserId(), saved.getShiftDate(),
                 shift.getShiftCode());
+        auditService.record("SHIFT_SCHEDULE_ASSIGN", "ShiftSchedule", saved.getUserId() + " " + saved.getShiftDate(),
+                AuditOutcome.SUCCESS, "shift=" + shift.getShiftCode());
         return toResponse(saved);
     }
 
@@ -79,9 +87,12 @@ public class ShiftSchedulingService {
     @Transactional
     public List<ShiftScheduleResponse> assignBulk(BulkShiftAssignmentRequest request) {
         validateRange(request.getFromDate(), request.getToDate());
-        Shift shift = shiftService.getByCode(request.getShiftCode());
+        // Every userId below is individually tenant-checked (assertMaySchedule -> getEntityByUserId),
+        // so a single successful call can only ever span one company - the caller's own.
+        Long companyId = tenantContext.currentCompanyId().orElse(null);
+        Shift shift = shiftService.getByCode(request.getShiftCode(), companyId);
         Set<LocalDate> holidays = request.isSkipHolidays()
-                ? holidayService.mandatoryHolidayDates(request.getFromDate(), request.getToDate())
+                ? holidayService.mandatoryHolidayDates(companyId, request.getFromDate(), request.getToDate())
                 : Set.of();
 
         List<ShiftSchedule> toSave = new ArrayList<>();
@@ -119,7 +130,13 @@ public class ShiftSchedulingService {
 
         log.info("shift.bulk-assign employees={} days={} shift={}", request.getUserIds().size(),
                 toSave.size(), shift.getShiftCode());
-        return shiftScheduleRepository.saveAll(toSave).stream().map(this::toResponse).toList();
+        List<ShiftScheduleResponse> saved = shiftScheduleRepository.saveAll(toSave).stream()
+                .map(this::toResponse).toList();
+        auditService.record("SHIFT_SCHEDULE_BULK_ASSIGN", "ShiftSchedule",
+                request.getFromDate() + ".." + request.getToDate(), AuditOutcome.SUCCESS,
+                "employees=" + request.getUserIds().size() + " days=" + toSave.size()
+                        + " shift=" + shift.getShiftCode());
+        return saved;
     }
 
     // ---- auto rotation -----------------------------------------------------
@@ -133,9 +150,11 @@ public class ShiftSchedulingService {
     public List<ShiftScheduleResponse> autoRotate(ShiftRotationRequest request) {
         validateRange(request.getFromDate(), request.getToDate());
 
-        List<Shift> cycle = request.getShiftCycle().stream().map(shiftService::getByCode).toList();
+        Long companyId = tenantContext.currentCompanyId().orElse(null);
+        List<Shift> cycle = request.getShiftCycle().stream()
+                .map(code -> shiftService.getByCode(code, companyId)).toList();
         Set<LocalDate> holidays = request.isSkipHolidays()
-                ? holidayService.mandatoryHolidayDates(request.getFromDate(), request.getToDate())
+                ? holidayService.mandatoryHolidayDates(companyId, request.getFromDate(), request.getToDate())
                 : Set.of();
 
         List<ShiftSchedule> toSave = new ArrayList<>();
@@ -172,7 +191,12 @@ public class ShiftSchedulingService {
             }
         }
 
-        return shiftScheduleRepository.saveAll(toSave).stream().map(this::toResponse).toList();
+        List<ShiftScheduleResponse> saved = shiftScheduleRepository.saveAll(toSave).stream()
+                .map(this::toResponse).toList();
+        auditService.record("SHIFT_SCHEDULE_AUTO_ROTATE", "ShiftSchedule",
+                request.getFromDate() + ".." + request.getToDate(), AuditOutcome.SUCCESS,
+                "employees=" + request.getUserIds().size() + " days=" + toSave.size());
+        return saved;
     }
 
     // ---- copy previous month ----------------------------------------------
@@ -222,7 +246,11 @@ public class ShiftSchedulingService {
             }
         }
 
-        return shiftScheduleRepository.saveAll(toSave).stream().map(this::toResponse).toList();
+        List<ShiftScheduleResponse> saved = shiftScheduleRepository.saveAll(toSave).stream()
+                .map(this::toResponse).toList();
+        auditService.record("SHIFT_SCHEDULE_COPY_MONTH", "ShiftSchedule", source + " -> " + target,
+                AuditOutcome.SUCCESS, "employees=" + request.getUserIds().size() + " days=" + toSave.size());
+        return saved;
     }
 
     // ---- holiday override --------------------------------------------------
@@ -231,21 +259,39 @@ public class ShiftSchedulingService {
      * Marks every mandatory holiday in the month as a week off across the
      * roster, so the planner reflects the holiday calendar without anyone
      * editing days by hand.
+     *
+     * <p>Found during a full security audit and fixed here: this previously
+     * queried every company's rosters at once against every company's
+     * holidays merged together, so running it as one company's HR would
+     * silently rewrite every <em>other</em> company's roster too.
+     * {@code ShiftSchedule} has no company column of its own (it is keyed by
+     * {@code userId} - see {@code SECURITY.md}'s tenant-isolation section),
+     * so scoping this means going through the already company-scoped
+     * {@code EmployeeService.getActiveEntities()} to get the set of userIds
+     * that are actually this caller's to touch.
      */
     @Transactional
     public int applyHolidayOverride(YearMonth month) {
-        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(month);
+        Long companyId = tenantContext.currentCompanyId().orElse(null);
+        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, month);
         if (holidays.isEmpty()) {
             return 0;
         }
+        Set<String> scopedUserIds = companyId == null ? null : employeeService.getActiveEntities().stream()
+                .map(Employee::getUserId)
+                .collect(Collectors.toSet());
+
         List<ShiftSchedule> affected = shiftScheduleRepository
                 .findAllByShiftDateBetween(month.atDay(1), month.atEndOfMonth()).stream()
+                .filter(schedule -> scopedUserIds == null || scopedUserIds.contains(schedule.getUserId()))
                 .filter(schedule -> holidays.contains(schedule.getShiftDate()))
                 .filter(schedule -> !schedule.isWeekOff())
                 .peek(schedule -> schedule.setWeekOff(true))
                 .toList();
         shiftScheduleRepository.saveAll(affected);
         log.info("shift.holiday-override month={} updated={}", month, affected.size());
+        auditService.record("SHIFT_SCHEDULE_HOLIDAY_OVERRIDE", "ShiftSchedule", month.toString(),
+                AuditOutcome.SUCCESS, "updated=" + affected.size());
         return affected.size();
     }
 
@@ -270,7 +316,11 @@ public class ShiftSchedulingService {
         second.setShift(firstShift);
         second.setWeekOff(firstWeekOff);
 
-        return shiftScheduleRepository.saveAll(List.of(first, second)).stream().map(this::toResponse).toList();
+        List<ShiftScheduleResponse> saved = shiftScheduleRepository.saveAll(List.of(first, second)).stream()
+                .map(this::toResponse).toList();
+        auditService.record("SHIFT_SCHEDULE_SWAP", "ShiftSchedule", request.getShiftDate().toString(),
+                AuditOutcome.SUCCESS, "first=" + request.getFirstUserId() + " second=" + request.getSecondUserId());
+        return saved;
     }
 
     // ---- reads -------------------------------------------------------------
@@ -278,6 +328,7 @@ public class ShiftSchedulingService {
     @Transactional(readOnly = true)
     public List<ShiftScheduleResponse> getRoster(String userId, LocalDate fromDate, LocalDate toDate) {
         employeeService.getEntityByUserId(userId);
+        employeeService.assertSelfOrManages(userId);
         List<ShiftSchedule> schedules = (fromDate == null || toDate == null)
                 ? shiftScheduleRepository.findAllByUserIdOrderByShiftDateAsc(userId)
                 : shiftScheduleRepository.findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
@@ -285,15 +336,16 @@ public class ShiftSchedulingService {
         return schedules.stream().map(this::toResponse).toList();
     }
 
-    /** Calendar-shaped roster for the planner UI. */
+    /**
+     * Calendar-shaped roster for the planner UI. {@code supervisorUserId} is
+     * only a hint for ADMIN/HR - see {@link EmployeeService#plannerScope}
+     * for why a SUPERVISOR/EMPLOYEE's request is silently narrowed instead
+     * of trusted as-is; without that, omitting it used to hand back the
+     * whole company's roster to any caller.
+     */
     @Transactional(readOnly = true)
     public MonthlyPlannerResponse getMonthlyPlanner(YearMonth month, String supervisorUserId) {
-        List<Employee> employees = supervisorUserId == null
-                ? employeeService.getActiveEntities()
-                : employeeService.getActiveEntities().stream()
-                        .filter(e -> e.getSupervisor() != null
-                                && supervisorUserId.equals(e.getSupervisor().getUserId()))
-                        .toList();
+        List<Employee> employees = employeeService.plannerScope(supervisorUserId);
 
         List<LocalDate> dates = month.atDay(1).datesUntil(month.atEndOfMonth().plusDays(1)).toList();
         if (employees.isEmpty()) {
@@ -319,9 +371,13 @@ public class ShiftSchedulingService {
     }
 
     @Transactional
-    public void deleteRange(String userId, LocalDate fromDate, LocalDate toDate) {
+    public void deleteRange(String userId, LocalDate fromDate, LocalDate toDate, String assignedBy) {
         validateRange(fromDate, toDate);
+        employeeService.getEntityByUserId(userId);
+        assertMaySchedule(assignedBy, userId);
         shiftScheduleRepository.deleteByUserIdAndShiftDateBetween(userId, fromDate, toDate);
+        auditService.record("SHIFT_SCHEDULE_DELETE_RANGE", "ShiftSchedule", userId,
+                AuditOutcome.SUCCESS, "range=" + fromDate + ".." + toDate);
     }
 
     // ---- helpers -----------------------------------------------------------

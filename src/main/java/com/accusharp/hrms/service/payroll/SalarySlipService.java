@@ -42,7 +42,7 @@ public class SalarySlipService {
 
     @Transactional(readOnly = true)
     public List<SalarySlipResponse> getSlipsForPeriod(int month, int year) {
-        return payrollService.getPeriod(month, year).stream().map(this::toSlip).toList();
+        return payrollService.getPeriodForCaller(month, year).stream().map(this::toSlip).toList();
     }
 
     public SalarySlipResponse toSlip(Payroll payroll) {
@@ -61,6 +61,7 @@ public class SalarySlipService {
         addLine(deductions, "Provident Fund", payroll.getPfDeduction());
         addLine(deductions, "ESIC", payroll.getEsic());
         addLine(deductions, "Professional Tax", payroll.getProfessionalTax());
+        addLine(deductions, "MLWF", payroll.getMlwf());
         addLine(deductions, "TDS", payroll.getTds());
         addLine(deductions, "Advance", payroll.getAdvanceDeduction());
         addLine(deductions, "Loan", payroll.getLoanDeduction());
@@ -158,7 +159,7 @@ public class SalarySlipService {
         csv.append("employeeId,employeeCode,employeeName,department,designation,workingDays,presentDays,")
                 .append("paidLeaveDays,lopDays,payableDays,totalEarnings,totalDeductions,netSalary\n");
 
-        for (Payroll payroll : payrollService.getPeriod(month, year)) {
+        for (Payroll payroll : payrollService.getPeriodForCaller(month, year)) {
             csv.append(csvCell(payroll.getEmployeeId())).append(',')
                     .append(csvCell(payroll.getEmployeeCode())).append(',')
                     .append(csvCell(payroll.getEmployeeName())).append(',')

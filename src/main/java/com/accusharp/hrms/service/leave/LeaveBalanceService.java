@@ -41,6 +41,7 @@ public class LeaveBalanceService {
     @Transactional
     public List<LeaveBalanceResponse> getBalances(String userId, int year) {
         employeeService.getEntityByUserId(userId);
+        employeeService.assertSelfOrManages(userId);
         return Arrays.stream(LeaveType.values())
                 .map(type -> getOrCreate(userId, year, type))
                 .map(this::toResponse)
@@ -75,6 +76,7 @@ public class LeaveBalanceService {
 
     @Transactional
     public LeaveBalanceResponse setQuota(String userId, int year, LeaveType leaveType, BigDecimal quota) {
+        employeeService.getEntityByUserId(userId);
         LeaveBalance balance = getOrCreate(userId, year, leaveType);
         if (quota.compareTo(balance.getUsed()) < 0) {
             throw new BusinessRuleException("Quota cannot be lower than the " + balance.getUsed()

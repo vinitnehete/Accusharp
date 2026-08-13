@@ -1,5 +1,6 @@
 package com.accusharp.hrms.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -9,9 +10,15 @@ import lombok.NoArgsConstructor;
 import java.math.BigDecimal;
 
 /**
- * Single mutable config row (id = 1) holding every configurable payroll
- * percentage and slab. Changing it affects future calculations only: employees
- * and payroll rows persist what was computed at the time.
+ * Configurable payroll percentages and slabs. Changing a rule affects future
+ * calculations only: employees and payroll rows persist what was computed at
+ * the time.
+ *
+ * <p>One row per company, plus exactly one row with {@code company = null} -
+ * the global default a company falls back to until it sets its own (see
+ * {@link com.accusharp.hrms.service.SalaryRuleService}). Every company
+ * sharing one formula was a real multi-tenancy bug, not a deliberate
+ * simplification - see {@code SECURITY.md}.
  *
  * <p>Effective-dated versions are the next step if per-period audit history is
  * ever required.
@@ -24,14 +31,42 @@ import java.math.BigDecimal;
 @Builder
 public class SalaryRule {
 
-    public static final Long CONFIG_ID = 1L;
-
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    /**
+     * Null means the global default every company falls back to.
+     *
+     * <p>{@code @JsonIgnore}: {@code SalaryRuleController} returns this
+     * entity directly rather than through a DTO, and with
+     * {@code spring.jpa.open-in-view=false} (the production setting - see
+     * {@code application.properties}) the Hibernate session backing this
+     * lazy proxy is already closed by the time Jackson serializes the
+     * response, which throws rather than returning null. The caller already
+     * knows which company they are asking for from their own auth context,
+     * so the field adds nothing on the wire anyway.
+     */
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "company_id")
+    private Company company;
 
     /** basicDA = grossSalary x basicDaPercent. */
     @Column(name = "basic_da_percent", nullable = false, precision = 6, scale = 2)
     private BigDecimal basicDaPercent;
+
+    /**
+     * Government-notified minimum wage for Basic+DA. When the percentage
+     * calculation above lands below this figure, the threshold wins instead -
+     * HRA, conveyance and education still derive from whichever value was
+     * used, so they rise with it. Zero (the default) means no floor applies.
+     * This changes on its own schedule (state minimum-wage notifications),
+     * independent of {@code basicDaPercent}, which is why it is its own
+     * field rather than folded into the percentage.
+     */
+    @Column(name = "basic_da_minimum_threshold", nullable = false, precision = 15, scale = 2)
+    private BigDecimal basicDaMinimumThreshold;
 
     /** hra, conveyance and education are percentages of basicDA. */
     @Column(name = "hra_percent", nullable = false, precision = 6, scale = 2)
@@ -78,10 +113,20 @@ public class SalaryRule {
     @Column(name = "overtime_rate_multiplier", nullable = false, precision = 4, scale = 2)
     private BigDecimal overtimeRateMultiplier;
 
+    /**
+     * Flat amount deducted from the employee in the state's two Labour
+     * Welfare Fund cycles (June and December) only - zero every other month.
+     * A single figure per company, revised whenever the state notifies a new
+     * one; see {@link com.accusharp.hrms.service.calculation.DeductionCalculationService#calculateMlwf}.
+     */
+    @Column(name = "mlwf_amount", nullable = false, precision = 15, scale = 2)
+    private BigDecimal mlwfAmount;
+
+    /** Sane starting values for a new rule row - the global default, or a fresh per-company one. */
     public static SalaryRule defaultRule() {
         return SalaryRule.builder()
-                .id(CONFIG_ID)
                 .basicDaPercent(new BigDecimal("50"))
+                .basicDaMinimumThreshold(BigDecimal.ZERO)
                 .hraPercent(new BigDecimal("40"))
                 .conveyancePercent(new BigDecimal("10"))
                 .educationPercent(new BigDecimal("10"))
@@ -95,6 +140,7 @@ public class SalaryRule {
                 .dayWiseDaysInMonth(26)
                 .standardHoursPerDay(new BigDecimal("8"))
                 .overtimeRateMultiplier(new BigDecimal("1.00"))
+                .mlwfAmount(BigDecimal.ZERO)
                 .build();
     }
 }

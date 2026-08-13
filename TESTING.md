@@ -12,8 +12,23 @@ approved leave and is absent once without leave.
 
 | File | What it is |
 |---|---|
-| [`docs/testing/Accusharp-HRMS.postman_collection.json`](docs/testing/Accusharp-HRMS.postman_collection.json) | Import into Postman — 51 requests in 9 ordered folders, with assertions |
+| [`docs/testing/Accusharp-HRMS.postman_collection.json`](docs/testing/Accusharp-HRMS.postman_collection.json) | Import into Postman — 72 requests in 11 ordered folders (starting with login), with assertions |
 | [`docs/testing/device_logs_EMP005_2026-09.sql`](docs/testing/device_logs_EMP005_2026-09.sql) | The punches, ready to run against MySQL |
+| [`docs/testing/multi-company-smoke-test.sh`](docs/testing/multi-company-smoke-test.sh) | A separate curl-based script proving multi-company isolation and self-service scoping over real HTTP - see SECURITY.md |
+
+**This is a manual/Postman walkthrough of one payroll cycle, not the
+automated test suite.** The app also has ~90 JUnit tests
+(`./mvnw test`, or `./mvnw test -Dtest=ClassName` for one class) across 13
+classes under `src/test/java/com/accusharp/hrms/` - unit tests for the
+calculation services (`calculation/`), full-flow integration tests
+(`PayrollFlowIntegrationTest`, `AttendanceRegularisationTest`,
+`NightShiftMonthBoundaryTest`), and real-HTTP tests spinning up the app on a
+random port (`AuthApiHttpTest`, `TenantIsolationHttpTest`,
+`SelfServiceScopingHttpTest`, `CompanyOnboardingHttpTest`, `AuditLogHttpTest`,
+`AttendanceApiHttpTest`) that log in over the wire the same way this document
+does, then drive the API with a real `HttpClient`. Those run on every change
+and are the first thing to check if something here stops matching reality;
+this document is for a human working through the same cycle by hand.
 
 ---
 
@@ -24,6 +39,7 @@ approved leave and is absent once without leave.
 - [Step 0 — Look around](#step-0--look-around)
 - [Step 1 — Create a designation](#step-1--create-a-designation)
 - [Step 2 — Create the employee](#step-2--create-the-employee)
+  - [Manual salary structure override and regenerate](#manual-salary-structure-override-and-regenerate)
 - [Step 3 — Create a holiday](#step-3--create-a-holiday)
 - [Step 4 — Roster the month](#step-4--roster-the-month)
 - [Step 5 — Load punches (DB, not API)](#step-5--load-punches-db-not-api)
@@ -48,13 +64,24 @@ This trips people up, so it is worth stating plainly:
 
 | | |
 |---|---|
-| **Authentication** | **None.** No token, no API key, no login. Every endpoint is open. |
-| **Headers on GET / DELETE** | **None required.** Send nothing. |
-| **Headers on POST / PUT / PATCH** | **Exactly one:** `Content-Type: application/json` |
+| **Authentication** | **Required on every `/api/**` endpoint except `/api/auth/**`.** `POST /api/auth/login` first, then send the returned `accessToken` as `Authorization: Bearer <token>` on everything else. |
+| **Headers on every request** | `Authorization: Bearer <token>` (all methods, including GET/DELETE - a bare `curl http://localhost:8080/api/employees` now gets `401`) |
+| **Headers on POST / PUT / PATCH** | Also `Content-Type: application/json` |
 | **Response type** | `application/json`, except the print view (`text/html`) and CSV export (`text/csv`) |
 
-That is the complete header story. In Postman, selecting **Body → raw → JSON**
-sets `Content-Type` for you automatically.
+In the **Postman collection**, this is already wired up for you: run the
+**"00 - Login"** folder first (one request, logs in as the seeded `HR001`
+user) - its test script stores the token in the `{{accessToken}}` collection
+variable, and collection-level auth means every other request inherits it
+automatically. Nothing else in the collection needed to change. The token
+expires in 15 minutes; rerun "00 - Login" if requests start failing with 401
+partway through a session. If you're issuing requests by hand (`curl`,
+a browser REST client), you need to capture and pass the token yourself -
+see the login call at the top of Setup below.
+
+In Postman, selecting **Body → raw → JSON** sets `Content-Type` for you
+automatically; auth is handled by the collection/folder-level setting above,
+not per-request.
 
 ### Date formats
 
@@ -82,9 +109,24 @@ That uses MySQL (`alsama` on `localhost:3306`, `root`/`root`). To try it without
 MySQL, use `-Dspring-boot.run.profiles=h2` — but then you cannot use the punch
 SQL, since there is no MySQL to insert into.
 
+**Not using Postman?** Log in first and capture the token:
+
+```bash
+curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"HR001","password":"Accusharp@123"}'
+# -> {"accessToken": "...", "refreshToken": "...", ...}
+```
+
+Pass `-H "Authorization: Bearer <accessToken>"` on every request in every step
+below (the Postman collection does this for you automatically - see
+"Headers and auth" above).
+
 In Postman: **Import → File →** `docs/testing/Accusharp-HRMS.postman_collection.json`.
-Set the `baseUrl` variable if you are not on `http://localhost:8080`. Run the
-folders in order `00 → 08`, pausing after folder `02` to load the punches.
+Set the `baseUrl` variable if you are not on `http://localhost:8080`. Run
+**"00 - Login"** first, then the rest in order (`00 - Look around` through
+`09 - Error cases worth seeing`), pausing after folder `02` to load the
+punches.
 
 ---
 
@@ -96,7 +138,7 @@ touch employees that already exist.
 
 ```
 GET  http://localhost:8080/api/salary-rules
-Headers: none
+Headers: Authorization: Bearer <token>
 Body:    none
 ```
 
@@ -172,7 +214,7 @@ Who exists and what they can do:
 
 ```
 POST http://localhost:8080/api/designations
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -202,7 +244,7 @@ Headers: Content-Type: application/json
 
 ```
 POST http://localhost:8080/api/employees
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -232,36 +274,45 @@ Headers: Content-Type: application/json
 
 ```json
 {
-  "id": 5,
-  "userId": "EMP005",
-  "employeeCode": "EMP-005",
-  "employeeName": "Priya Kulkarni",
-  "companyName": "Accusharp Industries",
-  "departmentName": "Production",
-  "designationName": "Senior Operator",
-  "supervisorUserId": "SUP001",
-  "supervisorName": "Rakesh Patil",
-  "joiningDate": "2024-02-12",
-  "dateOfBirth": "1996-09-20",
-  "status": "PERMANENT",
-  "recordStatus": "ACTIVE",
-  "role": "EMPLOYEE",
-  "email": "priya@accusharp.example",
-  "phone": "9822001122",
-  "grossSalary": 26000,
-  "pfBasic": 9000,
-  "basicDA": 13000.0,
-  "hra": 5200.0,
-  "conveyanceAllowance": 1300.0,
-  "educationAllowance": 1300.0,
-  "medicalAllowance": 1250,
-  "otherAllowance": 0,
-  "grossSalaryWage": 22050.0,
-  "overtimeEligible": true
+  "employee": {
+    "id": 5,
+    "userId": "EMP005",
+    "employeeCode": "EMP-005",
+    "employeeName": "Priya Kulkarni",
+    "companyName": "Accusharp Industries",
+    "departmentName": "Production",
+    "designationName": "Senior Operator",
+    "supervisorUserId": "SUP001",
+    "supervisorName": "Rakesh Patil",
+    "joiningDate": "2024-02-12",
+    "dateOfBirth": "1996-09-20",
+    "status": "PERMANENT",
+    "recordStatus": "ACTIVE",
+    "role": "EMPLOYEE",
+    "email": "priya@accusharp.example",
+    "phone": "9822001122",
+    "grossSalary": 26000,
+    "pfBasic": 9000,
+    "basicDA": 13000.0,
+    "hra": 5200.0,
+    "conveyanceAllowance": 1300.0,
+    "educationAllowance": 1300.0,
+    "medicalAllowance": 1250,
+    "otherAllowance": 0,
+    "grossSalaryWage": 22050.0,
+    "overtimeEligible": true
+  },
+  "temporaryPassword": "Tp7-xxxxxxxxxxxxxxxxxxxxxx"
 }
 ```
 
-**You sent 4 money fields; 5 came back derived.**
+**The response wraps the employee, it isn't a bare employee object.** Every
+employee HR/ADMIN creates now gets a generated one-time password
+(`temporaryPassword`), the only way that employee will ever log in - there is
+no forgot-password recovery if it's lost after this response. Capture it now.
+This didn't used to be true - see SECURITY.md's Phase 9.
+
+**You sent 4 money fields; 5 came back derived (inside `employee`).**
 
 ```
 basicDA    = 26000 × 50%  = 13000
@@ -290,13 +341,66 @@ grossSalaryWage           = 22050
 | `overtimeEligible` | no | Overtime is *measured* for everyone but only **paid** if `true` |
 | `joiningDate`, `dateOfBirth` | no | Feed the dashboard's anniversary and birthday cards |
 
+### Manual salary structure override and regenerate
+
+`basicDA`/`hra`/`conveyanceAllowance`/`educationAllowance` are derived at
+creation from the fields above and the active `SalaryRule` - but a real
+payslip sometimes needs to differ from the formula. Override them by hand:
+
+```
+PUT http://localhost:8080/api/employees/5/salary-structure
+Headers: Authorization: Bearer <token>, Content-Type: application/json
+```
+
+```json
+{
+  "basicDA": 13500,
+  "hra": 5400,
+  "conveyanceAllowance": 1350,
+  "educationAllowance": 1350
+}
+```
+
+**200 OK** — the employee, with `salaryStructureOverridden: true` and
+`grossSalaryWage` recomputed as the new sum (13500 + 5400 + 1350 + 1350 +
+1250 medical + 0 other = **22850**). From this point on, neither a plain
+`PUT /api/employees/5` nor a `SalaryRule` change will touch those four
+fields — only `grossSalaryWage` keeps refreshing if you edit
+`medicalAllowance`/`otherAllowance`.
+
+To go back to what `SalaryRule` derives — either to undo the override, or to
+pick up a rule change:
+
+```
+POST http://localhost:8080/api/employees/5/salary-structure/regenerate
+```
+
+**200 OK** — `salaryStructureOverridden: false`, `basicDA`/`hra`/etc. back to
+the formula's numbers.
+
+For a whole-company refresh after a `SalaryRule` change (the fix for "I
+updated the salary rule and nothing changed"):
+
+```
+POST http://localhost:8080/api/employees/salary-structure/regenerate-all
+```
+
+**200 OK** — `{"regenerated": 4}`. Every **active, non-overridden** employee
+of the caller's company is recomputed; anyone currently overridden is left
+alone on purpose — a bulk, rule-driven refresh silently discarding a
+deliberate manual value would be a surprise, not a fix. Regenerate an
+overridden employee individually if you actually want that.
+
+Neither call touches already-generated payroll. Re-run `/api/payroll/regenerate`
+(Step 11) for any period you want to reflect the corrected structure.
+
 ---
 
 ## Step 3 — Create a holiday
 
 ```
 POST http://localhost:8080/api/holidays
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -320,7 +424,7 @@ so the employee reads as absent all month and the entire salary becomes LOP.
 
 ```
 POST http://localhost:8080/api/shift-schedules/bulk
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -439,7 +543,7 @@ mysql -uroot -proot alsama -e "INSERT INTO device_logs (device_log_id, device_id
 
 ```
 GET  http://localhost:8080/api/attendance/EMP005/monthly?month=2026-09
-Headers: none
+Headers: Authorization: Bearer <token>
 ```
 
 **200 OK**
@@ -522,7 +626,7 @@ GET  http://localhost:8080/api/leave-balances/EMP005?year=2026
 
 ```
 POST http://localhost:8080/api/leaves
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -583,7 +687,7 @@ GET  http://localhost:8080/api/leaves/pending/SUP001
 
 ```
 POST http://localhost:8080/api/leaves/1/supervisor-approve
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -601,7 +705,7 @@ here and the employee still loses the pay.
 
 ```
 POST http://localhost:8080/api/leaves/1/approve
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -672,7 +776,7 @@ LOP = working days − present days − approved paid leave
 
 ```
 POST http://localhost:8080/api/payroll/generate
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -795,10 +899,13 @@ netSalary = totalEarnings − totalDeduction
 ### Whole company at once
 
 ```
-POST http://localhost:8080/api/payroll/generate-all?month=9&year=2026&generatedBy=HR001
-Headers: none (all parameters are in the query string)
+POST http://localhost:8080/api/payroll/generate-all?month=9&year=2026
+Headers: Authorization: Bearer <token>
 Body:    none
 ```
+
+(`generatedBy` is not a query parameter here - like every other actor field in
+this document, it's always the caller from the bearer token.)
 
 Skips anyone already generated, so it is safe to re-run. Uses **zero for all
 manual deductions** — generate anyone with an advance or canteen amount
@@ -948,7 +1055,7 @@ Use regenerate:
 
 ```
 POST http://localhost:8080/api/payroll/regenerate
-Headers: Content-Type: application/json
+Headers: Authorization: Bearer <token>, Content-Type: application/json
 ```
 
 ```json
@@ -1135,16 +1242,26 @@ PATCH /api/employees/EMP005/supervisor?supervisorUserId=SUP001
 GET   /api/employees/SUP001/team
 PUT   /api/leave-balances/EMP005?year=2026&leaveType=CASUAL_LEAVE&quota=15
 POST  /api/attendance/summaries/refresh?month=2026-09
+
+PUT  /api/employees/5/salary-structure
+{ "basicDA": 13500, "hra": 5400, "conveyanceAllowance": 1350, "educationAllowance": 1350 }
+POST /api/employees/5/salary-structure/regenerate
+POST /api/employees/salary-structure/regenerate-all
 ```
+
+See [Step 2](#step-2--create-the-employee)'s "Manual salary structure override
+and regenerate" for what each of the three does and why.
 
 ---
 
 ## Before you rely on this
 
-**Every endpoint is unauthenticated.** Roles are enforced inside the business
-rules — only HR/ADMIN can give final leave approval, supervisors can only touch
-their own team — but nothing stops an unauthenticated caller from claiming to be
-`HR001`. Keep it on a trusted network until authentication is added.
+Authentication and authorization both exist now (JWT bearer tokens,
+permission-based `@PreAuthorize` on every endpoint, multi-tenant company
+isolation, self-service scoping) - see [SECURITY.md](SECURITY.md) for the
+full picture, including what's still genuinely open: dynamic/admin-editable
+roles, a real forgot-password email flow, audit log retention tooling, and
+full audit coverage of every sensitive action.
 
 Also: set `hrms.seed.enabled=false` and remove the demo employees before loading
 real data.

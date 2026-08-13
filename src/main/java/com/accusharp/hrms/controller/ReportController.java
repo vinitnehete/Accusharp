@@ -6,6 +6,7 @@ import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.report.ReportService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -18,6 +19,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/reports")
 @RequiredArgsConstructor
+@PreAuthorize("@authz.can('REPORT_READ')")
 public class ReportController {
 
     private final ReportService reportService;

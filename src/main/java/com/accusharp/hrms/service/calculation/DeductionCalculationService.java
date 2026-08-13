@@ -46,6 +46,19 @@ public class DeductionCalculationService {
         return salaryCalculationService.percentOf(earnedGross, rule.getEsicPercent());
     }
 
+    /**
+     * Labour Welfare Fund: deducted from the employee only in the state's two
+     * contribution cycles, June and December - zero every other month. The
+     * amount itself is a single company-wide figure in {@link SalaryRule},
+     * revised whenever the state notifies a new one.
+     */
+    public BigDecimal calculateMlwf(int month, SalaryRule rule) {
+        if (month != 6 && month != 12) {
+            return BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP);
+        }
+        return salaryCalculationService.scaled(rule.getMlwfAmount());
+    }
+
     /** Two-step professional tax slab on the employee's gross salary. */
     public BigDecimal calculateProfessionalTax(BigDecimal grossSalary, SalaryRule rule) {
         if (grossSalary == null) {

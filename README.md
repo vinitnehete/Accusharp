@@ -9,10 +9,13 @@ loss of pay, payroll, salary slips, reports and a dashboard.
 | **[WALKTHROUGH.md](WALKTHROUGH.md)** | **Start here.** One complete cycle for one employee, explained |
 | **[TESTING.md](TESTING.md)** | You want every URL, header, body and response to test in Postman + SQL |
 | **README.md** (this file) | Day-to-day reference |
+| **[Attendance.md](Attendance.md)** | The full attendance engine: rules, punch windows, generation, corrections, locking |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | How it is built and why |
+| **[SECURITY.md](SECURITY.md)** | Login, JWT, password hashing, what is and isn't protected yet |
 
 Ready-to-use test assets: a [Postman collection](docs/testing/Accusharp-HRMS.postman_collection.json)
-(51 requests, 9 ordered folders) and [punch SQL](docs/testing/device_logs_EMP005_2026-09.sql).
+(71 requests, 10 ordered folders), [punch SQL](docs/testing/device_logs_EMP005_2026-09.sql)
+and a [missing-punch scenario](docs/testing/device_logs_EMP005_missing_out_punch.sql).
 
 - **Stack**: Java 21, Spring Boot 4.1.0, MySQL, Lombok
 - **Base URL**: `http://localhost:8080`
@@ -113,12 +116,13 @@ curl http://localhost:8080/api/salary-rules
 To change it:
 
 ```bash
-curl -X PUT http://localhost:8080/api/salary-rules -H 'Content-Type: application/json' -d '{"basicDaPercent":50,"hraPercent":40,"conveyancePercent":10,"educationPercent":10,"pfPercent":12,"esicPercent":0.75,"esicWageCeiling":21000,"ptUpperThreshold":10001,"ptUpperAmount":200,"ptLowerThreshold":7501,"ptLowerAmount":175,"dayWiseDaysInMonth":26,"standardHoursPerDay":8,"overtimeRateMultiplier":1.00}'
+curl -X PUT http://localhost:8080/api/salary-rules -H 'Content-Type: application/json' -d '{"basicDaPercent":50,"basicDaMinimumThreshold":0,"hraPercent":40,"conveyancePercent":10,"educationPercent":10,"pfPercent":12,"esicPercent":0.75,"esicWageCeiling":21000,"ptUpperThreshold":10001,"ptUpperAmount":200,"ptLowerThreshold":7501,"ptLowerAmount":175,"dayWiseDaysInMonth":26,"standardHoursPerDay":8,"overtimeRateMultiplier":1.00,"mlwfAmount":0}'
 ```
 
 | Field | Meaning |
 |---|---|
 | `basicDaPercent` | Basic + DA as a share of gross salary |
+| `basicDaMinimumThreshold` | Government-notified minimum Basic+DA - wins over the percentage when the percentage lands below it (HRA/conveyance/education still derive from whichever value was used). `0` disables the floor. Revise this whenever the state notifies a new minimum wage. |
 | `hraPercent`, `conveyancePercent`, `educationPercent` | Shares of **basic**, not gross |
 | `pfPercent` | PF rate, applied to the prorated PF basic |
 | `esicPercent` / `esicWageCeiling` | ESIC rate; no ESIC above the ceiling |
@@ -126,6 +130,7 @@ curl -X PUT http://localhost:8080/api/salary-rules -H 'Content-Type: application
 | `dayWiseDaysInMonth` | Payable-day base for `DAY_WISE` staff (26 by convention) |
 | `standardHoursPerDay` | Divisor for the per-hour overtime rate |
 | `overtimeRateMultiplier` | `1.00` = plain rate, `1.50` = time-and-a-half |
+| `mlwfAmount` | Flat Labour Welfare Fund amount deducted from the employee in June and December only, `0` every other month. `0` disables it. |
 
 ### 3.2 Company
 
@@ -156,6 +161,15 @@ curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/j
 **`userId` must equal the biometric device's user id.** That single field is what
 joins the device, attendance, leave and payroll together. Get it wrong and the
 employee will show zero attendance forever.
+
+**The response is `{"employee": {...}, "temporaryPassword": "..."}`, not a bare
+employee** - `temporaryPassword` is generated server-side and returned exactly
+once; capture it now and relay it to the new hire out of band. If it's lost,
+`POST /api/employees/{id}/reset-password` (ADMIN/HR) generates a new one -
+the practical stand-in for self-service forgot-password, which this app
+can't build without email delivery infrastructure it doesn't have. See
+[SECURITY.md](SECURITY.md) for the same one-time-password contract on
+`POST /api/companies/onboard`.
 
 You send only these money fields:
 
@@ -195,6 +209,40 @@ curl -X PATCH "http://localhost:8080/api/employees/EMP003/supervisor?supervisorU
 
 `DELETE /api/employees/{id}` **deactivates** rather than deletes - payroll
 history has to keep resolving names.
+
+#### 3.4.1 Manual salary structure override and regeneration
+
+`basicDA`/`hra`/`conveyanceAllowance`/`educationAllowance` are normally
+derived, but a real payslip sometimes needs to differ from what the formula
+gives. Override them by hand:
+
+```bash
+curl -X PUT http://localhost:8080/api/employees/3/salary-structure -H 'Content-Type: application/json' -d '{"basicDA":12500,"hra":5200,"conveyanceAllowance":1100,"educationAllowance":1100}'
+```
+
+This marks the employee as overridden - `grossSalaryWage` still refreshes
+(so a later change to `medicalAllowance`/`otherAllowance` is reflected), but
+the four components above no longer move, even across a plain `PUT
+/api/employees/{id}` or a `SalaryRule` change.
+
+To go back to rule-derived values - after correcting the override, or after
+a `SalaryRule` change you actually want applied:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/3/salary-structure/regenerate
+```
+
+or for every non-overridden employee in the company at once:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/salary-structure/regenerate-all
+```
+
+Employees currently overridden are skipped by the bulk call, so it never
+silently discards a deliberate manual value - regenerate those individually
+if that's really what you want. Neither call touches payroll history; run
+`/api/payroll/regenerate` for any already-generated period afterwards to
+pick up the corrected structure.
 
 ### 3.5 Holidays
 
@@ -347,15 +395,42 @@ Day range instead of a whole month:
 curl "http://localhost:8080/api/attendance/EMP001?fromDate=2026-09-01&toDate=2026-09-07"
 ```
 
-Refresh the cached summaries for everyone (payroll does this automatically, but
-it is useful before reporting):
+### Generate the attendance payroll will be paid from
+
+The calls above are a **preview** - they compute from punches and persist
+nothing. Before payroll can run, the month has to be generated and reviewed:
+
+```bash
+curl -X POST http://localhost:8080/api/attendance/generate -H 'Content-Type: application/json' -d '{"month":"2026-09","userIds":["EMP001"],"generatedBy":"HR001"}'
+```
+
+Omit `userIds` to run the whole company. This writes one row per rostered day.
+Review them, provenance included:
+
+```bash
+curl "http://localhost:8080/api/attendance/EMP001/records?month=2026-09"
+```
+
+Devices miss punches. When one does, the day reads as `INVALID_PUNCH` and would
+silently become loss of pay - so HR can correct it, either by supplying the
+times the device missed or by declaring the day outright:
+
+```bash
+curl -X PUT http://localhost:8080/api/attendance/EMP001/2026-09-25 -H 'Content-Type: application/json' -d '{"firstIn":"2026-09-25T06:00:00","lastOut":"2026-09-25T15:00:00","remarks":"Device missed the exit punch","updatedBy":"HR001"}'
+```
+
+The row becomes `MANUAL` and **survives the next generation run** - rerun
+generation freely to pick up late-arriving punches without losing corrections.
+Pass `"overwriteManual": true` only when you deliberately want to discard them.
+
+Resync the cached summaries from the stored days before reporting:
 
 ```bash
 curl -X POST "http://localhost:8080/api/attendance/summaries/refresh?month=2026-09"
 ```
 
-Attendance is always recomputed from punches and roster - it is never edited
-directly, so it cannot go stale or be tampered with.
+Punches themselves stay read-only: a correction is recorded on the generated day
+next to the original device reading, never by rewriting `device_logs`.
 
 ---
 
@@ -436,10 +511,20 @@ offsets LOP.
 
 ## 8. Run payroll
 
+Payroll pays from the attendance you generated in step 7 and **refuses to run
+if the period was never generated** - nobody gets paid off numbers nobody
+reviewed. Generating also locks the month, so the slip stays reproducible.
+
 ### One employee
 
 ```bash
 curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -d '{"employeeId":"EMP001","month":9,"year":2026,"advanceDeduction":1000,"loanDeduction":0,"tds":0,"canteen":300,"bonus":0,"incentive":0,"generatedBy":"HR001"}'
+```
+
+To correct attendance after payroll has run: unlock, fix, regenerate.
+
+```bash
+curl -X POST "http://localhost:8080/api/attendance/EMP001/unlock?month=2026-09&actorId=HR001"
 ```
 
 You supply **only** the manual amounts. Everything else - attendance, leave,
@@ -468,7 +553,8 @@ canteen amount, generate them individually.
 | `totalEarnings` | Earnings + bonus + incentive + overtime |
 | `pf` vs `pfDeduction` | Full-month PF (informational) vs what is actually deducted |
 | `lopDeduction` | **Shown for transparency, not added to the total** |
-| `totalDeduction` | PF + ESIC + PT + TDS + advance + loan + canteen |
+| `mlwf` | Labour Welfare Fund - non-zero only in the June and December payroll run |
+| `totalDeduction` | PF + ESIC + PT + MLWF + TDS + advance + loan + canteen |
 | `netSalary` | `totalEarnings - totalDeduction` |
 
 `lopDeduction` is not subtracted because the earnings were already prorated down
@@ -575,13 +661,14 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 
 | Module | Base path |
 |---|---|
-| Companies | `/api/companies` |
+| Auth (login/refresh/logout/change-password) | `/api/auth` - see [SECURITY.md](SECURITY.md) |
+| Companies | `/api/companies` (`POST /onboard` creates the company plus its first admin - see [SECURITY.md](SECURITY.md)) |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
 | Employees | `/api/employees` |
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` |
-| Attendance | `/api/attendance` |
+| Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |
 | Holidays | `/api/holidays` |
 | Leave | `/api/leaves` |
 | Leave balances | `/api/leave-balances` |
@@ -590,6 +677,7 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Salary slips | `/api/salary-slips` |
 | Reports | `/api/reports` |
 | Dashboard | `/api/dashboard` |
+| Audit logs | `/api/audit-logs` - ADMIN/platform only, see [SECURITY.md](SECURITY.md) |
 
 Masters follow standard REST: `POST` create, `PUT /{id}` update, `GET /{id}`,
 `GET` list, `DELETE /{id}`.
@@ -645,8 +733,11 @@ holiday is not consumed and does not offset LOP.
 Use `/api/payroll/regenerate` instead of `/generate`.
 
 **Salary breakup looks wrong after changing the salary rule**
-The breakup is computed at write time. Re-save the employee (`PUT
-/api/employees/{id}`) to recalculate with the new percentages.
+The breakup is computed at write time, so an existing employee is not
+recomputed just because the rule changed. Fix one employee with `POST
+/api/employees/{id}/salary-structure/regenerate`, or every non-overridden
+employee at once with `POST /api/employees/salary-structure/regenerate-all`.
+See §3.4.1.
 
 **Overtime hours are recorded but nothing is paid**
 The employee has `overtimeEligible: false`.
@@ -663,17 +754,26 @@ Either the holiday is not in `/api/holidays`, or it is marked
 
 ## 13. Before going live
 
-**All endpoints are unauthenticated.** Roles are enforced inside the business
-rules - only HR or admin can give final leave approval, and a supervisor can only
-touch their own team - but nothing stops an unauthenticated caller from claiming
-to be `HR001`. Keep this on a trusted network until authentication is added.
+**All `/api/**` endpoints require a bearer token, and each one requires a
+specific permission** (see [SECURITY.md](SECURITY.md) for the full matrix) -
+log in via `POST /api/auth/login` first. Multi-tenant company isolation,
+"view only my own data" self-service scoping, full audit coverage with
+retention/export, and dynamic role/permission management are all built now
+(Phases 3-10) - see [SECURITY.md](SECURITY.md) for the phase-by-phase
+detail and the current, much shorter "Not yet built" list (mainly: a true
+self-service password-recovery flow, since there's no email delivery
+infrastructure to build it on - an ADMIN/HR-triggered reset exists instead).
 
 Also worth doing before real use:
 
 - Set `hrms.seed.enabled=false` and remove the demo employees.
-- Change the MySQL credentials in `application.properties`.
+- Set `DB_USERNAME`/`DB_PASSWORD`/`JWT_SECRET` via environment variables - see
+  [SECURITY.md](SECURITY.md). The values in `application.properties` are
+  local-development defaults only.
 - Move off `ddl-auto=update` to managed migrations.
-
-JWT/Spring Security, notifications, email, PDF/Excel rendering and audit logs are
-listed as future enhancements in the specification and are not built - see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+- If this database predates Phase 6 (`SECURITY.md`), run
+  [`docs/migrations/2026-08-08-per-company-masters.sql`](docs/migrations/2026-08-08-per-company-masters.sql)
+  by hand once - `ddl-auto=update` adds the new `company_id` columns on its
+  own, but cannot drop the old single-column unique index on
+  `department`/`designation`/`shift`, so two companies can't share a code
+  until that manual step runs.

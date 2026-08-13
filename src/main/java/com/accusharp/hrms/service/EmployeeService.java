@@ -1,9 +1,13 @@
 package com.accusharp.hrms.service;
 
+import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
+import com.accusharp.hrms.dto.SalaryStructureRequest;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.SalaryRule;
+import com.accusharp.hrms.enums.AuditOutcome;
+import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
@@ -11,22 +15,34 @@ import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.RefreshTokenRepository;
+import com.accusharp.hrms.security.TenantContext;
+import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import com.accusharp.hrms.service.shift.DefaultRosterService;
+import com.accusharp.hrms.util.TemporaryPasswordGenerator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 /**
- * Employee master. Owns two rules worth calling out:
+ * Employee master. Owns three rules worth calling out:
  * <ul>
  *   <li>the derived salary components are recalculated on every write, so they
  *       can never drift from the current {@link SalaryRule};</li>
  *   <li>supervisor mapping is validated to stay a tree - no employee may end up
- *       reporting to themselves through any chain.</li>
+ *       reporting to themselves through any chain;</li>
+ *   <li>{@link #getEntityById} and {@link #getEntityByUserId} are the tenant
+ *       isolation choke point: every other service (attendance, leave, payroll,
+ *       shift scheduling) resolves an employee through one of these two methods
+ *       before doing anything else, so the cross-company check lives here once
+ *       rather than being repeated in each of them.</li>
  * </ul>
  */
 @Service
@@ -40,9 +56,22 @@ public class EmployeeService {
     private final SalaryRuleService salaryRuleService;
     private final SalaryCalculationService salaryCalculationService;
     private final EmployeeMapper employeeMapper;
+    private final TenantContext tenantContext;
+    private final AuditService auditService;
+    private final PasswordEncoder passwordEncoder;
+    private final RefreshTokenRepository refreshTokenRepository;
+    private final DefaultRosterService defaultRosterService;
 
+    /**
+     * Without an initial password, a newly created employee could never log
+     * in at all - only {@link com.accusharp.hrms.service.CompanyOnboardingService}'s
+     * first admin got one before this existed. Same one-time-return contract
+     * as onboarding's {@code temporaryPassword}: never logged, relayed out
+     * of band, changed via {@code POST /api/auth/change-password} on first
+     * login.
+     */
     @Transactional
-    public EmployeeResponse create(EmployeeRequest request) {
+    public EmployeeCreationResponse create(EmployeeRequest request) {
         if (employeeRepository.existsByUserId(request.getUserId())) {
             throw new ConflictException("Employee already exists with userId " + request.getUserId());
         }
@@ -50,10 +79,42 @@ public class EmployeeService {
             throw new ConflictException("Employee already exists with code " + request.getEmployeeCode());
         }
 
+        String temporaryPassword = TemporaryPasswordGenerator.generate();
         Employee employee = new Employee();
         apply(employee, request);
+        employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
         recalculate(employee);
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        Employee saved = employeeRepository.save(employee);
+        EmployeeResponse response = employeeMapper.toResponse(saved);
+        auditService.record("EMPLOYEE_CREATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
+                "role=" + response.role());
+        // Permanent employees default onto the GENERAL shift for every day - see DefaultRosterService.
+        defaultRosterService.ensureForEmployee(saved);
+        return new EmployeeCreationResponse(response, temporaryPassword);
+    }
+
+    /**
+     * HR/ADMIN-triggered password reset - the practical stand-in for
+     * self-service forgot-password (this app has no email delivery
+     * infrastructure to build the real thing on). Same one-time-return
+     * contract as {@link #create}: a fresh temporary password, returned
+     * exactly once, never logged. Also clears any failed-login lockout and
+     * revokes every existing refresh token for this principal - a reset
+     * that left the account locked, or an old session still valid, would
+     * not actually be a recovery path.
+     */
+    @Transactional
+    public EmployeeCreationResponse resetPassword(Long id) {
+        Employee employee = getEntityById(id);
+        String temporaryPassword = TemporaryPasswordGenerator.generate();
+        employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
+        employee.setPasswordChangedAt(Instant.now());
+        employee.setAccountLocked(false);
+        employee.setFailedLoginAttempts(0);
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        refreshTokenRepository.revokeAllForPrincipal(PrincipalType.EMPLOYEE, employee.getUserId());
+        auditService.record("EMPLOYEE_PASSWORD_RESET", "Employee", response.userId(), AuditOutcome.SUCCESS, null);
+        return new EmployeeCreationResponse(response, temporaryPassword);
     }
 
     @Transactional
@@ -73,29 +134,177 @@ public class EmployeeService {
 
         apply(employee, request);
         recalculate(employee);
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        Employee saved = employeeRepository.save(employee);
+        EmployeeResponse response = employeeMapper.toResponse(saved);
+        auditService.record("EMPLOYEE_UPDATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
+                "role=" + response.role());
+        // Covers status changing to PERMANENT or a re-activation - a no-op otherwise.
+        defaultRosterService.ensureForEmployee(saved);
+        return response;
+    }
+
+    /**
+     * Manual override for basicDA/hra/conveyance/education - the escape
+     * hatch for when a real payslip needs to differ from what {@link
+     * SalaryRule}'s percentages would derive. Marks the employee overridden
+     * so a later plain {@link #update} (or a company-wide rule change) never
+     * silently clobbers it - see {@link #regenerateSalaryStructure} to go
+     * back to rule-derived values.
+     */
+    @Transactional
+    public EmployeeResponse updateSalaryStructure(Long id, SalaryStructureRequest request) {
+        Employee employee = getEntityById(id);
+        employee.setBasicDA(salaryCalculationService.scaled(request.getBasicDA()));
+        employee.setHra(salaryCalculationService.scaled(request.getHra()));
+        employee.setConveyanceAllowance(salaryCalculationService.scaled(request.getConveyanceAllowance()));
+        employee.setEducationAllowance(salaryCalculationService.scaled(request.getEducationAllowance()));
+        employee.setSalaryStructureOverridden(true);
+        recalculate(employee); // overridden, so this only refreshes grossSalaryWage
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_SALARY_STRUCTURE_OVERRIDE", "Employee", response.userId(),
+                AuditOutcome.SUCCESS, null);
+        return response;
+    }
+
+    /**
+     * Clears any manual override and recomputes basicDA/hra/conveyance/
+     * education from the employee's current gross salary and their
+     * company's <em>current</em> {@link SalaryRule} - the fix for a rule
+     * change (or an override) not being reflected until this is called.
+     */
+    @Transactional
+    public EmployeeResponse regenerateSalaryStructure(Long id) {
+        Employee employee = getEntityById(id);
+        employee.setSalaryStructureOverridden(false);
+        recalculate(employee);
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_SALARY_STRUCTURE_REGENERATE", "Employee", response.userId(),
+                AuditOutcome.SUCCESS, null);
+        return response;
+    }
+
+    /**
+     * Same regeneration as {@link #regenerateSalaryStructure}, for every
+     * active employee of the caller's company - the practical response to a
+     * {@code SALARY_RULE_MANAGE} change: without this, each employee's
+     * structure stays whatever it was last computed as until their record
+     * is next saved one at a time. Employees already overridden are left
+     * alone; a bulk rule-driven refresh silently discarding a deliberate
+     * per-employee override would be a surprise, not a fix - regenerate
+     * those individually via {@link #regenerateSalaryStructure} instead.
+     */
+    @Transactional
+    public int regenerateAllSalaryStructures() {
+        List<Employee> employees = getActiveEntities().stream()
+                .filter(employee -> !employee.isSalaryStructureOverridden())
+                .toList();
+        for (Employee employee : employees) {
+            recalculate(employee);
+        }
+        employeeRepository.saveAll(employees);
+        auditService.record("EMPLOYEE_SALARY_STRUCTURE_REGENERATE_ALL", "Employee", null,
+                AuditOutcome.SUCCESS, "count=" + employees.size());
+        return employees.size();
     }
 
     @Transactional(readOnly = true)
     public EmployeeResponse getById(Long id) {
-        return employeeMapper.toResponse(getEntityById(id));
+        Employee employee = getEntityById(id);
+        assertSelfOrManages(employee.getUserId());
+        return employeeMapper.toResponse(employee);
     }
 
     @Transactional(readOnly = true)
     public EmployeeResponse getByUserId(String userId) {
-        return employeeMapper.toResponse(getEntityByUserId(userId));
+        Employee employee = getEntityByUserId(userId);
+        assertSelfOrManages(employee.getUserId());
+        return employeeMapper.toResponse(employee);
     }
 
+    /**
+     * Company-wide, no self-service restriction - used only by {@code
+     * ReportController.employeeReport()}, which (like every {@code
+     * REPORT_READ} endpoint) intentionally stays company-wide for
+     * SUPERVISOR/HR/ADMIN. See {@link #getVisible()} for the
+     * self-service-restricted list {@code EmployeeController} actually uses.
+     */
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getAll() {
-        return employeeMapper.toResponses(employeeRepository.findAll());
+        return employeeMapper.toResponses(getAllEntities());
     }
 
-    /** The team reporting to a supervisor - the basis of every approval flow. */
+    /**
+     * The employee list a caller may browse directly - unlike {@link
+     * #getAll()}, restricted per SECURITY.md's "view only my own data": an
+     * EMPLOYEE sees only themselves, a SUPERVISOR sees themselves plus their
+     * direct reports, ADMIN/HR see the whole company.
+     */
+    @Transactional(readOnly = true)
+    public List<EmployeeResponse> getVisible() {
+        return employeeMapper.toResponses(getAllEntities().stream()
+                .filter(employee -> isSelfOrManages(employee.getUserId()))
+                .toList());
+    }
+
+    /**
+     * Every employee of the caller's own company, any {@link RecordStatus} -
+     * unlike {@link #getActiveEntities()}, deactivated employees are
+     * included, since payroll/report history for someone no longer active
+     * still needs to resolve for their own company. Scoped the same way as
+     * {@link #getActiveEntities()}: everything, when there is no company in
+     * context.
+     */
+    @Transactional(readOnly = true)
+    public List<Employee> getAllEntities() {
+        return tenantContext.currentCompanyId()
+                .map(employeeRepository::findByCompanyId)
+                .orElseGet(employeeRepository::findAll);
+    }
+
+    /**
+     * The team reporting to a supervisor - the basis of every approval flow.
+     * Self-service restricted the same way as {@link #getVisible()}: only
+     * that supervisor themselves, or ADMIN/HR, may ask for it - otherwise
+     * any EMPLOYEE could bulk-read any team's data by naming its
+     * supervisor's userId.
+     */
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getTeamOf(String supervisorUserId) {
         getEntityByUserId(supervisorUserId);
+        assertSelfOrManages(supervisorUserId);
         return employeeMapper.toResponses(employeeRepository.findBySupervisorUserId(supervisorUserId));
+    }
+
+    /**
+     * The employee set a caller may view in bulk-roster/planner-style
+     * endpoints. Unlike {@link #getTeamOf}, the requested {@code
+     * supervisorUserId} is a hint, not a hard requirement to match the
+     * caller's identity - ADMIN/HR may ask for any team or omit it for the
+     * whole company (unchanged from before self-service scoping existed); a
+     * SUPERVISOR's request is always silently forced to their own team,
+     * same pattern as {@code companyId} being forced server-side elsewhere
+     * in this app; a plain EMPLOYEE always gets a planner of exactly
+     * themselves, regardless of what was requested.
+     */
+    @Transactional(readOnly = true)
+    public List<Employee> plannerScope(String requestedSupervisorUserId) {
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> switch (Role.valueOf(principal.getRole())) {
+                    case ADMIN, HR -> teamOrCompany(requestedSupervisorUserId);
+                    case SUPERVISOR -> teamOrCompany(principal.getUsername());
+                    case EMPLOYEE -> List.of(getEntityByUserId(principal.getUsername()));
+                })
+                .orElseGet(() -> teamOrCompany(requestedSupervisorUserId));
+    }
+
+    private List<Employee> teamOrCompany(String supervisorUserId) {
+        return supervisorUserId == null
+                ? getActiveEntities()
+                : getActiveEntities().stream()
+                        .filter(employee -> employee.getSupervisor() != null
+                                && supervisorUserId.equals(employee.getSupervisor().getUserId()))
+                        .toList();
     }
 
     @Transactional
@@ -112,23 +321,62 @@ public class EmployeeService {
     public EmployeeResponse deactivate(Long id) {
         Employee employee = getEntityById(id);
         employee.setRecordStatus(RecordStatus.INACTIVE);
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_DEACTIVATE", "Employee", response.userId(), AuditOutcome.SUCCESS, null);
+        return response;
     }
 
     @Transactional(readOnly = true)
     public Employee getEntityById(Long id) {
-        return employeeRepository.findById(id).orElseThrow(() -> NotFoundException.of("Employee", id));
+        Employee employee = employeeRepository.findById(id).orElseThrow(() -> NotFoundException.of("Employee", id));
+        assertAccessible(employee);
+        return employee;
     }
 
     @Transactional(readOnly = true)
     public Employee getEntityByUserId(String userId) {
-        return employeeRepository.findByUserId(userId)
+        Employee employee = employeeRepository.findByUserId(userId)
                 .orElseThrow(() -> NotFoundException.of("Employee", "userId " + userId));
+        assertAccessible(employee);
+        return employee;
     }
 
+    /**
+     * Tenant isolation: a caller scoped to one company must never learn that
+     * an employee belonging to a <em>different</em> company exists at all -
+     * not just be refused access to it. That is why this throws the same
+     * {@link NotFoundException} an unknown id would, rather than a 403 -
+     * a 403 would confirm the record exists somewhere, a 404 does not.
+     *
+     * <p>No-ops when {@link TenantContext} has no company to check against
+     * (no authenticated principal, a platform principal, or an employee
+     * record with no company of its own) - see {@link TenantContext}'s
+     * Javadoc for why each of those is intentional rather than a gap.
+     */
+    private void assertAccessible(Employee employee) {
+        tenantContext.currentCompanyId().ifPresent(callerCompanyId -> {
+            Long targetCompanyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+            if (!callerCompanyId.equals(targetCompanyId)) {
+                throw NotFoundException.of("Employee", "userId " + employee.getUserId());
+            }
+        });
+    }
+
+    /**
+     * "Every active employee" - the base of every whole-company operation
+     * (generate payroll for everyone, generate attendance for everyone, the
+     * shift planner with no supervisor filter). Scoped to the caller's own
+     * company whenever one is known, for the same reason as
+     * {@link #assertAccessible}: without it, an HR/ADMIN at one company
+     * could trigger payroll or attendance generation across <em>every</em>
+     * company on the platform, not just their own - a write-side-effect
+     * version of the same tenant leak, and a more severe one.
+     */
     @Transactional(readOnly = true)
     public List<Employee> getActiveEntities() {
-        return employeeRepository.findByRecordStatus(RecordStatus.ACTIVE);
+        return tenantContext.currentCompanyId()
+                .map(companyId -> employeeRepository.findByRecordStatusAndCompanyId(RecordStatus.ACTIVE, companyId))
+                .orElseGet(() -> employeeRepository.findByRecordStatus(RecordStatus.ACTIVE));
     }
 
     /** True when the supervisor may act on this employee's requests. */
@@ -139,8 +387,53 @@ public class EmployeeService {
                 && employee.getSupervisor().getUserId().equals(supervisorUserId);
     }
 
+    /**
+     * "View only my own data" (SECURITY.md): the caller must be the target
+     * themselves, a SUPERVISOR who directly supervises the target, or
+     * ADMIN/HR (unrestricted within their own company - the tenant check
+     * that runs upstream of every call site already covers that axis). 404,
+     * not 403, on failure - same rationale as {@link #assertAccessible}: a
+     * 403 would confirm the record exists, just not to this caller.
+     *
+     * <p>No-ops under the same three conditions {@link #assertAccessible}
+     * no-ops under (no principal, a platform principal, or - moot here,
+     * since a principal always has its own username - no company of its
+     * own), so every existing service-level test that calls services
+     * directly with no {@code SecurityContext} is unaffected.
+     */
+    public void assertSelfOrManages(String targetUserId) {
+        tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .ifPresent(principal -> {
+                    if (!isVisibleTo(principal, targetUserId)) {
+                        throw NotFoundException.of("Employee", "userId " + targetUserId);
+                    }
+                });
+    }
+
+    /** Non-throwing form of {@link #assertSelfOrManages}, for filtering a list rather than rejecting a single lookup. */
+    public boolean isSelfOrManages(String targetUserId) {
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> isVisibleTo(principal, targetUserId))
+                .orElse(true);
+    }
+
+    private boolean isVisibleTo(UserPrincipal principal, String targetUserId) {
+        if (principal.getUsername().equals(targetUserId)) {
+            return true;
+        }
+        Role role = Role.valueOf(principal.getRole());
+        if (role == Role.ADMIN || role == Role.HR) {
+            return true;
+        }
+        return role == Role.SUPERVISOR && supervises(principal.getUsername(), targetUserId);
+    }
+
     private void recalculate(Employee employee) {
-        salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());
+        // The employee's own company's rule, not the caller's - correct regardless of who is asking.
+        salaryCalculationService.applyCalculatedFields(employee,
+                salaryRuleService.getActiveRuleForCompany(employee.getCompany()));
     }
 
     private void apply(Employee employee, EmployeeRequest request) {

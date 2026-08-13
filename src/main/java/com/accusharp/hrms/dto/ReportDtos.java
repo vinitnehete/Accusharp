@@ -49,6 +49,7 @@ public final class ReportDtos {
             BigDecimal pfDeduction,
             BigDecimal esic,
             BigDecimal professionalTax,
+            BigDecimal mlwf,
             BigDecimal totalDeductions,
             BigDecimal netSalary
     ) {

@@ -12,7 +12,8 @@ reporting to supervisor `SUP001`. Month: **September 2026**.
 
 For the reference guide see [README.md](README.md); for exact URLs, headers,
 bodies and responses to paste into Postman see [TESTING.md](TESTING.md); for how
-it works internally see [ARCHITECTURE.md](ARCHITECTURE.md).
+it works internally see [ARCHITECTURE.md](ARCHITECTURE.md); for the full
+authentication/authorization model see [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -30,21 +31,66 @@ visible in each command.
 
 ---
 
+## Step 0 — Log in
+
+**Every `/api/**` endpoint (except `/api/auth/**` itself) requires a bearer
+token.** Log in as the seeded HR user - HR holds essentially every permission
+this walkthrough needs (everything short of platform-level company creation),
+so one token carries you through the whole thing:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"HR001","password":"Accusharp@123"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["accessToken"])')
+```
+
+(No `jq`? The Python one-liner above works anywhere Python 3 is installed. Or
+just read `accessToken` out of the JSON by eye and paste it into `$TOKEN`
+yourself.) Every command below assumes `$TOKEN` is set and adds
+`-H "Authorization: Bearer $TOKEN"`. The token expires in 15 minutes
+(`POST /api/auth/refresh` with the `refreshToken` from the same login
+response gets you a new one without logging in again).
+
+**Two things that changed shape once auth landed, worth knowing before you
+start:**
+
+- **`assignedBy`, `approverId`, `updatedBy`, `generatedBy` fields you see in
+  request bodies below are decorative.** The server always overwrites them
+  with whoever's bearer token made the call - never trust a client-supplied
+  actor identity for something audit-relevant. Sending them is harmless (and
+  the request DTOs still declare them for backward compatibility), but if you
+  change `$TOKEN` to a different user mid-walkthrough, *that* is what
+  determines who did what, not the JSON body.
+- **A plain `EMPLOYEE` or `SUPERVISOR` token sees less than HR's.** This
+  walkthrough uses `HR001` throughout precisely to avoid that complexity -
+  HR/ADMIN are unrestricted within their own company. If you log in as
+  `EMP001` instead, `GET /api/employees` returns only `EMP001`'s own record,
+  `GET /api/attendance/EMP002/monthly` 404s, and so on - see SECURITY.md's
+  "self-service scoping" section. Worth trying once you've done the
+  walkthrough as HR, to see the difference.
+
+**Starting from zero companies instead of the seeded demo data?** Use
+`POST /api/companies/onboard` (platform-owner only - see SECURITY.md) to
+create a brand-new company and its first `ADMIN` in one step, then log in as
+that admin instead of `HR001` for everything below.
+
+---
+
 ## Step 1 — See what already exists
 
 A fresh database is pre-loaded with a company, two departments, two
 designations, four shifts and four demo employees.
 
 ```bash
-curl http://localhost:8080/api/companies
+curl http://localhost:8080/api/companies -H "Authorization: Bearer $TOKEN"
 ```
 
 ```bash
-curl http://localhost:8080/api/departments
+curl http://localhost:8080/api/departments -H "Authorization: Bearer $TOKEN"
 ```
 
 ```bash
-curl http://localhost:8080/api/designations
+curl http://localhost:8080/api/designations -H "Authorization: Bearer $TOKEN"
 ```
 
 What came back:
@@ -62,7 +108,7 @@ What came back:
 Existing people, so you know who can approve things:
 
 ```bash
-curl http://localhost:8080/api/employees
+curl http://localhost:8080/api/employees -H "Authorization: Bearer $TOKEN"
 ```
 
 | userId | Name | Role | Can do |
@@ -78,7 +124,7 @@ curl http://localhost:8080/api/employees
 Priya is a senior operator and that grade does not exist yet.
 
 ```bash
-curl -X POST http://localhost:8080/api/designations -H 'Content-Type: application/json' -d '{"designationCode":"SR-OPR","designationName":"Senior Operator","description":"Senior grade"}'
+curl -X POST http://localhost:8080/api/designations -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"designationCode":"SR-OPR","designationName":"Senior Operator","description":"Senior grade"}'
 ```
 
 ```json
@@ -87,26 +133,41 @@ curl -X POST http://localhost:8080/api/designations -H 'Content-Type: applicatio
 
 Note **`id: 3`** - that is what we pass as `designationId` next.
 
+(Since Phase 6, `Department`/`Designation`/`Shift` codes only have to be
+unique *within your own company* - a second company can create its own
+`SR-OPR` too, without colliding with this one.)
+
 ---
 
 ## Step 3 — Add the employee
 
 ```bash
-curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/json' -d '{"userId":"EMP005","employeeCode":"EMP-005","employeeName":"Priya Kulkarni","companyId":1,"departmentId":1,"designationId":3,"supervisorUserId":"SUP001","joiningDate":"2024-02-12","dateOfBirth":"1996-09-20","status":"PERMANENT","role":"EMPLOYEE","email":"priya@accusharp.example","phone":"9822001122","grossSalary":26000,"pfBasic":9000,"medicalAllowance":1250,"otherAllowance":0,"overtimeEligible":true}'
+curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"userId":"EMP005","employeeCode":"EMP-005","employeeName":"Priya Kulkarni","companyId":1,"departmentId":1,"designationId":3,"supervisorUserId":"SUP001","joiningDate":"2024-02-12","dateOfBirth":"1996-09-20","status":"PERMANENT","role":"EMPLOYEE","email":"priya@accusharp.example","phone":"9822001122","grossSalary":26000,"pfBasic":9000,"medicalAllowance":1250,"otherAllowance":0,"overtimeEligible":true}'
 ```
 
 Result:
 
-```
- created id=5  EMP005  Priya Kulkarni
- reports to    : SUP001 - Rakesh Patil
- YOU ENTERED   : gross=26000  pfBasic=9000  medical=1250  other=0
- SYSTEM DERIVED: basicDA=13000.0  hra=5200.0  conveyance=1300.0  education=1300.0
-                 grossSalaryWage=22050.0
+```json
+{
+  "employee": {
+    "id": 5, "userId": "EMP005", "employeeName": "Priya Kulkarni",
+    "grossSalary": 26000.0, "pfBasic": 9000.0, "medicalAllowance": 1250.0, "otherAllowance": 0.0,
+    "basicDA": 13000.0, "hra": 5200.0, "conveyanceAllowance": 1300.0, "educationAllowance": 1300.0,
+    "grossSalaryWage": 22050.0
+  },
+  "temporaryPassword": "Tp7-xxxxxxxxxxxxxxxxxxxxxx"
+}
 ```
 
-**This is the single most important thing to understand about employees.** You
-entered four money fields. The system worked out the rest from the salary rule:
+**Capture `temporaryPassword` now.** It's returned exactly once, right here,
+and never logged anywhere - it's how Priya logs in for the first time
+(`POST /api/auth/login` with `username: "EMP005"`, then she should change it
+via `POST /api/auth/change-password`). There is no forgot-password recovery
+yet if it's lost before you relay it to her.
+
+**This is the second most important thing to understand about employees** (the
+password is the first, now). You entered four money fields. The system worked
+out the rest from the salary rule:
 
 ```
 basicDA    = 26000 x 50%   = 13000
@@ -118,9 +179,27 @@ education  = 13000 x 10%   =  1300
 grossSalaryWage            = 22050
 ```
 
-You cannot send `basicDA` or `hra` yourself - they are not on the request at
-all. That is deliberate: it means a salary breakup can never be inconsistent
-with the configured rule.
+You cannot send `basicDA` or `hra` yourself on this request - they are not on
+the create/update DTO at all. That is deliberate: it means a salary breakup
+can never be inconsistent with the configured rule *unless you explicitly say
+so*.
+
+Sometimes a real payslip does need to differ from the formula. For that,
+there's a dedicated pair of endpoints:
+
+```bash
+curl -X PUT http://localhost:8080/api/employees/5/salary-structure -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"basicDA":13500,"hra":5400,"conveyanceAllowance":1350,"educationAllowance":1350}'
+```
+
+sets those four fields by hand and marks the employee `salaryStructureOverridden: true` -
+from then on neither a plain employee update nor a salary rule change touches
+them. To go back to the formula's numbers:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/5/salary-structure/regenerate -H "Authorization: Bearer $TOKEN"
+```
+
+See the callout after the next table for the whole-company version of this.
 
 ### Three fields that decide everything downstream
 
@@ -133,22 +212,35 @@ with the configured rule.
 Also note **`supervisorUserId`** - without it, nobody can approve her leave and
 no supervisor can schedule her.
 
-> **Change the salary rule *before* adding people.** The breakup is calculated at
-> the moment you save. Changing a percentage later does not touch anyone who
-> already exists - you would have to re-save each employee. Check it first with
-> `GET /api/salary-rules`.
+> **Changing the salary rule does not retroactively touch anyone who already
+> exists.** The breakup is calculated at the moment you save, so check the
+> rule first with `GET /api/salary-rules` if you can. If you change it after
+> people already exist, fix them with
+> `POST /api/employees/salary-structure/regenerate-all` (or
+> `/api/employees/{id}/salary-structure/regenerate` for just one) rather than
+> re-saving every employee by hand. It skips anyone already
+> `salaryStructureOverridden`, so a deliberate manual value is never
+> silently discarded by a rule-driven refresh.
+
+> **Granting `"role":"ADMIN"` requires an ADMIN caller.** HR otherwise has full
+> employee create/update rights, but cannot mint a new admin account or
+> promote itself to one - that request is rejected regardless of what
+> `$TOKEN` belongs to, unless it's already an ADMIN's.
 
 ---
 
 ## Step 4 — Add the month's holidays
 
 ```bash
-curl -X POST http://localhost:8080/api/holidays -H 'Content-Type: application/json' -d '{"companyId":1,"holidayName":"Ganesh Chaturthi","holidayDate":"2026-09-14","optionalHoliday":false}'
+curl -X POST http://localhost:8080/api/holidays -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"companyId":1,"holidayName":"Ganesh Chaturthi","holidayDate":"2026-09-14","optionalHoliday":false}'
 ```
 
 A mandatory holiday is removed from working days, so it can never become loss of
 pay. Set `optionalHoliday: true` for restricted holidays - those stay working
-days unless someone actually takes leave.
+days unless someone actually takes leave. (`companyId` in the body is ignored
+for a company-scoped caller like `HR001` - the holiday always lands in your
+own company, the same server-derived-not-client-supplied pattern as
+`assignedBy`/`approverId` above.)
 
 ---
 
@@ -159,7 +251,7 @@ roster there are no expected working days, so the employee reads as absent all
 month and the whole salary becomes loss of pay.
 
 ```bash
-curl -X POST http://localhost:8080/api/shift-schedules/bulk -H 'Content-Type: application/json' -d '{"userIds":["EMP005"],"fromDate":"2026-09-01","toDate":"2026-09-30","shiftCode":"MORNING","weekOffDays":["SUNDAY"],"skipHolidays":true,"overwriteExisting":true,"assignedBy":"SUP001"}'
+curl -X POST http://localhost:8080/api/shift-schedules/bulk -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"userIds":["EMP005"],"fromDate":"2026-09-01","toDate":"2026-09-30","shiftCode":"MORNING","weekOffDays":["SUNDAY"],"skipHolidays":true,"overwriteExisting":true}'
 ```
 
 Result:
@@ -176,7 +268,7 @@ September has 30 days. One is the holiday (not scheduled), four are Sundays
 Check it visually:
 
 ```bash
-curl "http://localhost:8080/api/shift-schedules/planner?month=2026-09&supervisorUserId=SUP001"
+curl "http://localhost:8080/api/shift-schedules/planner?month=2026-09&supervisorUserId=SUP001" -H "Authorization: Bearer $TOKEN"
 ```
 
 ```
@@ -191,9 +283,15 @@ Priya Kulkarni
 `WO` = weekly off. The 14th is absent from the list entirely - that is the
 holiday.
 
-> If `assignedBy` is a supervisor, they can only schedule their own team.
-> Try `"userId":"HR001","assignedBy":"SUP001"` and you get
-> `400 Supervisor SUP001 does not manage employee HR001`.
+> **A supervisor can only schedule their own team - enforced by *who is
+> logged in*, not by an `assignedBy` field in the body.** Log in as `SUP001`
+> instead of `HR001` (same login call as Step 0, different username/password)
+> and try scheduling `HR001` with that token: `400 Supervisor SUP001 does not
+> manage employee HR001`. Scheduling `EMP005` (their own report) with the
+> `SUP001` token succeeds identically to the `HR001` example above.
+> `supervisorUserId=SUP001` in the planner URL above is similarly just a
+> filter for HR/ADMIN callers - a `SUP001` token gets its own team back
+> regardless of what (or whether) that query param is set.
 
 Other ways to build a roster: `/auto-rotate` (rotating shift cycles),
 `/copy-month` (clone last month), `/swap` (exchange two people on a date).
@@ -229,7 +327,7 @@ Do this every month. It is where you catch problems while they can still be
 fixed.
 
 ```bash
-curl "http://localhost:8080/api/attendance/EMP005/monthly?month=2026-09"
+curl "http://localhost:8080/api/attendance/EMP005/monthly?month=2026-09" -H "Authorization: Bearer $TOKEN"
 ```
 
 ```
@@ -237,6 +335,11 @@ curl "http://localhost:8080/api/attendance/EMP005/monthly?month=2026-09"
  invalidPunches 0 | lateCount 0 | totalHours 179.5 | overtimeHours 3.5
  lopDays 3.0
 ```
+
+(Reading someone else's attendance requires HR/ADMIN, or being that person's
+own supervisor, or being that person - a plain `EMPLOYEE` token can only ever
+read their own. `HR001`'s token bypasses this, which is why it's used
+throughout.)
 
 Reading this:
 
@@ -271,7 +374,7 @@ worked, of which 3.5 is beyond the 8-hour shift.
 ## Step 8 — She applies for leave
 
 ```bash
-curl -X POST http://localhost:8080/api/leaves -H 'Content-Type: application/json' -d '{"userId":"EMP005","leaveType":"CASUAL_LEAVE","fromDate":"2026-09-22","toDate":"2026-09-23","duration":"FULL_DAY","reason":"Family function"}'
+curl -X POST http://localhost:8080/api/leaves -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"userId":"EMP005","leaveType":"CASUAL_LEAVE","fromDate":"2026-09-22","toDate":"2026-09-23","duration":"FULL_DAY","reason":"Family function"}'
 ```
 
 ```
@@ -288,12 +391,17 @@ a half day across multiple dates, or insufficient balance.
 For a half day use `"duration":"FIRST_HALF"` or `"SECOND_HALF"` with the same
 from and to date.
 
+> A plain `EMPLOYEE` token can only file leave with `userId` equal to their
+> own - filing "as" a coworker is rejected (404, same as any other
+> not-yours-to-touch record). `HR001`/`ADMIN` may file on behalf of anyone; a
+> `SUPERVISOR` may file on behalf of their own directly-supervised team.
+
 ---
 
 ## Step 9 — The supervisor sees it in their queue
 
 ```bash
-curl http://localhost:8080/api/leaves/pending/SUP001
+curl http://localhost:8080/api/leaves/pending/SUP001 -H "Authorization: Bearer $TOKEN"
 ```
 
 ```
@@ -305,7 +413,7 @@ curl http://localhost:8080/api/leaves/pending/SUP001
 ## Step 10 — Supervisor endorses
 
 ```bash
-curl -X POST http://localhost:8080/api/leaves/1/supervisor-approve -H 'Content-Type: application/json' -d '{"approverId":"SUP001","comments":"Cover arranged"}'
+curl -X POST http://localhost:8080/api/leaves/1/supervisor-approve -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"comments":"Cover arranged"}'
 ```
 
 ```
@@ -313,13 +421,15 @@ curl -X POST http://localhost:8080/api/leaves/1/supervisor-approve -H 'Content-T
 ```
 
 **Balance has not moved yet.** This step is an endorsement, not the decision.
+(`approverId` is not in the body above on purpose - see Step 0's note; it's
+always the bearer token's own identity now, `HR001` in this walkthrough.)
 
 ---
 
 ## Step 11 — HR gives final approval
 
 ```bash
-curl -X POST http://localhost:8080/api/leaves/1/approve -H 'Content-Type: application/json' -d '{"approverId":"HR001","comments":"Approved"}'
+curl -X POST http://localhost:8080/api/leaves/1/approve -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"comments":"Approved"}'
 ```
 
 ```
@@ -329,7 +439,7 @@ curl -X POST http://localhost:8080/api/leaves/1/approve -H 'Content-Type: applic
 **This is the step that consumes balance:**
 
 ```bash
-curl "http://localhost:8080/api/leave-balances/EMP005?year=2026"
+curl "http://localhost:8080/api/leave-balances/EMP005?year=2026" -H "Authorization: Bearer $TOKEN"
 ```
 
 ```
@@ -338,7 +448,9 @@ curl "http://localhost:8080/api/leave-balances/EMP005?year=2026"
  LEAVE_WITHOUT_PAY  quota 0.0   used 0.0  available 0.0
 ```
 
-Only `HR` or `ADMIN` can do this. Passing `"approverId":"EMP001"` is rejected.
+**Only a token belonging to `HR` or `ADMIN` can call this endpoint at all** -
+`LEAVE_APPROVE` isn't granted to `EMPLOYEE` or `SUPERVISOR`, so an `EMP001`
+token gets a flat `403` before the request body is even looked at.
 
 | Action | Effect on balance |
 |---|---|
@@ -351,7 +463,7 @@ Only `HR` or `ADMIN` can do this. Passing `"approverId":"EMP001"` is rejected.
 ## Step 12 — Attendance again, now that leave is approved
 
 ```bash
-curl "http://localhost:8080/api/attendance/EMP005/monthly?month=2026-09"
+curl "http://localhost:8080/api/attendance/EMP005/monthly?month=2026-09" -H "Authorization: Bearer $TOKEN"
 ```
 
 ```
@@ -374,10 +486,38 @@ day's pay.
 
 ---
 
-## Step 13 — Run payroll
+## Step 12b — Generate the attendance payroll will pay from
+
+Everything you have looked at so far was a preview computed from punches and
+persisted nowhere. Payroll pays from a reviewed artifact, so generate it:
 
 ```bash
-curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -d '{"employeeId":"EMP005","month":9,"year":2026,"advanceDeduction":2000,"loanDeduction":0,"tds":0,"canteen":450,"bonus":1000,"incentive":0,"generatedBy":"HR001"}'
+curl -X POST http://localhost:8080/api/attendance/generate -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"month":"2026-09","userIds":["EMP005"]}'
+```
+
+29 rows - 30 days minus the holiday on the 14th, which was never rostered.
+Review them with `GET /api/attendance/EMP005/records?month=2026-09`.
+
+If the device dropped a punch, correct the day rather than editing `device_logs`:
+
+```bash
+curl -X PUT http://localhost:8080/api/attendance/EMP005/2026-09-25 -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"firstIn":"2026-09-25T06:00:00","lastOut":"2026-09-25T15:00:00","remarks":"Device missed the exit punch"}'
+```
+
+The row becomes `MANUAL` and survives the next generation run. (Correcting or
+unlocking someone else's company's attendance by naming their `userId` is
+rejected with a 404, same as reading it - this was a real cross-tenant bug
+found and fixed in an earlier audit pass, see SECURITY_AUDIT.md.)
+
+---
+
+## Step 13 — Run payroll
+
+Skip step 12b and this returns 400: payroll refuses to run against attendance
+nobody generated. Running it locks the month.
+
+```bash
+curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"employeeId":"EMP005","month":9,"year":2026,"advanceDeduction":2000,"loanDeduction":0,"tds":0,"canteen":450,"bonus":1000,"incentive":0}'
 ```
 
 You typed in only the manual amounts: advance ₹2,000, canteen ₹450, bonus
@@ -436,14 +576,16 @@ To run everyone at once (uses zero for all manual deductions, so generate people
 with advances individually):
 
 ```bash
-curl -X POST "http://localhost:8080/api/payroll/generate-all?month=9&year=2026&generatedBy=HR001"
+curl -X POST "http://localhost:8080/api/payroll/generate-all?month=9&year=2026" -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
 ## Step 14 — The salary slip
 
-Open in a browser and print, or save as PDF:
+Open in a browser and print, or save as PDF (paste the token into the
+`Authorization` header via a browser extension, or use `curl -o slip.html`
+instead if your browser can't easily add headers to a plain navigation):
 
 ```
 http://localhost:8080/api/salary-slips/EMP005/print?month=9&year=2026
@@ -452,7 +594,7 @@ http://localhost:8080/api/salary-slips/EMP005/print?month=9&year=2026
 Or as data:
 
 ```bash
-curl "http://localhost:8080/api/salary-slips/EMP005?month=9&year=2026"
+curl "http://localhost:8080/api/salary-slips/EMP005?month=9&year=2026" -H "Authorization: Bearer $TOKEN"
 ```
 
 ```
@@ -464,15 +606,19 @@ curl "http://localhost:8080/api/salary-slips/EMP005?month=9&year=2026"
 The whole month as a spreadsheet:
 
 ```bash
-curl -OJ "http://localhost:8080/api/salary-slips/export?month=9&year=2026"
+curl -OJ "http://localhost:8080/api/salary-slips/export?month=9&year=2026" -H "Authorization: Bearer $TOKEN"
 ```
+
+(A plain `EMPLOYEE` token can only ever fetch, print or appear in the export
+of their own slip - Priya can read her own, not a coworker's, and the export
+for an `EMPLOYEE` caller would come back containing only her own row.)
 
 ---
 
 ## Step 15 — Reports
 
 ```bash
-curl "http://localhost:8080/api/reports/attendance/overtime?month=2026-09"
+curl "http://localhost:8080/api/reports/attendance/overtime?month=2026-09" -H "Authorization: Bearer $TOKEN"
 ```
 
 ```
@@ -482,7 +628,11 @@ curl "http://localhost:8080/api/reports/attendance/overtime?month=2026-09"
 ```
 
 Reports only aggregate what attendance and payroll already recorded - they never
-recalculate, so a report can never disagree with a payslip.
+recalculate, so a report can never disagree with a payslip. Reports require
+`HR`, `ADMIN` or `SUPERVISOR` (never plain `EMPLOYEE`), and - unlike almost
+everything else in this walkthrough - stay company-wide even for a
+`SUPERVISOR` token, deliberately: these are aggregate reports, not individual
+records.
 
 Attendance reports take `month=yyyy-MM`; payroll reports take separate `month`
 and `year` numbers.
@@ -495,7 +645,7 @@ The canteen amount should have been ₹300, not ₹450. Running generate again i
 refused on purpose:
 
 ```bash
-curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -d '{"employeeId":"EMP005","month":9,"year":2026}'
+curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"employeeId":"EMP005","month":9,"year":2026}'
 ```
 
 ```
@@ -505,11 +655,11 @@ curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: applic
 Use regenerate:
 
 ```bash
-curl -X POST http://localhost:8080/api/payroll/regenerate -H 'Content-Type: application/json' -d '{"employeeId":"EMP005","month":9,"year":2026,"advanceDeduction":2000,"canteen":300,"bonus":1000,"generatedBy":"HR001"}'
+curl -X POST http://localhost:8080/api/payroll/regenerate -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"employeeId":"EMP005","month":9,"year":2026,"advanceDeduction":2000,"canteen":300,"bonus":1000}'
 ```
 
 ```bash
-curl "http://localhost:8080/api/payroll/employee/EMP005/revisions?month=9&year=2026"
+curl "http://localhost:8080/api/payroll/employee/EMP005/revisions?month=9&year=2026" -H "Authorization: Bearer $TOKEN"
 ```
 
 ```
@@ -529,31 +679,40 @@ October never changes September's payslip.
 
 ## The monthly routine, condensed
 
-Once set up, each month is six steps:
+Once set up, each month is six steps (plus logging in first - see Step 0):
 
 | | Do this | Endpoint |
 |---|---|---|
 | 1 | Roster everyone | `POST /api/shift-schedules/bulk` |
 | 2 | Let the device write punches all month | *(nothing to do)* |
-| 3 | Check attendance, fix invalid punches | `GET /api/attendance/{userId}/monthly` |
-| 4 | Clear every pending leave request | `GET /api/leaves?status=PENDING` |
-| 5 | Run payroll | `POST /api/payroll/generate-all` |
-| 6 | Print or export slips | `GET /api/salary-slips/export` |
+| 3 | Clear every pending leave request | `GET /api/leaves?status=PENDING` |
+| 4 | Generate the month's attendance | `POST /api/attendance/generate` |
+| 5 | Review it and fix invalid punches | `GET /api/attendance/{userId}/records` then `PUT /api/attendance/{userId}/{date}` |
+| 6 | Run payroll | `POST /api/payroll/generate-all` |
+| 7 | Print or export slips | `GET /api/salary-slips/export` |
 
-**Steps 3 and 4 are the ones that cost people money if skipped.** An unfixed
+**Steps 3 and 5 are the ones that cost people money if skipped.** An unfixed
 invalid punch and an unapproved leave request both come out of someone's salary.
+
+Do leave before generating: approving a leave after the fact means regenerating
+the attendance to pick it up. Corrections made in step 5 are safe from that -
+regeneration preserves them.
 
 ---
 
-## Quick reference: the five things that trip people up
+## Quick reference: the six things that trip people up
 
-1. **`userId` must match the biometric device's user id.** Nothing else joins
+1. **You need a bearer token on everything.** Log in first (Step 0) - a
+   forgotten `Authorization` header is a `401`, not a hint about what went
+   wrong.
+2. **`userId` must match the biometric device's user id.** Nothing else joins
    the two systems.
-2. **No roster = no working days = everything is loss of pay.** Assign shifts
+3. **No roster = no working days = everything is loss of pay.** Assign shifts
    before you look at attendance.
-3. **Only final HR approval counts.** `SUPERVISOR_APPROVED` still costs the
+4. **Only final HR approval counts.** `SUPERVISOR_APPROVED` still costs the
    employee a day.
-4. **Salary breakup is fixed at save time.** Change the salary rule before
-   adding people, not after.
-5. **Use `/regenerate`, not `/generate`, to correct a month.** Generate is
+5. **Salary breakup is fixed at save time.** A salary rule change doesn't
+   reach existing employees on its own - run
+   `POST /api/employees/salary-structure/regenerate-all` after changing it.
+6. **Use `/regenerate`, not `/generate`, to correct a month.** Generate is
    deliberately one-shot.

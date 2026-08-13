@@ -1,11 +1,9 @@
 # Accusharp HRMS - Architecture & Design
 
 How the system is built and why. For day-to-day operation see [README.md](README.md).
-
-Built from three specifications: [Readme.MD](../Claude%20/Readme.MD) (product
-and architecture), [Attendance.md](Attendance.md) and
-[Payroll.md](../payroll/Payroll.md) (the attendance and payroll behaviour this
-codebase already had, now merged into one service).
+For the attendance engine in full - every rule, the punch windows, generation,
+corrections and locking - see **[Attendance.md](Attendance.md)**; this file only
+summarises it.
 
 - **Stack**: Java 21, Spring Boot 4.1.0 (Web, Data JPA, Validation), MySQL, Lombok
 - **Package root**: `com.accusharp.hrms`
@@ -24,7 +22,7 @@ single-purpose services rather than inside the CRUD services, so a rule can be
 changed and tested in one place.
 
 ```
-config/       startup seeding
+config/       SecurityConfig (filter chain, CORS, password encoder), PermissionSeeder, startup seeding
 controller/   REST endpoints
 dto/          validated request payloads and response records
 entity/       JPA entities
@@ -32,6 +30,10 @@ enums/        domain enums that carry rules, not just labels
 exception/    ApiError + GlobalExceptionHandler
 mapper/       entity -> response flattening
 repository/   Spring Data JPA
+security/     JwtService, RefreshTokenService, JwtAuthenticationFilter, UserPrincipal,
+              CustomUserDetailsService, TenantContext, PermissionRegistry,
+              AuthorizationService, RestAuthenticationEntryPoint, RestAccessDeniedHandler -
+              see SECURITY.md, this package is the whole auth/authz/multi-tenancy story
 service/
   calculation/  SalaryCalculationService, DeductionCalculationService,
                 AttendanceCalculationService, LopCalculationService
@@ -40,7 +42,7 @@ service/
   leave/        LeaveService, LeaveBalanceService, LeaveCalculationService
   payroll/      PayrollService, SalarySlipService
   report/       ReportService, DashboardService
-util/         AmountInWords
+util/         AmountInWords, TemporaryPasswordGenerator
 ```
 
 Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
@@ -50,23 +52,29 @@ Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
 
 ```
 Company -> Department -> Designation -> Employee -> Supervisor mapping
-   -> Shift scheduling -> Biometric punches -> Attendance
-   -> Leave approval -> LOP -> Payroll -> Salary slip -> Reports
+   -> Shift scheduling -> Biometric punches -> Attendance generated
+   -> HR corrections -> Leave approval -> LOP -> Payroll -> Salary slip -> Reports
 ```
 
 ## Domain model
 
 | Entity | Table | Notes |
 |---|---|---|
-| `Company`, `Department`, `Designation` | `company`, `department`, `designation` | Masters, unique on their code |
-| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor` |
-| `Shift` | `shift` | Shift master. End time not after start time means it crosses midnight |
+| `Company` | `company` | The tenant. Every company-scoped entity below resolves back to one, directly or via its owning `Employee` |
+| `Department`, `Designation`, `Shift` | `department`, `designation`, `shift` | One row per company, plus rows with `company = null` - a shared, read-only-to-companies catalog (the seeded defaults). Unique on `(company_id, code)`, not code alone - see [SECURITY.md](SECURITY.md) Phase 6 |
+| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below) |
+| `PlatformUser` | `platform_user` | The other principal type - platform-level accounts (company onboarding etc.), not tied to any company |
+| `RefreshToken` | `refresh_token` | Opaque, hashed at rest, single-use with rotation - never a JWT itself |
+| `Permission`, `RolePermission` | `permission`, `role_permission` | The data-driven grant table every `@PreAuthorize` check resolves against - see Security below |
+| `AuditLog` | `audit_log` | Flat, scalar-only (no JPA relations, by design) - who did what, when, success or failure |
+| `CustomRole`, `CustomRolePermission`, `EmployeeCustomRole` | `custom_role`, `custom_role_permission`, `employee_custom_role` | Company-defined roles (Phase 10) - a named bundle of permissions assignable to any number of employees, additive on top of their fixed `Role` |
 | `ShiftSchedule` | `emp_attendance_shift` | One shift per employee per day (unique constraint) |
 | `DeviceLog` | `device_logs` | Raw punches, written by the eSSL device. **Read-only here** |
+| `DailyAttendance` | `emp_daily_attendance` | The reviewed attendance day payroll is paid from. Generated from punches, correctable by HR |
 | `Holiday` | `holiday` | Company calendar; optional holidays stay working days |
 | `LeaveRequest`, `LeaveBalance` | `leave_request`, `leave_balance` | Balance is always quota minus used |
-| `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Write-through cache, recomputed on every read |
-| `SalaryRule` | `salary_rule` | Single config row holding every percentage and slab |
+| `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Cached rollup of the stored days |
+| `SalaryRule` | `salary_rule` | One row per company holding every percentage and slab, plus one `company = null` global default a company falls back to until it customizes its own - see [SECURITY.md](SECURITY.md) |
 | `Payroll` | `payroll` | Immutable snapshot per employee/month/year/revision |
 
 ### Salary structure
@@ -76,12 +84,52 @@ drift from configuration. `basicDA`, `hra`, `conveyanceAllowance`,
 `educationAllowance` and `grossSalaryWage` are **not** accepted from the API.
 
 ```
-basicDA              = grossSalary x basicDaPercent      (default 50%)
+basicDA              = max(grossSalary x basicDaPercent, basicDaMinimumThreshold)
 hra                  = basicDA x hraPercent              (default 40%)
 conveyanceAllowance  = basicDA x conveyancePercent       (default 10%)
 educationAllowance   = basicDA x educationPercent        (default 10%)
 grossSalaryWage      = sum of all of the above + medical + other
 ```
+
+`basicDaMinimumThreshold` is the government-notified minimum wage for
+Basic+DA (default 50% of gross). It changes on its own schedule, independent
+of the percentage, so it is a separate `SalaryRule` field rather than folded
+into `basicDaPercent`. Zero (the default) disables the floor entirely -
+existing companies are unaffected until they set one. Because HRA,
+conveyance and education all derive from `basicDA`, they rise with it
+whenever the threshold wins, exactly as if the percentage itself had
+produced that higher figure.
+
+#### Manual override and regeneration
+
+`Employee.salaryStructureOverridden` is the escape hatch for the real-world
+case a fixed formula never quite covers - a payslip that needs to differ from
+what the percentages derive. `PUT /api/employees/{id}/salary-structure` sets
+`basicDA`/`hra`/`conveyanceAllowance`/`educationAllowance` by hand and flips
+the flag on; `SalaryCalculationService.applyCalculatedFields` then skips
+re-deriving those four fields on every later employee write (a plain update,
+or a rule change), leaving them exactly as set - only `grossSalaryWage` keeps
+refreshing, since medical/other allowance can still change underneath it.
+
+Because the derivation is skipped rather than never run, a `SalaryRule`
+change is picked up automatically by every employee **not** overridden the
+next time each is saved - but nothing pushes that recompute out on its own,
+so a rule edit alone does not touch existing employees. Two endpoints force
+it:
+
+- `POST /api/employees/{id}/salary-structure/regenerate` - clears the
+  override (if any) and recomputes one employee from their current gross
+  salary and the company's current rule.
+- `POST /api/employees/salary-structure/regenerate-all` - the same, for
+  every active employee of the caller's company at once (the practical
+  response to a rule change). Employees currently overridden are skipped -
+  a bulk, rule-driven refresh silently discarding a deliberate per-employee
+  override would be a surprise, not a fix.
+
+Payroll itself needs no separate refresh: `PayrollService.build()` always
+reads `basicDA`/`hra`/etc. straight off the `Employee` row at generate/
+regenerate time, so once the employee's structure is corrected, the next
+`POST /api/payroll/regenerate` for that period picks it up.
 
 ## How the calculations work
 
@@ -101,6 +149,15 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
   end (default 4 hours). A symmetric buffer would make a long overtime day look
   like a missing exit punch, so the closing side is configurable per shift and
   sized for real overtime.
+- **Windows are exclusive.** A night shift's window crosses midnight and, with
+  an overtime window on top, can reach into the hours the *next* scheduled day
+  is already collecting for. A day's window is therefore truncated where the
+  next scheduled day's window opens, so a punch is only ever counted by one day
+  - otherwise a night shift swallows the next morning's entry as its own exit
+  and both days claim it. It only ever shrinks: where shifts do not overlap the
+  full overtime window survives, and consecutive night shifts never collide.
+  The roster is read one day either side of the requested range, which is what
+  makes the last night shift of a month hand over correctly to the next month.
 - **Break.** With four or more punches the middle pairs are real in/out cycles,
   so the actual time outside is used. Otherwise the shift's configured unpaid
   break applies.
@@ -110,8 +167,41 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
 - **Holidays, weekly offs and approved leave** are layered on top, so *absent*
   only ever means "expected to work and did not".
 
-Monthly summaries are a cache, not a source of truth - they are recomputed from
-punches and roster on every request and overwritten.
+### Attendance is generated, then reviewed
+
+Attendance is a stored artifact, not a view that re-derives itself:
+
+```
+generate(month)  ->  one DailyAttendance row per rostered day    (GENERATED)
+correct(day)     ->  HR fixes what the device got wrong          (MANUAL)
+payroll          ->  reads the stored rows and freezes them      (locked)
+```
+
+Devices miss punches. When they do, the day reads as an invalid punch and
+silently becomes loss of pay, so HR must be able to correct it - either by
+supplying the punch times the device missed, or by declaring the day outright
+when no punch exists at all. Corrected times are run back through
+`AttendanceCalculationService`, the identical path a device punch takes, so a
+hand-fixed day can never obey different rules from a machine-read one.
+
+Two rules make corrections stick, and both are load-bearing:
+
+- **A regeneration preserves `MANUAL` rows** unless `overwriteManual` is set, so
+  a rerun picks up late-arriving punches without discarding HR's work.
+- **A read never writes.** Before this, both a monthly GET and payroll itself
+  recomputed from raw punches, so any correction was destroyed by the next
+  request that happened to touch the month.
+
+`recordStatus` (GENERATED / MANUAL) and `locked` are deliberately separate
+fields: locking a day must not erase the fact that a human corrected it, which
+is exactly the question asked when a salary is disputed months later.
+
+Generating payroll locks the month, keeping an already-paid period
+reproducible. Correcting it afterwards means unlock, fix, regenerate - which
+supersedes the old revision rather than editing it.
+
+Monthly summaries remain a cache, but now of the stored days rather than of raw
+punches, so LOP and payroll inherit corrections automatically.
 
 ### Loss of pay
 
@@ -143,7 +233,7 @@ Two payment models:
 ```
 earn<component>  = component x payableDays / prorationBase
 totalEarnings    = sum of earnings + bonus + incentive + overtime
-totalDeduction   = PF + ESIC + PT + TDS + advance + loan + canteen
+totalDeduction   = PF + ESIC + PT + MLWF + TDS + advance + loan + canteen
 netSalary        = totalEarnings - totalDeduction
 ```
 
@@ -151,6 +241,10 @@ netSalary        = totalEarnings - totalDeduction
   full-month `pf` figure is reported for information only.
 - **ESIC** applies only up to the configured wage ceiling.
 - **Professional tax** follows the two-step slab in `SalaryRule`.
+- **MLWF** (Labour Welfare Fund) is a single flat `SalaryRule.mlwfAmount`,
+  deducted from the employee only in the June and December payroll runs
+  (`Payroll.month == 6 || 12`) - zero every other month. Revised whenever the
+  state notifies a new figure, same as every other `SalaryRule` field.
 - **LOP deduction** is reported on the slip for transparency but is *not* added
   to the deduction total - the earnings were already prorated down by the same
   days, so adding it would deduct twice.
@@ -177,20 +271,73 @@ approved requests are refused, half days are only valid on a single-day request,
 and the balance is checked at application time so the approver never hits an
 empty quota.
 
-## Roles
+## Security &amp; multi-tenancy
 
-`ADMIN`, `HR`, `SUPERVISOR`, `EMPLOYEE` are carried on the employee record and
-enforced today at the points where it matters: only HR or admin can give final
-leave approval, and a supervisor can only schedule or approve their own team.
-Endpoint-level authentication (JWT / Spring Security) is listed as a future
-enhancement in the specification and is not present - **all endpoints are
-currently unauthenticated.**
+Full detail lives in [SECURITY.md](SECURITY.md) (a phase-by-phase build log)
+and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) (an independent audit pass) - this
+is the summary.
+
+- **Two principal types.** An `Employee` (a company user - `ADMIN`, `HR`,
+  `SUPERVISOR`, or `EMPLOYEE`) or a `PlatformUser` (`PLATFORM_OWNER`/
+  `PLATFORM_ADMIN`, not tied to any company). Both authenticate through the
+  same `POST /api/auth/login`, and the JWT carries which type of principal
+  issued it.
+- **Every `/api/**` endpoint** requires that JWT and a specific permission via
+  `@PreAuthorize("@authz.can('...')")`, resolved from a data-driven
+  `Permission`/`RolePermission` grant table (`PermissionRegistry`,
+  `AuthorizationService`) rather than hardcoded `if (role == Role.HR)`
+  checks - see SECURITY.md for the full matrix. Ownership-level rules (a
+  supervisor may only schedule or approve their own team) remain enforced in
+  the service layer beneath that, as defense in depth.
+- **Multi-tenant isolation.** `TenantContext` resolves the caller's company
+  from the JWT. Every single-resource lookup resolves its target through a
+  tenant-checked choke point (`EmployeeService.getEntityById`/
+  `getEntityByUserId` for most services; the same pattern independently on
+  `Company`/`Department`/`Designation`/`Shift`/`Holiday`) and returns 404, not
+  403, on a cross-company id - a 403 would confirm the record exists
+  somewhere, a 404 does not.
+- **"View only my own data" self-service scoping** (Phase 8): a plain
+  `EMPLOYEE` sees only their own record across the employee directory,
+  attendance, leave, leave balance, salary slips and shift roster; a
+  `SUPERVISOR` sees themselves plus their own direct reports for the same
+  set; `ADMIN`/`HR` are unrestricted within their own company.
+  `ReportService`/`DashboardService` are a deliberate exception - those stay
+  company-wide for SUPERVISOR/HR/ADMIN, since they're aggregate reports, not
+  individual-record access.
+- **Account security.** BCrypt password hashing, account lockout after
+  repeated failed logins, no account-enumeration in login errors, short-lived
+  JWT access tokens plus opaque rotating refresh tokens. Every newly created
+  employee (not just a company's first admin during onboarding) is issued a
+  one-time temporary password in the create response (Phase 9); if it's
+  lost, ADMIN/HR can generate a new one via
+  `POST /api/employees/{id}/reset-password` (also Phase 9) - there is still
+  no *self-service* ("no admin involved") recovery flow, since that needs
+  email delivery infrastructure this app doesn't have.
+- **Audit trail.** Every security-sensitive write is recorded - login/
+  logout/password events, employee/company/payroll changes (Phase 5), and,
+  as of Phase 9, leave decisions, shift schedule writes, salary rule
+  changes, attendance corrections and company status changes too.
+  `GET /api/audit-logs/export` gives an unbounded CSV for a date range (the
+  regular `GET` stays capped at 200 rows); `DELETE /api/audit-logs` purges
+  old rows but is gated by a permission granted only to platform roles,
+  never a company role - the entity a trail holds accountable must never be
+  able to erase it.
+- **Dynamic role/permission management** (Phase 10): a company `ADMIN` can
+  define named custom roles, grant each an arbitrary set of permissions,
+  and assign them to employees - additive on top of the employee's fixed
+  `Role`, never a replacement for it, so every hardcoded `Role` check
+  elsewhere in the app (self-escalation guard, supervisor-team rules,
+  self-service scoping) is untouched by this. Platform-only permissions can
+  never be granted through a custom role. See `CustomRoleController`/
+  `CustomRoleService` and SECURITY.md's Phase 10 write-up.
 
 ## Design decisions worth knowing
 
 - **Device integration is one-way.** `device_logs` is populated externally by the
   biometric device's middleware writing straight to MySQL. There is deliberately
-  no endpoint to create or edit a punch.
+  no endpoint to create or edit a punch - HR corrections are recorded on the
+  generated attendance day instead, so the raw device reading survives next to
+  the correction and a device re-sync can never clobber it.
 - **No native SQL.** The one native MySQL query the previous attendance service
   used (`DATE_ADD`, `GROUP BY DATE(...)`) was replaced with portable derived
   queries plus grouping in Java, which is what lets the whole suite run on H2.
@@ -203,7 +350,16 @@ currently unauthenticated.**
 
 ## Not implemented
 
-These are listed as future enhancements in the specification and are not built:
-JWT/Spring Security, multi-branch support, employee self-service, notification
-and email services, effective-dated salary rule versions, soft delete, audit
-logs, Flyway migrations, Redis caching, and Swagger/OpenAPI documentation.
+Authentication, authorization, multi-tenant isolation, self-service
+scoping, audit logging (now with full coverage and retention/export
+tooling), and dynamic role/permission management all exist now (see
+Security &amp; multi-tenancy above and [SECURITY.md](SECURITY.md)). Still
+open: a self-service ("I forgot my password, no admin involved") recovery
+flow - an ADMIN/HR-triggered reset exists instead, since there's no email
+delivery infrastructure to build the self-service version on; a UI for
+custom-role assignment (the API exists, see `CustomRoleController`); and a
+general no-privilege-escalation check on custom roles (today only
+platform-only permission codes are blocked, not "grant nothing beyond what
+you yourself hold"). Also not built: multi-branch support, notification
+and email services generally, effective-dated salary rule versions, soft
+delete, Flyway migrations, Redis caching, and Swagger/OpenAPI documentation.

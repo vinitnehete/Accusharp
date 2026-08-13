@@ -10,6 +10,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 
 /**
@@ -118,6 +119,40 @@ public class Employee {
     @Column(name = "gross_salary_wage", precision = 15, scale = 2)
     private BigDecimal grossSalaryWage;
 
+    /**
+     * When true, basicDA/hra/conveyanceAllowance/educationAllowance were set
+     * by hand (see {@code EmployeeService#updateSalaryStructure}) and are no
+     * longer derived from {@link SalaryRule} on save - until
+     * {@code EmployeeService#regenerateSalaryStructure} clears it.
+     */
+    @Column(name = "salary_structure_overridden", nullable = false)
+    @Builder.Default
+    private boolean salaryStructureOverridden = false;
+
     @Column(name = "overtime_eligible", nullable = false)
     private boolean overtimeEligible;
+
+    // ---- authentication -----------------------------------------------------
+    // userId doubles as the login username. Never serialized to any response DTO.
+
+    @Column(name = "password_hash", length = 100)
+    private String passwordHash;
+
+    @Column(name = "account_enabled", nullable = false)
+    @Builder.Default
+    private boolean accountEnabled = true;
+
+    @Column(name = "account_locked", nullable = false)
+    @Builder.Default
+    private boolean accountLocked = false;
+
+    @Column(name = "failed_login_attempts", nullable = false)
+    @Builder.Default
+    private int failedLoginAttempts = 0;
+
+    @Column(name = "last_login_at")
+    private Instant lastLoginAt;
+
+    @Column(name = "password_changed_at")
+    private Instant passwordChangedAt;
 }

@@ -34,6 +34,7 @@ public record EmployeeResponse(
         BigDecimal medicalAllowance,
         BigDecimal otherAllowance,
         BigDecimal grossSalaryWage,
-        boolean overtimeEligible
+        boolean overtimeEligible,
+        boolean salaryStructureOverridden
 ) {
 }

@@ -1,6 +1,7 @@
 package com.accusharp.hrms.repository;
 
 import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -21,6 +22,11 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
     boolean existsByEmployeeCode(String employeeCode);
 
     List<Employee> findByRecordStatus(RecordStatus recordStatus);
+
+    List<Employee> findByRecordStatusAndCompanyId(RecordStatus recordStatus, Long companyId);
+
+    /** Every active employee of one employment type, across every company - the default-roster job's entry point. */
+    List<Employee> findByRecordStatusAndStatus(RecordStatus recordStatus, EmployeeStatus status);
 
     List<Employee> findBySupervisorUserId(String supervisorUserId);
 
