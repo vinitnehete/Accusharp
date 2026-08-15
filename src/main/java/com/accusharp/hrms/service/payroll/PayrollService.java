@@ -1,5 +1,6 @@
 package com.accusharp.hrms.service.payroll;
 
+import com.accusharp.hrms.dto.PayrollDebugRow;
 import com.accusharp.hrms.dto.PayrollRequest;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
@@ -26,8 +27,11 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.YearMonth;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -43,8 +47,10 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li><b>DAY_WISE</b> - paid against attended days over a fixed payable-day
  *       base (26 by default), with overtime on hours beyond the standard day.</li>
- *   <li><b>everyone else</b> - paid against the month's working days, reduced
- *       only by loss of pay.</li>
+ *   <li><b>everyone else</b> - salaried against the full calendar month
+ *       (week-offs included, unlike DAY_WISE), reduced only by whatever LOP
+ *       the generated attendance found. Overtime is still computed and shown
+ *       as its own line, never part of this proration.</li>
  * </ul>
  */
 @Service
@@ -204,6 +210,74 @@ public class PayrollService {
                 .toList();
     }
 
+    /**
+     * Same scope as {@link #getPeriodForCaller}, but every field the
+     * calculation consumed and produced, plus a live re-read of the
+     * employee's master salary data and the company's current {@code
+     * SalaryRule} - so a wrong number can be traced to its cause (bad
+     * attendance input, a stale rule the payroll predates, a rule or salary
+     * edited after generation) without recomputing anything by hand. See
+     * {@link PayrollDebugRow}.
+     */
+    @Transactional(readOnly = true)
+    public List<PayrollDebugRow> getPeriodDebugForCaller(int month, int year) {
+        List<Payroll> period = getPeriodForCaller(month, year);
+        Map<String, Employee> employeesByUserId = employeeService.getAllEntities().stream()
+                .collect(Collectors.toMap(Employee::getUserId, Function.identity(), (a, b) -> a));
+
+        return period.stream()
+                .sorted(Comparator.comparing(Payroll::getEmployeeId))
+                .map(payroll -> toDebugRow(payroll, employeesByUserId.get(payroll.getEmployeeId())))
+                .toList();
+    }
+
+    private PayrollDebugRow toDebugRow(Payroll p, Employee employee) {
+        BigDecimal liveGrossSalary = employee == null ? null : employee.getGrossSalary();
+        BigDecimal livePfBasic = employee == null ? null : employee.getPfBasic();
+        SalaryRule liveRule = employee == null ? null
+                : salaryRuleService.getActiveRuleForCompany(employee.getCompany());
+
+        boolean masterDataDrifted = employee != null
+                && (differs(p.getGrossSalary(), liveGrossSalary) || differs(p.getPfBasic(), livePfBasic));
+        boolean ruleDrifted = liveRule != null
+                && (differs(p.getRuleBasicDaPercent(), liveRule.getBasicDaPercent())
+                    || differs(p.getRulePfPercent(), liveRule.getPfPercent())
+                    || differs(p.getRuleEsicPercent(), liveRule.getEsicPercent()));
+
+        return new PayrollDebugRow(
+                p.getId(), p.getEmployeeId(), p.getEmployeeName(), p.getEmployeeCode(), p.getCompanyName(),
+                p.getDepartmentName(), p.getDesignationName(),
+                p.getEmploymentStatus() == null ? null : p.getEmploymentStatus().name(),
+                p.getRevision(), p.getStatus() == null ? null : p.getStatus().name(),
+                p.getGeneratedAt() == null ? null : p.getGeneratedAt().toString(), p.getGeneratedBy(),
+
+                p.getDaysInMonth(), p.getWorkingDays(), p.getPresentDays(), p.getPaidLeaveDays(), p.getLopDays(),
+                p.getPayableDays(), p.getTotalHours(), p.getOvertimeHours(), p.getPerDay(), p.getPerHour(),
+
+                p.getEarnBasicDA(), p.getEarnHra(), p.getEarnConveyance(), p.getEarnEducation(), p.getEarnMedical(),
+                p.getEarnOther(), p.getBonus(), p.getIncentive(), p.getOtAllowance(), p.getEarnGrossSalary(),
+                p.getTotalEarnings(),
+
+                p.getPf(), p.getEarnPf(), p.getPfDeduction(), p.getEsic(), p.getProfessionalTax(), p.getMlwf(),
+                p.getTds(), p.getAdvanceDeduction(), p.getLoanDeduction(), p.getCanteen(), p.getLopDeduction(),
+                p.getTotalDeduction(), p.getNetSalary(),
+
+                p.getGrossSalary(), liveGrossSalary, p.getPfBasic(), livePfBasic,
+
+                p.getRuleBasicDaPercent(), liveRule == null ? null : liveRule.getBasicDaPercent(),
+                p.getRulePfPercent(), liveRule == null ? null : liveRule.getPfPercent(),
+                p.getRuleEsicPercent(), liveRule == null ? null : liveRule.getEsicPercent(),
+
+                masterDataDrifted, ruleDrifted);
+    }
+
+    private static boolean differs(BigDecimal stored, BigDecimal live) {
+        if (stored == null || live == null) {
+            return false;
+        }
+        return stored.compareTo(live) != 0;
+    }
+
     // ---- the calculation ---------------------------------------------------
 
     private Payroll build(PayrollRequest request, int revision) {
@@ -231,9 +305,12 @@ public class PayrollService {
         boolean dayWise = employee.getStatus().isPaidPerAttendedDay();
 
         // Base of the proration: the denominator every earning is divided by.
+        // DAY_WISE is paid per attended day against a fixed payable-day base;
+        // everyone else is salaried against the full calendar month - week-offs
+        // included, reduced only by whatever LOP the generated attendance found.
         BigDecimal totalDays = dayWise
                 ? BigDecimal.valueOf(rule.getDayWiseDaysInMonth())
-                : BigDecimal.valueOf(Math.max(attendance.getWorkingDays(), 1));
+                : BigDecimal.valueOf(period.lengthOfMonth());
 
         BigDecimal presentDays = attendance.getPresentDays();
         BigDecimal paidLeaveDays = paidLeaveDays(attendance);
@@ -245,8 +322,7 @@ public class PayrollService {
             lopDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
             payableDays = presentDays.add(paidLeaveDays).min(totalDays);
         } else {
-            lopDays = lopCalculationService.calculateLopDays(
-                    BigDecimal.valueOf(attendance.getWorkingDays()), presentDays, paidLeaveDays);
+            lopDays = attendance.getLopDays();
             payableDays = lopCalculationService.calculatePayableDays(totalDays, lopDays);
         }
 

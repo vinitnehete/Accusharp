@@ -244,6 +244,48 @@ if that's really what you want. Neither call touches payroll history; run
 `/api/payroll/regenerate` for any already-generated period afterwards to
 pick up the corrected structure.
 
+#### 3.4.2 Bulk import from CSV
+
+Onboarding more than a handful of people through the frontend's CSV upload
+screen goes through one call instead of one `POST /api/employees` per row:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/bulk-import -H "Authorization: Bearer $TOKEN" -F "file=@employees.csv;type=text/csv"
+```
+
+CSV header (case-insensitive, any column order):
+
+```
+userId,employeeCode,employeeName,companyId,departmentId,designationId,supervisorUserId,joiningDate,dateOfBirth,status,role,email,phone,grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible
+```
+
+Only `userId`, `employeeCode`, `employeeName`, `status`, `grossSalary`,
+`pfBasic`, `medicalAllowance` and `otherAllowance` are required; everything
+else may be left blank. `companyId` is ignored for a company-scoped caller -
+same as a single create, the caller's own company always wins. Dates are
+`yyyy-MM-dd`.
+
+Every row is attempted independently through the exact same path as a single
+`POST /api/employees` - same admin-escalation guard, same one-time temporary
+password per row. **One bad row (a duplicate code, a typo'd number) fails
+only that row**; the response tells you exactly which:
+
+```json
+{
+  "totalRows": 4,
+  "successCount": 2,
+  "failureCount": 2,
+  "succeeded": [ { "employee": { "userId": "EMP101", ... }, "temporaryPassword": "..." }, ... ],
+  "errors": [
+    { "rowNumber": 3, "identifier": "EMP103", "message": "Employee already exists with code EMP-103" },
+    { "rowNumber": 4, "identifier": null, "message": "grossSalary must be a number, got 'notanumber'" }
+  ]
+}
+```
+
+Capture every `temporaryPassword` in `succeeded` now, same as a single
+create - it is never shown again.
+
 ### 3.5 Holidays
 
 Load the year's calendar up front. A mandatory holiday is removed from working
@@ -291,6 +333,27 @@ curl -X POST http://localhost:8080/api/shift-schedules/bulk -H 'Content-Type: ap
 | `skipHolidays` | Mandatory holidays are not scheduled at all |
 | `overwriteExisting` | `false` returns 409 on any day already scheduled |
 | `assignedBy` | If a supervisor, they may only schedule their own team |
+
+### Bulk assignment (different shift per employee)
+
+The call above puts every listed employee on the *same* shift. When the team
+needs different employees on different shifts (or different days) in one
+roster upload, each entry carries its own `userId`/`shiftDate`/`shiftCode`:
+
+```bash
+curl -X POST http://localhost:8080/api/shift-schedules/bulk/varied -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"assignments":[{"userId":"EMP001","shiftDate":"2026-09-01","shiftCode":"MORNING","weekOff":false},{"userId":"EMP003","shiftDate":"2026-09-01","shiftCode":"NIGHT","weekOff":false}]}'
+```
+
+Or the same thing from the frontend's CSV upload
+(`userId,shiftDate,shiftCode,weekOff`):
+
+```bash
+curl -X POST http://localhost:8080/api/shift-schedules/bulk/csv -H "Authorization: Bearer $TOKEN" -F "file=@roster.csv;type=text/csv"
+```
+
+Both return the same `{totalRows, successCount, failureCount, succeeded,
+errors}` shape as the employee CSV import above - an unknown employee or an
+unknown shift code fails only that one entry.
 
 ### Auto-rotation
 
@@ -541,6 +604,29 @@ curl -X POST "http://localhost:8080/api/payroll/generate-all?month=9&year=2026&g
 Note this uses zero for all manual deductions. If someone has an advance or
 canteen amount, generate them individually.
 
+### Bulk generate from CSV, with per-employee amounts
+
+`/generate-all` above is all-or-nothing on the manual amounts (always zero).
+When bonus/incentive/advance/canteen differ per employee for the month, upload
+a CSV instead - one row per employee, `month`/`year` apply to the whole file:
+
+```bash
+curl -X POST "http://localhost:8080/api/payroll/bulk-generate?month=9&year=2026" -H "Authorization: Bearer $TOKEN" -F "file=@payroll.csv;type=text/csv"
+```
+
+CSV header (only `employeeId` is required, every amount defaults to `0`):
+
+```
+employeeId,bonus,incentive,tds,advanceDeduction,loanDeduction,canteen
+```
+
+Same per-row behavior as the other bulk/CSV endpoints: an employee with no
+attendance generated for the period, or one already paid this month, fails
+only that row (`{"totalRows":..., "succeeded":[...], "errors":[...]}`).
+Add `&regenerate=true` to recompute rows that are already generated as a new
+revision instead of erroring them - the same choice `/regenerate` gives a
+single employee.
+
 ### Reading the result
 
 | Field | Meaning |
@@ -589,6 +675,29 @@ curl "http://localhost:8080/api/payroll?month=9&year=2026"
 ```bash
 curl http://localhost:8080/api/payroll/employee/EMP001
 ```
+
+### Debugging a wrong number
+
+`GET /api/payroll?month=&year=` returns the stored `Payroll` rows as-is - the
+full snapshot, but only what was true at generation time. When a net salary
+looks wrong and you need to see *why* without recomputing by hand:
+
+```bash
+curl "http://localhost:8080/api/payroll/debug?month=9&year=2026" -H "Authorization: Bearer $TOKEN"
+```
+
+Same scope as the call above, but every row also carries a live re-read of
+the employee's current `grossSalary`/`pfBasic` and the company's current
+`SalaryRule` percentages next to what was actually stored, plus two flags:
+
+| Field | True means |
+|---|---|
+| `masterDataDrifted` | The employee's salary/PF-basic changed *after* this payroll was generated |
+| `ruleDrifted` | The company's `SalaryRule` percentages changed *after* this payroll was generated |
+
+A `true` on either explains "why does this month look different" better than
+re-deriving the calculation - the payroll was correct for the data it was
+computed from, that data has since moved.
 
 ---
 
@@ -665,15 +774,15 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Companies | `/api/companies` (`POST /onboard` creates the company plus its first admin - see [SECURITY.md](SECURITY.md)) |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
-| Employees | `/api/employees` |
+| Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding) |
 | Shift master | `/api/shifts` |
-| Shift scheduling | `/api/shift-schedules` |
+| Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all) |
 | Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |
 | Holidays | `/api/holidays` |
 | Leave | `/api/leaves` |
 | Leave balances | `/api/leave-balances` |
 | Salary rules | `/api/salary-rules` |
-| Payroll | `/api/payroll` |
+| Payroll | `/api/payroll` (`POST /bulk-generate` - CSV bulk run; `GET /debug` - full per-employee breakdown with live drift flags) |
 | Salary slips | `/api/salary-slips` |
 | Reports | `/api/reports` |
 | Dashboard | `/api/dashboard` |

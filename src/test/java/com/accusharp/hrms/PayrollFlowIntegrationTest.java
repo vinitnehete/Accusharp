@@ -141,7 +141,7 @@ class PayrollFlowIntegrationTest {
     }
 
     @Test
-    @DisplayName("payroll prorates earnings to the 25 payable days")
+    @DisplayName("payroll prorates earnings to the 30 payable days of the calendar month")
     void payrollProratesByPayableDays() {
         approveTwoDaysLeave();
         generateAttendance();
@@ -152,10 +152,13 @@ class PayrollFlowIntegrationTest {
         assertThat(payroll.getPresentDays()).isEqualByComparingTo("23");
         assertThat(payroll.getPaidLeaveDays()).isEqualByComparingTo("2");
         assertThat(payroll.getLopDays()).isEqualByComparingTo("1");
-        assertThat(payroll.getPayableDays()).isEqualByComparingTo("25");
+        // Salaried, not day-wise: paid the full 31-day calendar month (week-offs
+        // included), reduced only by the 1 LOP day attendance found - 30, not
+        // the 25 you'd get by prorating against working days instead.
+        assertThat(payroll.getPayableDays()).isEqualByComparingTo("30");
 
-        // Basic is 50% of a 26000 gross, prorated 25/26.
-        assertThat(payroll.getEarnBasicDA()).isEqualByComparingTo("12500.00");
+        // Basic is 50% of a 26000 gross, prorated 30/31.
+        assertThat(payroll.getEarnBasicDA()).isEqualByComparingTo("12580.65");
         assertThat(payroll.getNetSalary())
                 .isEqualByComparingTo(payroll.getTotalEarnings().subtract(payroll.getTotalDeduction()));
         assertThat(payroll.getStatus()).isEqualTo(PayrollStatus.GENERATED);

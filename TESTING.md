@@ -1205,15 +1205,15 @@ Masters follow standard REST — `POST` create, `PUT /{id}` update, `GET /{id}`,
 | Companies | `/api/companies` |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
-| Employees | `/api/employees` |
+| Employees | `/api/employees` (+ `POST /bulk-import`) |
 | Shift master | `/api/shifts` |
-| Shift scheduling | `/api/shift-schedules` |
+| Shift scheduling | `/api/shift-schedules` (+ `POST /bulk/varied`, `POST /bulk/csv`) |
 | Attendance | `/api/attendance` |
 | Holidays | `/api/holidays` |
 | Leave | `/api/leaves` |
 | Leave balances | `/api/leave-balances` |
 | Salary rules | `/api/salary-rules` |
-| Payroll | `/api/payroll` |
+| Payroll | `/api/payroll` (+ `POST /bulk-generate`, `GET /debug`) |
 | Salary slips | `/api/salary-slips` |
 | Reports | `/api/reports` |
 | Dashboard | `/api/dashboard` |
@@ -1251,6 +1251,48 @@ POST /api/employees/salary-structure/regenerate-all
 
 See [Step 2](#step-2--create-the-employee)'s "Manual salary structure override
 and regenerate" for what each of the three does and why.
+
+### Bulk & CSV endpoints
+
+All four below share one response shape - `{totalRows, successCount,
+failureCount, succeeded: [...], errors: [{rowNumber, identifier, message}]}` -
+because every row is attempted independently: one bad row (a duplicate code,
+an unknown employee, a period already generated) fails only that row and
+shows up in `errors`, it never aborts the rest of the batch. The three
+`multipart/form-data` ones need Postman's **Body → form-data**, key `file`,
+type **File** — not raw JSON.
+
+```
+POST /api/employees/bulk-import                            (multipart, key "file")
+Header row: userId,employeeCode,employeeName,companyId,departmentId,designationId,
+            supervisorUserId,joiningDate,dateOfBirth,status,role,email,phone,
+            grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible
+Required: userId, employeeCode, employeeName, status, grossSalary, pfBasic,
+          medicalAllowance, otherAllowance. Same admin-escalation guard and
+          one-time temporaryPassword-per-row as Step 2.
+
+POST /api/shift-schedules/bulk/varied                       (JSON — each entry its own shift, unlike /bulk)
+{ "assignments": [
+    { "userId": "EMP001", "shiftDate": "2026-10-01", "shiftCode": "MORNING", "weekOff": false },
+    { "userId": "EMP003", "shiftDate": "2026-10-01", "shiftCode": "NIGHT",   "weekOff": false }
+] }
+
+POST /api/shift-schedules/bulk/csv                           (multipart, key "file")
+Header row: userId,shiftDate,shiftCode,weekOff
+
+POST /api/payroll/bulk-generate?month=9&year=2026&regenerate=false   (multipart, key "file")
+Header row: employeeId,bonus,incentive,tds,advanceDeduction,loanDeduction,canteen
+Only employeeId is required; every amount defaults to 0. regenerate=true
+recomputes an already-generated row as a new revision instead of erroring it.
+
+GET /api/payroll/debug?month=9&year=2026
+Same rows /api/payroll?month=&year= returns, plus liveGrossSalary/livePfBasic/
+liveRuleBasicDaPercent/liveRulePfPercent/liveRuleEsicPercent read fresh at
+request time, and masterDataDrifted/ruleDrifted booleans - true means the
+employee's salary or the company's SalaryRule changed after this payroll was
+generated. Use this instead of /api/payroll when a net salary looks wrong and
+you need to see every input the calculation used, not just the outputs.
+```
 
 ---
 

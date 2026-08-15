@@ -1,5 +1,6 @@
 package com.accusharp.hrms.controller;
 
+import com.accusharp.hrms.dto.BulkImportResult;
 import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
@@ -9,17 +10,26 @@ import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.EmployeeService;
+import com.accusharp.hrms.util.EmployeeCsvParser;
+import com.accusharp.hrms.util.ParsedCsvRow;
+import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Valid;
+import jakarta.validation.Validator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/employees")
@@ -27,6 +37,7 @@ import java.util.Map;
 public class EmployeeController {
 
     private final EmployeeService employeeService;
+    private final Validator validator;
 
     @PreAuthorize("@authz.can('EMPLOYEE_CREATE')")
     @PostMapping
@@ -35,6 +46,55 @@ public class EmployeeController {
         assertNotGrantingAdminUnlessAdmin(principal, request);
         applyTenantScope(principal, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(employeeService.create(request));
+    }
+
+    /**
+     * Bulk onboarding from a CSV upload (see {@link EmployeeCsvParser} for the
+     * expected header). Every row is attempted independently through the same
+     * {@link #create} path - same admin-escalation guard, same tenant scoping,
+     * same one-time temporary password per employee - so one bad row (a
+     * duplicate userId, a missing required column) fails only that row; the
+     * rest of the file still gets created and returned in {@code succeeded}.
+     */
+    @PreAuthorize("@authz.can('EMPLOYEE_CREATE')")
+    @PostMapping(value = "/bulk-import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public BulkImportResult<EmployeeCreationResponse> bulkImport(@AuthenticationPrincipal UserPrincipal principal,
+                                                                   @RequestParam("file") MultipartFile file) {
+        List<ParsedCsvRow<EmployeeRequest>> rows = EmployeeCsvParser.parse(file);
+        List<EmployeeCreationResponse> succeeded = new ArrayList<>();
+        List<BulkImportResult.RowError> errors = new ArrayList<>();
+
+        for (ParsedCsvRow<EmployeeRequest> row : rows) {
+            if (!row.isOk()) {
+                errors.add(new BulkImportResult.RowError(row.rowNumber(), null, row.error()));
+                continue;
+            }
+            EmployeeRequest request = row.value();
+            String violations = validate(request);
+            if (violations != null) {
+                errors.add(new BulkImportResult.RowError(row.rowNumber(), request.getUserId(), violations));
+                continue;
+            }
+            try {
+                assertNotGrantingAdminUnlessAdmin(principal, request);
+                applyTenantScope(principal, request);
+                succeeded.add(employeeService.create(request));
+            } catch (RuntimeException e) {
+                errors.add(new BulkImportResult.RowError(row.rowNumber(), request.getUserId(), e.getMessage()));
+            }
+        }
+        return BulkImportResult.of(rows.size(), succeeded, errors);
+    }
+
+    /** CSV rows are built by hand, not bound from a validated {@code @RequestBody}, so validation runs explicitly. */
+    private String validate(EmployeeRequest request) {
+        Set<ConstraintViolation<EmployeeRequest>> violations = validator.validate(request);
+        if (violations.isEmpty()) {
+            return null;
+        }
+        return violations.stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                .collect(Collectors.joining("; "));
     }
 
     @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")

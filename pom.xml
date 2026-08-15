@@ -64,6 +64,13 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<!-- CSV parsing for bulk employee / shift-roster imports -->
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-csv</artifactId>
+			<version>1.11.0</version>
+		</dependency>
+
 		<!-- Lets the app boot without MySQL: -Dspring-boot.run.profiles=h2 -->
 		<dependency>
 			<groupId>com.h2database</groupId>

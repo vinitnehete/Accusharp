@@ -159,6 +159,12 @@ Result:
 }
 ```
 
+> **Onboarding a whole batch instead of just Priya?** `POST
+> /api/employees/bulk-import` takes a CSV upload - one row per employee, same
+> fields as above, same temporary-password-per-row contract. A bad row (a
+> duplicate code, a missing amount) fails only that row; the rest of the file
+> still gets created. See [README.md §3.4.2](README.md#342-bulk-import-from-csv).
+
 **Capture `temporaryPassword` now.** It's returned exactly once, right here,
 and never logged anywhere - it's how Priya logs in for the first time
 (`POST /api/auth/login` with `username: "EMP005"`, then she should change it
@@ -264,6 +270,13 @@ Result:
 
 September has 30 days. One is the holiday (not scheduled), four are Sundays
 (scheduled but flagged weekly off), leaving **25 actual working days**.
+
+> **Rostering a team where not everyone is on the same shift?** The call
+> above puts every listed `userId` on the *same* `shiftCode`. `POST
+> /api/shift-schedules/bulk/varied` (or its CSV upload sibling `POST
+> /api/shift-schedules/bulk/csv`) takes one `userId`/`shiftDate`/`shiftCode`
+> per entry instead, so Priya can be on MORNING while a teammate is on NIGHT
+> in the same call. See [README.md §4](README.md#4-every-month-schedule-shifts).
 
 Check it visually:
 
@@ -675,6 +688,15 @@ The same protection works the other way: every payroll row snapshots her salary
 structure and the rule percentages at generation time, so giving her a raise in
 October never changes September's payslip.
 
+> **Numbers look wrong and you can't tell why?** `GET
+> /api/payroll/debug?month=9&year=2026` returns every field the calculation
+> used - attendance breakdown, per-day rate, every earning and deduction -
+> plus a live comparison against Priya's *current* salary and the company's
+> *current* `SalaryRule`. A `ruleDrifted: true` or `masterDataDrifted: true`
+> means the rule or her salary changed after this payroll was generated -
+> exactly the "why does this month look different" case. See
+> [README.md §8](README.md#8-run-payroll).
+
 ---
 
 ## The monthly routine, condensed
@@ -688,7 +710,7 @@ Once set up, each month is six steps (plus logging in first - see Step 0):
 | 3 | Clear every pending leave request | `GET /api/leaves?status=PENDING` |
 | 4 | Generate the month's attendance | `POST /api/attendance/generate` |
 | 5 | Review it and fix invalid punches | `GET /api/attendance/{userId}/records` then `PUT /api/attendance/{userId}/{date}` |
-| 6 | Run payroll | `POST /api/payroll/generate-all` |
+| 6 | Run payroll | `POST /api/payroll/generate-all` (or `POST /api/payroll/bulk-generate` with a CSV for per-employee bonus/incentive/deductions) |
 | 7 | Print or export slips | `GET /api/salary-slips/export` |
 
 **Steps 3 and 5 are the ones that cost people money if skipped.** An unfixed

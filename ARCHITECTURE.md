@@ -42,7 +42,9 @@ service/
   leave/        LeaveService, LeaveBalanceService, LeaveCalculationService
   payroll/      PayrollService, SalarySlipService
   report/       ReportService, DashboardService
-util/         AmountInWords, TemporaryPasswordGenerator
+util/         AmountInWords, TemporaryPasswordGenerator,
+              EmployeeCsvParser, ShiftAssignmentCsvParser, PayrollCsvParser (CSV -> request DTO,
+              one independently-failable row at a time - see "Bulk / CSV mutation endpoints" below)
 ```
 
 Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
@@ -258,6 +260,40 @@ Regenerating a period does not overwrite. The existing row is marked
 always be reproduced. Every payroll row snapshots the employee's salary
 structure, the salary rule percentages and the attendance figures, so later
 edits to any of them never change an already-generated month.
+
+### Debugging a period: snapshot vs. live
+
+`GET /api/payroll/debug?month=&year=` exists because the immutability above
+cuts both ways: a payroll row is a faithful snapshot of what it was computed
+from, which means it silently stops matching the employee master or the
+`SalaryRule` the moment either changes afterward. Rather than re-deriving the
+calculation by hand to find that out, `PayrollService.getPeriodDebugForCaller`
+re-reads both live (the employee's current `grossSalary`/`pfBasic`, the
+company's current rule percentages) and lays them next to what `Payroll`
+actually stored, with `masterDataDrifted`/`ruleDrifted` booleans flagging a
+mismatch. It changes nothing and triggers no recalculation - purely a read
+juxtaposing snapshot against current state, gated behind the same
+`PAYROLL_READ` permission and self-or-manages scoping as every other payroll
+read.
+
+### Bulk / CSV mutation endpoints
+
+Three endpoints share one shape for driving a mutation from a frontend CSV
+upload or a large JSON list, rather than one HTTP call per row:
+`POST /api/employees/bulk-import`, `POST /api/shift-schedules/bulk/varied`
+(+ its CSV sibling `/bulk/csv`), and `POST /api/payroll/bulk-generate`. Each
+parses independently-failable rows (`EmployeeCsvParser`, `ShiftAssignmentCsvParser`,
+`PayrollCsvParser` in `com.accusharp.hrms.util`), then runs every row through
+the *same* single-row service call a non-bulk request would make - `EmployeeService.create`,
+`ShiftSchedulingService.assign`, `PayrollService.generate`/`regenerate` - inside its
+own try/catch, so a bad row never aborts the batch and never bypasses a guard
+(admin-escalation, tenant scoping, supervisor-owns-team) a single call would
+enforce. The uniform result, `BulkImportResult<T>` (`{totalRows, successCount,
+failureCount, succeeded, errors}`), is what every one of them returns.
+
+Existing `POST /api/shift-schedules/bulk` (one shift, many employees, a date
+range) is unrelated to this family - it stays a single validated operation
+that 409s on the first conflict, by design (see `ShiftSchedulingService.assignBulk`).
 
 ## Leave workflow
 

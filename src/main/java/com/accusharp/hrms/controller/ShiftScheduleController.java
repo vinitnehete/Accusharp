@@ -1,5 +1,6 @@
 package com.accusharp.hrms.controller;
 
+import com.accusharp.hrms.dto.BulkImportResult;
 import com.accusharp.hrms.dto.BulkShiftAssignmentRequest;
 import com.accusharp.hrms.dto.CopyScheduleRequest;
 import com.accusharp.hrms.dto.MonthlyPlannerResponse;
@@ -7,19 +8,25 @@ import com.accusharp.hrms.dto.ShiftAssignmentRequest;
 import com.accusharp.hrms.dto.ShiftRotationRequest;
 import com.accusharp.hrms.dto.ShiftScheduleResponse;
 import com.accusharp.hrms.dto.ShiftSwapRequest;
+import com.accusharp.hrms.dto.VariedShiftAssignmentRequest;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.shift.ShiftSchedulingService;
+import com.accusharp.hrms.util.ParsedCsvRow;
+import com.accusharp.hrms.util.ShiftAssignmentCsvParser;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -52,6 +59,71 @@ public class ShiftScheduleController {
                                                    @Valid @RequestBody BulkShiftAssignmentRequest request) {
         request.setAssignedBy(principal.getUsername());
         return shiftSchedulingService.assignBulk(request);
+    }
+
+    /**
+     * Same team-roster upload as {@link #assign}, one call: unlike {@link
+     * #assignBulk}, which puts every listed employee on the same shift, each
+     * entry here names its own userId/date/shiftCode - so one employee can be
+     * on GENERAL while another is on NIGHT, in the same request. Each entry
+     * is applied independently ({@code succeeded} vs {@code errors}), so one
+     * bad row (an employee outside the caller's team, an unknown shift code)
+     * doesn't block the rest of the batch.
+     */
+    @PreAuthorize("@authz.can('SHIFT_SCHEDULE_MANAGE')")
+    @PostMapping("/bulk/varied")
+    public BulkImportResult<ShiftScheduleResponse> assignBulkVaried(@AuthenticationPrincipal UserPrincipal principal,
+                                                                      @Valid @RequestBody VariedShiftAssignmentRequest request) {
+        return applyEach(request.getAssignments(), principal.getUsername());
+    }
+
+    /**
+     * CSV variant of {@link #assignBulkVaried} for a frontend roster upload -
+     * see {@link ShiftAssignmentCsvParser} for the expected header. A row that
+     * fails to parse (bad date, missing column) is reported the same way a
+     * row that fails to apply (unknown employee, unknown shift) is: as an
+     * entry in {@code errors}, never as a thrown exception that discards the
+     * rest of the file.
+     */
+    @PreAuthorize("@authz.can('SHIFT_SCHEDULE_MANAGE')")
+    @PostMapping(value = "/bulk/csv", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public BulkImportResult<ShiftScheduleResponse> assignBulkCsv(@AuthenticationPrincipal UserPrincipal principal,
+                                                                   @RequestParam("file") MultipartFile file) {
+        List<ParsedCsvRow<ShiftAssignmentRequest>> rows = ShiftAssignmentCsvParser.parse(file);
+        List<ShiftScheduleResponse> succeeded = new ArrayList<>();
+        List<BulkImportResult.RowError> errors = new ArrayList<>();
+
+        for (ParsedCsvRow<ShiftAssignmentRequest> row : rows) {
+            if (!row.isOk()) {
+                errors.add(new BulkImportResult.RowError(row.rowNumber(), null, row.error()));
+                continue;
+            }
+            ShiftAssignmentRequest entry = row.value();
+            entry.setAssignedBy(principal.getUsername());
+            try {
+                succeeded.add(shiftSchedulingService.assign(entry));
+            } catch (RuntimeException e) {
+                errors.add(new BulkImportResult.RowError(row.rowNumber(), entry.getUserId(), e.getMessage()));
+            }
+        }
+        return BulkImportResult.of(rows.size(), succeeded, errors);
+    }
+
+    private BulkImportResult<ShiftScheduleResponse> applyEach(List<ShiftAssignmentRequest> assignments,
+                                                               String assignedBy) {
+        List<ShiftScheduleResponse> succeeded = new ArrayList<>();
+        List<BulkImportResult.RowError> errors = new ArrayList<>();
+        int rowNumber = 0;
+        for (ShiftAssignmentRequest entry : assignments) {
+            rowNumber++;
+            entry.setAssignedBy(assignedBy);
+            try {
+                succeeded.add(shiftSchedulingService.assign(entry));
+            } catch (RuntimeException e) {
+                errors.add(new BulkImportResult.RowError(rowNumber, entry.getUserId(), e.getMessage()));
+            }
+        }
+        return BulkImportResult.of(assignments.size(), succeeded, errors);
     }
 
     @PreAuthorize("@authz.can('SHIFT_SCHEDULE_MANAGE')")
