@@ -65,8 +65,8 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | Entity | Table | Notes |
 |---|---|---|
 | `Company` | `company` | The tenant. Every company-scoped entity below resolves back to one, directly or via its owning `Employee` |
-| `Department`, `Designation`, `Shift` | `department`, `designation`, `shift` | One row per company, plus rows with `company = null` - a shared, read-only-to-companies catalog (the seeded defaults). Unique on `(company_id, code)`, not code alone - see [SECURITY.md](SECURITY.md) Phase 6 |
-| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below) |
+| `Department`, `Designation`, `Category`, `Shift` | `department`, `designation`, `category`, `shift` | One row per company, plus rows with `company = null` - a shared, read-only-to-companies catalog (the seeded defaults). Unique on `(company_id, code)`, not code alone - see [SECURITY.md](SECURITY.md) Phase 6. `Category` is the employee grade (Worker, Supervisor, Manager, Director, ...) - a company may define as many as it needs via `/api/categories`, same as `Department`/`Designation` |
+| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below). `category`, `gender`, `uanNo`, `esicIpNo`, `bankAccountNo` and `bankIfscNo` are all optional |
 | `PlatformUser` | `platform_user` | The other principal type - platform-level accounts (company onboarding etc.), not tied to any company |
 | `RefreshToken` | `refresh_token` | Opaque, hashed at rest, single-use with rotation - never a JWT itself |
 | `Permission`, `RolePermission` | `permission`, `role_permission` | The data-driven grant table every `@PreAuthorize` check resolves against - see Security below |

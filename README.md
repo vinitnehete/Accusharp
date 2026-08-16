@@ -73,6 +73,7 @@ On an **empty** database the app creates:
 | | |
 |---|---|
 | Shifts | `MORNING` 06:00-15:00, `GENERAL` 09:00-18:00, `EVENING` 14:00-23:00, `NIGHT` 18:00-08:00 |
+| Categories | `WORKER`, `STAFF`, `SUPERVISOR`, `MANAGER`, `DIRECTOR` - shared defaults; add more via `/api/categories` |
 | Salary rule | Basic 50%, HRA 40%, Conveyance 10%, Education 10%, PF 12%, ESIC 0.75% |
 | Demo org | Company `ACC`, departments `PROD`/`ADMIN`, and 4 employees |
 
@@ -138,7 +139,7 @@ curl -X PUT http://localhost:8080/api/salary-rules -H 'Content-Type: application
 curl -X POST http://localhost:8080/api/companies -H 'Content-Type: application/json' -d '{"companyCode":"ACC","companyName":"Accusharp Industries","address":"Pune, Maharashtra","phone":"020-00000000","email":"hr@accusharp.example","status":"ACTIVE"}'
 ```
 
-### 3.3 Departments and designations
+### 3.3 Departments, designations and categories
 
 ```bash
 curl -X POST http://localhost:8080/api/departments -H 'Content-Type: application/json' -d '{"departmentCode":"PROD","departmentName":"Production","description":"Shop floor"}'
@@ -148,7 +149,17 @@ curl -X POST http://localhost:8080/api/departments -H 'Content-Type: application
 curl -X POST http://localhost:8080/api/designations -H 'Content-Type: application/json' -d '{"designationCode":"OPR","designationName":"Machine Operator"}'
 ```
 
-Note the `id` each returns - you need them for employees.
+`Category` is the employee grade - Worker, Supervisor, Manager, Director, or
+whatever else a company needs. Five common ones (`WORKER`, `STAFF`,
+`SUPERVISOR`, `MANAGER`, `DIRECTOR`) are seeded as shared defaults; add more
+the same way as a department or designation:
+
+```bash
+curl -X POST http://localhost:8080/api/categories -H 'Content-Type: application/json' -d '{"categoryCode":"TEAM_LEAD","categoryName":"Team Lead"}'
+```
+
+Note the `id` each returns - you need them for employees. `categoryId` on an
+employee is optional, unlike `departmentId`/`designationId`.
 
 ### 3.4 Employees
 
@@ -161,6 +172,10 @@ curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/j
 **`userId` must equal the biometric device's user id.** That single field is what
 joins the device, attendance, leave and payroll together. Get it wrong and the
 employee will show zero attendance forever.
+
+**`categoryId`, `gender`, `uanNo`, `esicIpNo`, `bankAccountNo` and
+`bankIfscNo` are all optional** and may be left out entirely - unlike
+`departmentId`/`designationId`, nothing else derives from them.
 
 **The response is `{"employee": {...}, "temporaryPassword": "..."}`, not a bare
 employee** - `temporaryPassword` is generated server-side and returned exactly
@@ -266,12 +281,13 @@ curl -X POST http://localhost:8080/api/employees/bulk-import -H "Authorization: 
 CSV header (case-insensitive, any column order):
 
 ```
-userId,employeeCode,employeeName,companyId,departmentId,designationId,supervisorUserId,joiningDate,dateOfBirth,status,recordStatus,role,email,phone,grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible,basicDA,hra,conveyanceAllowance,educationAllowance
+userId,employeeCode,employeeName,companyId,departmentId,designationId,categoryId,supervisorUserId,joiningDate,dateOfBirth,gender,status,recordStatus,role,email,phone,uanNo,esicIpNo,bankAccountNo,bankIfscNo,grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible,basicDA,hra,conveyanceAllowance,educationAllowance
 ```
 
 Only `userId`, `employeeCode`, `employeeName`, `status`, `grossSalary`,
 `pfBasic`, `medicalAllowance` and `otherAllowance` are required; everything
-else may be left blank. `companyId` is ignored for a company-scoped caller -
+else may be left blank - including `categoryId`, `gender`, `uanNo`,
+`esicIpNo`, `bankAccountNo` and `bankIfscNo`. `companyId` is ignored for a company-scoped caller -
 same as a single create, the caller's own company always wins. Dates are
 `yyyy-MM-dd`. The last four columns are the same optional structure-override
 fields described above - fill in all four on a row to use those exact
@@ -903,6 +919,7 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Companies | `/api/companies` (`POST /onboard` creates the company plus its first admin - see [SECURITY.md](SECURITY.md)) |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
+| Categories | `/api/categories` (employee grade - Worker, Supervisor, Manager, Director, ...; company-defined, same pattern as departments/designations) |
 | Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding, `?format=csv` for a downloadable credentials sheet; `POST /{id}/salary-revision`, `GET /{id}/salary-revisions` - hike/promotion history) |
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all) |

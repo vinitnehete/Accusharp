@@ -1,6 +1,7 @@
 package com.accusharp.hrms.entity;
 
 import com.accusharp.hrms.enums.EmployeeStatus;
+import com.accusharp.hrms.enums.Gender;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import jakarta.persistence.*;
@@ -59,6 +60,11 @@ public class Employee {
     @JoinColumn(name = "designation_id")
     private Designation designation;
 
+    /** Employee grade/category (Worker, Supervisor, Manager, Director, ...) - optional, company-defined. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "category_id")
+    private Category category;
+
     /** Self-reference: one employee reports to at most one supervisor. */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "supervisor_id")
@@ -69,6 +75,11 @@ public class Employee {
 
     @Column(name = "date_of_birth")
     private LocalDate dateOfBirth;
+
+    /** Optional. */
+    @Enumerated(EnumType.STRING)
+    @Column(length = 10)
+    private Gender gender;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "employment_status", nullable = false, length = 20)
@@ -86,6 +97,20 @@ public class Employee {
 
     @Column(length = 20)
     private String phone;
+
+    // ---- statutory & bank details - all optional -----------------------
+
+    @Column(name = "uan_no", length = 30)
+    private String uanNo;
+
+    @Column(name = "esic_ip_no", length = 30)
+    private String esicIpNo;
+
+    @Column(name = "bank_account_no", length = 30)
+    private String bankAccountNo;
+
+    @Column(name = "bank_ifsc_no", length = 20)
+    private String bankIfscNo;
 
     // ---- salary structure -------------------------------------------------
     // grossSalary, pfBasic, medicalAllowance and otherAllowance are entered;

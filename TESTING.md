@@ -188,6 +188,7 @@ how the system knows it crosses midnight:
 ```
 GET  http://localhost:8080/api/departments
 GET  http://localhost:8080/api/designations
+GET  http://localhost:8080/api/categories
 ```
 
 **200 OK** — **write these ids down**, you need them in step 2:
@@ -198,7 +199,17 @@ GET  http://localhost:8080/api/designations
 
 [{ "id": 1, "designationCode": "OPR", "designationName": "Machine Operator" },
  { "id": 2, "designationCode": "MGR", "designationName": "Manager" }]
+
+[{ "id": 1, "categoryCode": "WORKER",     "categoryName": "Worker" },
+ { "id": 2, "categoryCode": "STAFF",      "categoryName": "Staff" },
+ { "id": 3, "categoryCode": "SUPERVISOR", "categoryName": "Supervisor" },
+ { "id": 4, "categoryCode": "MANAGER",    "categoryName": "Manager" },
+ { "id": 5, "categoryCode": "DIRECTOR",   "categoryName": "Director" }]
 ```
+
+`categoryId` on an employee is optional, unlike `departmentId`/`designationId` -
+these five are seeded shared defaults, add more with `POST /api/categories`
+the same way as a department or designation.
 
 ```
 GET  http://localhost:8080/api/employees
@@ -259,13 +270,19 @@ Headers: Authorization: Bearer <token>, Content-Type: application/json
   "companyId": 1,
   "departmentId": 1,
   "designationId": 3,
+  "categoryId": 2,
   "supervisorUserId": "SUP001",
   "joiningDate": "2024-02-12",
   "dateOfBirth": "1996-09-20",
+  "gender": "FEMALE",
   "status": "PERMANENT",
   "role": "EMPLOYEE",
   "email": "priya@accusharp.example",
   "phone": "9822001122",
+  "uanNo": "101234567890",
+  "esicIpNo": "3412345678",
+  "bankAccountNo": "50100123456789",
+  "bankIfscNo": "HDFC0001234",
   "grossSalary": 26000,
   "pfBasic": 9000,
   "medicalAllowance": 1250,
@@ -286,15 +303,21 @@ Headers: Authorization: Bearer <token>, Content-Type: application/json
     "companyName": "Accusharp Industries",
     "departmentName": "Production",
     "designationName": "Senior Operator",
+    "categoryName": "Staff",
     "supervisorUserId": "SUP001",
     "supervisorName": "Rakesh Patil",
     "joiningDate": "2024-02-12",
     "dateOfBirth": "1996-09-20",
+    "gender": "FEMALE",
     "status": "PERMANENT",
     "recordStatus": "ACTIVE",
     "role": "EMPLOYEE",
     "email": "priya@accusharp.example",
     "phone": "9822001122",
+    "uanNo": "101234567890",
+    "esicIpNo": "3412345678",
+    "bankAccountNo": "50100123456789",
+    "bankIfscNo": "HDFC0001234",
     "grossSalary": 26000,
     "pfBasic": 9000,
     "basicDA": 13000.0,
@@ -346,10 +369,13 @@ in README.md.
 | `grossSalary` | **yes** | Must be > 0 |
 | `pfBasic`, `medicalAllowance`, `otherAllowance` | **yes** | May be 0, but not null |
 | `companyId`, `departmentId`, `designationId` | no | The ids from step 0 |
+| `categoryId` | no | Employee grade - Worker/Supervisor/Manager/Director/... from `GET /api/categories`. Nothing else derives from it |
 | `supervisorUserId` | no | Without it nobody can approve their leave. Cycles are rejected |
 | `role` | no | Defaults to `EMPLOYEE` |
 | `overtimeEligible` | no | Overtime is *measured* for everyone but only **paid** if `true` |
 | `joiningDate`, `dateOfBirth` | no | Feed the dashboard's anniversary and birthday cards |
+| `gender` | no | `MALE` / `FEMALE` |
+| `uanNo`, `esicIpNo`, `bankAccountNo`, `bankIfscNo` | no | Statutory/bank reference numbers only - never validated or used in any calculation |
 
 ### Manual salary structure override and regenerate
 
@@ -1095,6 +1121,7 @@ recalculate, so a report can never disagree with a payslip.
 
 | Report | URL |
 |---|---|
+| Employee master | `/api/reports/employees` (every `EmployeeResponse` field - the frontend's Reports → Employee Master page exports this straight to CSV) |
 | Monthly attendance | `/api/reports/attendance/monthly?month=2026-09` |
 | Late coming | `/api/reports/attendance/late-coming?month=2026-09` |
 | Absent | `/api/reports/attendance/absent?month=2026-09` |
@@ -1286,6 +1313,7 @@ Masters follow standard REST — `POST` create, `PUT /{id}` update, `GET /{id}`,
 | Companies | `/api/companies` |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
+| Categories | `/api/categories` (employee grade - Worker/Supervisor/Manager/Director/...) |
 | Employees | `/api/employees` (+ `POST /bulk-import` [`?format=csv` for a credentials sheet], `POST /{id}/salary-revision`, `GET /{id}/salary-revisions`) |
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` (+ `POST /bulk/varied`, `POST /bulk/csv`) |
@@ -1350,14 +1378,17 @@ type **File** — not raw JSON.
 
 ```
 POST /api/employees/bulk-import                            (multipart, key "file")
-Header row: userId,employeeCode,employeeName,companyId,departmentId,designationId,
-            supervisorUserId,joiningDate,dateOfBirth,status,recordStatus,role,email,phone,
+Header row: userId,employeeCode,employeeName,companyId,departmentId,designationId,categoryId,
+            supervisorUserId,joiningDate,dateOfBirth,gender,status,recordStatus,role,email,phone,
+            uanNo,esicIpNo,bankAccountNo,bankIfscNo,
             grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible,
             basicDA,hra,conveyanceAllowance,educationAllowance
 Required: userId, employeeCode, employeeName, status, grossSalary, pfBasic,
           medicalAllowance, otherAllowance. Same admin-escalation guard and
-          one-time temporaryPassword-per-row as Step 2. The last four columns
-          are optional and only make sense together - fill in all four on a
+          one-time temporaryPassword-per-row as Step 2. categoryId, gender,
+          uanNo, esicIpNo, bankAccountNo and bankIfscNo may all be left blank.
+          The basicDA/hra/conveyanceAllowance/educationAllowance columns are
+          optional and only make sense together - fill in all four on a
           row to use those exact values instead of deriving them, leave all
           four blank to derive as usual, filling in only some fails that row.
           Numeric columns tolerate Excel-style formatting - "41,000.00",

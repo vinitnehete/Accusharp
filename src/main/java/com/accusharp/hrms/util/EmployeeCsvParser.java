@@ -2,6 +2,7 @@ package com.accusharp.hrms.util;
 
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.enums.EmployeeStatus;
+import com.accusharp.hrms.enums.Gender;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
@@ -24,10 +25,12 @@ import java.util.List;
  * Turns an uploaded CSV into {@link EmployeeRequest} rows for bulk onboarding.
  *
  * <p>Expected header (case-insensitive, order-independent): {@code userId,
- * employeeCode, employeeName, companyId, departmentId, designationId,
- * supervisorUserId, joiningDate, dateOfBirth, status, recordStatus, role, email, phone,
+ * employeeCode, employeeName, companyId, departmentId, designationId, categoryId,
+ * supervisorUserId, joiningDate, dateOfBirth, gender, status, recordStatus, role, email, phone,
+ * uanNo, esicIpNo, bankAccountNo, bankIfscNo,
  * grossSalary, pfBasic, medicalAllowance, otherAllowance, overtimeEligible,
- * basicDA, hra, conveyanceAllowance, educationAllowance}.
+ * basicDA, hra, conveyanceAllowance, educationAllowance}. {@code categoryId}, {@code gender}
+ * and the four statutory/bank columns are all optional, same as every other non-required column.
  * {@code companyId} is ignored for a company-scoped caller - {@code
  * EmployeeController} always overwrites it with the caller's own company, the
  * same as a single create - so it only matters for a platform-level import.
@@ -89,14 +92,20 @@ public final class EmployeeCsvParser {
         request.setCompanyId(parseLong(record, "companyId"));
         request.setDepartmentId(parseLong(record, "departmentId"));
         request.setDesignationId(parseLong(record, "designationId"));
+        request.setCategoryId(parseLong(record, "categoryId"));
         request.setSupervisorUserId(blankToNull(get(record, "supervisorUserId")));
         request.setJoiningDate(parseDate(record, "joiningDate"));
         request.setDateOfBirth(parseDate(record, "dateOfBirth"));
+        request.setGender(parseEnum(record, "gender", Gender.class, false));
         request.setStatus(parseEnum(record, "status", EmployeeStatus.class, true));
         request.setRecordStatus(parseEnum(record, "recordStatus", RecordStatus.class, false));
         request.setRole(parseEnum(record, "role", Role.class, false));
         request.setEmail(blankToNull(get(record, "email")));
         request.setPhone(blankToNull(get(record, "phone")));
+        request.setUanNo(blankToNull(get(record, "uanNo")));
+        request.setEsicIpNo(blankToNull(get(record, "esicIpNo")));
+        request.setBankAccountNo(blankToNull(get(record, "bankAccountNo")));
+        request.setBankIfscNo(blankToNull(get(record, "bankIfscNo")));
         request.setGrossSalary(parseDecimal(record, "grossSalary", true));
         request.setPfBasic(parseDecimal(record, "pfBasic", true));
         request.setMedicalAllowance(parseDecimal(record, "medicalAllowance", true));

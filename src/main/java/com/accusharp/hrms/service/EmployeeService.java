@@ -58,6 +58,7 @@ public class EmployeeService {
     private final CompanyService companyService;
     private final DepartmentService departmentService;
     private final DesignationService designationService;
+    private final CategoryService categoryService;
     private final SalaryRuleService salaryRuleService;
     private final SalaryCalculationService salaryCalculationService;
     private final EmployeeMapper employeeMapper;
@@ -518,6 +519,8 @@ public class EmployeeService {
                 : departmentService.getById(request.getDepartmentId()));
         employee.setDesignation(request.getDesignationId() == null ? null
                 : designationService.getById(request.getDesignationId()));
+        employee.setCategory(request.getCategoryId() == null ? null
+                : categoryService.getById(request.getCategoryId()));
 
         Employee supervisor = request.getSupervisorUserId() == null ? null
                 : getEntityByUserId(request.getSupervisorUserId());
@@ -526,11 +529,16 @@ public class EmployeeService {
 
         employee.setJoiningDate(request.getJoiningDate());
         employee.setDateOfBirth(request.getDateOfBirth());
+        employee.setGender(request.getGender());
         employee.setStatus(request.getStatus());
         employee.setRecordStatus(request.getRecordStatus() == null ? RecordStatus.ACTIVE : request.getRecordStatus());
         employee.setRole(request.getRole() == null ? Role.EMPLOYEE : request.getRole());
         employee.setEmail(request.getEmail());
         employee.setPhone(request.getPhone());
+        employee.setUanNo(request.getUanNo());
+        employee.setEsicIpNo(request.getEsicIpNo());
+        employee.setBankAccountNo(request.getBankAccountNo());
+        employee.setBankIfscNo(request.getBankIfscNo());
         employee.setGrossSalary(request.getGrossSalary());
         employee.setPfBasic(request.getPfBasic());
         employee.setMedicalAllowance(request.getMedicalAllowance());

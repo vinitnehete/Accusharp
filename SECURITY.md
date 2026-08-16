@@ -99,8 +99,8 @@ grants are fixed at startup by `PermissionSeeder`, not editable at runtime.
 |---|---|---|---|---|---|
 | `COMPANY_CREATE/UPDATE/DELETE` | - | - | - | - | ✓ |
 | `COMPANY_READ` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `DEPARTMENT_MANAGE`, `DESIGNATION_MANAGE`, `SHIFT_MANAGE`, `HOLIDAY_MANAGE` | ✓ | ✓ | - | - | - |
-| `DEPARTMENT_READ`, `DESIGNATION_READ`, `SHIFT_READ`, `HOLIDAY_READ` | ✓ | ✓ | ✓ | ✓ | - |
+| `DEPARTMENT_MANAGE`, `DESIGNATION_MANAGE`, `CATEGORY_MANAGE`, `SHIFT_MANAGE`, `HOLIDAY_MANAGE` | ✓ | ✓ | - | - | - |
+| `DEPARTMENT_READ`, `DESIGNATION_READ`, `CATEGORY_READ`, `SHIFT_READ`, `HOLIDAY_READ` | ✓ | ✓ | ✓ | ✓ | - |
 | `EMPLOYEE_CREATE/UPDATE/DELETE` | ✓ | ✓ | - | - | - |
 | `EMPLOYEE_READ` | ✓ | ✓ | ✓ | ✓ | - |
 | `SHIFT_SCHEDULE_MANAGE` | ✓ | ✓ | ✓ (own team, enforced in service) | - | - |

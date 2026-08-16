@@ -79,7 +79,7 @@ that admin instead of `HR001` for everything below.
 ## Step 1 — See what already exists
 
 A fresh database is pre-loaded with a company, two departments, two
-designations, four shifts and four demo employees.
+designations, five categories, four shifts and four demo employees.
 
 ```bash
 curl http://localhost:8080/api/companies -H "Authorization: Bearer $TOKEN"
@@ -93,6 +93,10 @@ curl http://localhost:8080/api/departments -H "Authorization: Bearer $TOKEN"
 curl http://localhost:8080/api/designations -H "Authorization: Bearer $TOKEN"
 ```
 
+```bash
+curl http://localhost:8080/api/categories -H "Authorization: Bearer $TOKEN"
+```
+
 What came back:
 
 ```
@@ -101,7 +105,17 @@ What came back:
  dept     id=2 ADMIN  Administration
  desig    id=1 OPR    Machine Operator
  desig    id=2 MGR    Manager
+ category id=1 WORKER     Worker
+ category id=2 STAFF      Staff
+ category id=3 SUPERVISOR Supervisor
+ category id=4 MANAGER    Manager
+ category id=5 DIRECTOR   Director
 ```
+
+`category` is the employee grade - these five are shared defaults every
+company starts with; add more via `POST /api/categories` the same way as a
+department or designation. Unlike department/designation, it's optional on
+an employee.
 
 **Write down the `id` values.** You need them when creating an employee.
 
@@ -142,8 +156,12 @@ unique *within your own company* - a second company can create its own
 ## Step 3 — Add the employee
 
 ```bash
-curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"userId":"EMP005","employeeCode":"EMP-005","employeeName":"Priya Kulkarni","companyId":1,"departmentId":1,"designationId":3,"supervisorUserId":"SUP001","joiningDate":"2024-02-12","dateOfBirth":"1996-09-20","status":"PERMANENT","role":"EMPLOYEE","email":"priya@accusharp.example","phone":"9822001122","grossSalary":26000,"pfBasic":9000,"medicalAllowance":1250,"otherAllowance":0,"overtimeEligible":true}'
+curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"userId":"EMP005","employeeCode":"EMP-005","employeeName":"Priya Kulkarni","companyId":1,"departmentId":1,"designationId":3,"categoryId":2,"supervisorUserId":"SUP001","joiningDate":"2024-02-12","dateOfBirth":"1996-09-20","gender":"FEMALE","status":"PERMANENT","role":"EMPLOYEE","email":"priya@accusharp.example","phone":"9822001122","grossSalary":26000,"pfBasic":9000,"medicalAllowance":1250,"otherAllowance":0,"overtimeEligible":true}'
 ```
+
+`categoryId` (Staff, from the seeded list above) and `gender` are both
+optional, same as `uanNo`/`esicIpNo`/`bankAccountNo`/`bankIfscNo` if we had
+them on hand - none of the six affect any calculation, they're informational.
 
 Result:
 

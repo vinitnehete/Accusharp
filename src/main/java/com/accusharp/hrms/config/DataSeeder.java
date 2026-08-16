@@ -1,5 +1,6 @@
 package com.accusharp.hrms.config;
 
+import com.accusharp.hrms.entity.Category;
 import com.accusharp.hrms.entity.Company;
 import com.accusharp.hrms.entity.Department;
 import com.accusharp.hrms.entity.Designation;
@@ -10,6 +11,7 @@ import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.PlatformRole;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.repository.CategoryRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.DepartmentRepository;
 import com.accusharp.hrms.repository.DesignationRepository;
@@ -52,6 +54,7 @@ public class DataSeeder {
     private final CompanyRepository companyRepository;
     private final DepartmentRepository departmentRepository;
     private final DesignationRepository designationRepository;
+    private final CategoryRepository categoryRepository;
     private final ShiftRepository shiftRepository;
     private final EmployeeRepository employeeRepository;
     private final PlatformUserRepository platformUserRepository;
@@ -64,9 +67,27 @@ public class DataSeeder {
         return args -> {
             salaryRuleService.getActiveRule();
             seedShifts();
+            seedCategories();
             seedOrganisation();
             seedPlatformOwner();
         };
+    }
+
+    /** Common employee grades, shared across every company; a company ADMIN/HR may add more via /api/categories. */
+    private void seedCategories() {
+        createCategory("WORKER", "Worker");
+        createCategory("STAFF", "Staff");
+        createCategory("SUPERVISOR", "Supervisor");
+        createCategory("MANAGER", "Manager");
+        createCategory("DIRECTOR", "Director");
+    }
+
+    private void createCategory(String code, String name) {
+        if (categoryRepository.existsByCategoryCodeAndCompanyIsNull(code)) {
+            return;
+        }
+        categoryRepository.save(Category.builder().categoryCode(code).categoryName(name).build());
+        log.info("seed.category code={}", code);
     }
 
     /** The four shifts from the specification; admins may add custom ones. */

@@ -1,6 +1,7 @@
 package com.accusharp.hrms.dto;
 
 import com.accusharp.hrms.enums.EmployeeStatus;
+import com.accusharp.hrms.enums.Gender;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import jakarta.validation.constraints.DecimalMin;
@@ -44,12 +45,17 @@ public class EmployeeRequest {
 
     private Long designationId;
 
+    /** Optional employee grade/category - Worker, Supervisor, Manager, Director, etc. */
+    private Long categoryId;
+
     /** Employee.userId of the supervisor; null only for top management. */
     private String supervisorUserId;
 
     private LocalDate joiningDate;
 
     private LocalDate dateOfBirth;
+
+    private Gender gender;
 
     @NotNull
     private EmployeeStatus status;
@@ -63,6 +69,20 @@ public class EmployeeRequest {
 
     @Size(max = 20)
     private String phone;
+
+    // ---- statutory & bank details - all optional ----
+
+    @Size(max = 30)
+    private String uanNo;
+
+    @Size(max = 30)
+    private String esicIpNo;
+
+    @Size(max = 30)
+    private String bankAccountNo;
+
+    @Size(max = 20)
+    private String bankIfscNo;
 
     @NotNull
     @DecimalMin(value = "0", inclusive = false)
