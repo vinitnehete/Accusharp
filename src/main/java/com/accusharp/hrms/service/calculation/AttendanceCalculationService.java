@@ -1,6 +1,7 @@
 package com.accusharp.hrms.service.calculation;
 
 import com.accusharp.hrms.dto.DailyAttendanceResponse;
+import com.accusharp.hrms.entity.AttendanceRule;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.enums.AttendanceStatus;
@@ -25,23 +26,19 @@ import java.util.List;
 @Service
 public class AttendanceCalculationService {
 
-    /**
-     * People badge in a little before the hour, so the window opens early. The
-     * closing side is not symmetric - it uses the shift's own overtime window,
-     * because someone who stays hours late has worked overtime and must not be
-     * read as having never punched out.
-     */
-    private static final Duration ENTRY_WINDOW_BUFFER = Duration.ofMinutes(60);
-
-    /** Worked share of the shift needed to earn a full day / half day. */
-    private static final BigDecimal FULL_DAY_THRESHOLD = new BigDecimal("0.75");
-    private static final BigDecimal HALF_DAY_THRESHOLD = new BigDecimal("0.40");
-
     private static final BigDecimal MINUTES_PER_HOUR = new BigDecimal("60");
+    private static final BigDecimal HUNDRED = new BigDecimal("100");
 
-    /** Start of the window in which a punch counts towards this shift day. */
-    public LocalDateTime windowStart(LocalDate shiftDate, Shift shift) {
-        return shiftDate.atTime(shift.getStartTime()).minus(ENTRY_WINDOW_BUFFER);
+    /**
+     * Start of the window in which a punch counts towards this shift day.
+     * People badge in a little before the hour, so the window opens early by
+     * {@code rule.entryWindowBufferMinutes} - not symmetric on the closing
+     * side, which uses the shift's own overtime window instead (see {@link
+     * #windowEnd}), because someone who stays hours late has worked overtime
+     * and must not be read as having never punched out.
+     */
+    public LocalDateTime windowStart(LocalDate shiftDate, Shift shift, AttendanceRule rule) {
+        return shiftDate.atTime(shift.getStartTime()).minusMinutes(rule.getEntryWindowBufferMinutes());
     }
 
     /**
@@ -63,7 +60,7 @@ public class AttendanceCalculationService {
      */
     public DailyAttendanceResponse calculateDay(String userId, LocalDate shiftDate, Shift shift,
                                                 List<DeviceLog> punches, boolean weekOff,
-                                                boolean holiday, boolean onLeave) {
+                                                boolean holiday, boolean onLeave, AttendanceRule rule) {
 
         if (punches.size() < 2) {
             AttendanceStatus status = resolveNonWorkingStatus(punches.size(), weekOff, holiday, onLeave);
@@ -89,7 +86,7 @@ public class AttendanceCalculationService {
         long shiftMinutes = (long) shift.getWorkingHours() * 60;
         long overtimeMinutes = Math.max(0, workedMinutes - shiftMinutes);
 
-        AttendanceStatus status = resolveWorkedStatus(workedMinutes, shiftMinutes, weekOff, holiday);
+        AttendanceStatus status = resolveWorkedStatus(workedMinutes, shiftMinutes, weekOff, holiday, rule);
 
         return new DailyAttendanceResponse(userId, shiftDate, shift.getShiftCode(), firstIn, lastOut,
                 toHours(workedMinutes), toHours(breakMinutes), toHours(overtimeMinutes),
@@ -141,7 +138,7 @@ public class AttendanceCalculationService {
     }
 
     private AttendanceStatus resolveWorkedStatus(long workedMinutes, long shiftMinutes,
-                                                 boolean weekOff, boolean holiday) {
+                                                 boolean weekOff, boolean holiday, AttendanceRule rule) {
         if (weekOff || holiday) {
             // Worked on a day off - still present, and the hours count as overtime.
             return AttendanceStatus.PRESENT;
@@ -149,10 +146,13 @@ public class AttendanceCalculationService {
         BigDecimal worked = BigDecimal.valueOf(workedMinutes);
         BigDecimal expected = BigDecimal.valueOf(Math.max(shiftMinutes, 1));
 
-        if (worked.compareTo(expected.multiply(FULL_DAY_THRESHOLD)) >= 0) {
+        BigDecimal fullDayThreshold = rule.getFullDayThresholdPercent().divide(HUNDRED, 4, RoundingMode.HALF_UP);
+        BigDecimal halfDayThreshold = rule.getHalfDayThresholdPercent().divide(HUNDRED, 4, RoundingMode.HALF_UP);
+
+        if (worked.compareTo(expected.multiply(fullDayThreshold)) >= 0) {
             return AttendanceStatus.PRESENT;
         }
-        if (worked.compareTo(expected.multiply(HALF_DAY_THRESHOLD)) >= 0) {
+        if (worked.compareTo(expected.multiply(halfDayThreshold)) >= 0) {
             return AttendanceStatus.HALF_DAY;
         }
         return AttendanceStatus.ABSENT;

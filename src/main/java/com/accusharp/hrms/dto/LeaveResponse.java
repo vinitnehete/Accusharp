@@ -1,6 +1,7 @@
 package com.accusharp.hrms.dto;
 
 import com.accusharp.hrms.enums.LeaveDuration;
+import com.accusharp.hrms.enums.LeaveOrigin;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
 
@@ -19,6 +20,7 @@ public record LeaveResponse(
         BigDecimal totalDays,
         String reason,
         LeaveStatus status,
+        LeaveOrigin origin,
         String supervisorId,
         String approverId,
         String approvalComments,

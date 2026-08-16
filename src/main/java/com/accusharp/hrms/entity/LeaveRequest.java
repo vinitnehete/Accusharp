@@ -1,6 +1,7 @@
 package com.accusharp.hrms.entity;
 
 import com.accusharp.hrms.enums.LeaveDuration;
+import com.accusharp.hrms.enums.LeaveOrigin;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
 import jakarta.persistence.*;
@@ -55,6 +56,10 @@ public class LeaveRequest {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
     private LeaveStatus status;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    private LeaveOrigin origin;
 
     @Column(name = "supervisor_id", length = 50)
     private String supervisorId;

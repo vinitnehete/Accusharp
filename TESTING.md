@@ -17,15 +17,16 @@ approved leave and is absent once without leave.
 | [`docs/testing/multi-company-smoke-test.sh`](docs/testing/multi-company-smoke-test.sh) | A separate curl-based script proving multi-company isolation and self-service scoping over real HTTP - see SECURITY.md |
 
 **This is a manual/Postman walkthrough of one payroll cycle, not the
-automated test suite.** The app also has 118 JUnit tests
-(`./mvnw test`, or `./mvnw test -Dtest=ClassName` for one class) across 17
+automated test suite.** The app also has 133 JUnit tests
+(`./mvnw test`, or `./mvnw test -Dtest=ClassName` for one class) across 20
 classes under `src/test/java/com/accusharp/hrms/` - unit tests for the
 calculation services (`calculation/`) and pure CSV parsing (`util/EmployeeCsvParserTest`),
 full-flow integration tests (`PayrollFlowIntegrationTest`,
-`AttendanceRegularisationTest`, `NightShiftMonthBoundaryTest`), and real-HTTP
-tests spinning up the app on a random port (`AuthApiHttpTest`,
-`TenantIsolationHttpTest`, `SelfServiceScopingHttpTest`,
-`CompanyOnboardingHttpTest`, `AuditLogHttpTest`, `AttendanceApiHttpTest`,
+`AttendanceRegularisationTest`, `NightShiftMonthBoundaryTest`,
+`DayWisePayrollOvertimeTest`), and real-HTTP tests spinning up the app on a
+random port (`AuthApiHttpTest`, `TenantIsolationHttpTest`,
+`SelfServiceScopingHttpTest`, `CompanyOnboardingHttpTest`, `AuditLogHttpTest`,
+`AttendanceApiHttpTest`, `AttendanceRuleHttpTest`, `LeaveHrDirectHttpTest`,
 `EmployeeSalaryStructureHttpTest`, `EmployeeSalaryRevisionHttpTest`) that log
 in over the wire the same way this document does, then drive the API with a
 real `HttpClient`. Those run on every change and are the first thing to
@@ -589,15 +590,21 @@ mysql -uroot -proot alsama -e "INSERT INTO device_logs (device_log_id, device_id
 
 ### How punches are interpreted
 
-- Window = **60 minutes before** the shift start, to **`overtimeWindowMinutes`
-  after** the scheduled end (default 240 = 4 hours). Asymmetric on purpose: a
-  late exit is overtime, not a missing punch.
+- Window = **`entryWindowBufferMinutes` before** the shift start (default 60),
+  to **`overtimeWindowMinutes` after** the scheduled end (default 240 = 4
+  hours). Asymmetric on purpose: a late exit is overtime, not a missing punch.
 - **First punch = in, last punch = out.**
 - 4+ punches → the middle gaps are the real break. Otherwise the shift's
   `breakMinutes` applies.
-- Worked = span − break. **75%** of the shift = full day, **40%** = half day.
+- Worked = span − break. **`fullDayThresholdPercent`** of the shift = full day
+  (default 75%), **`halfDayThresholdPercent`** = half day (default 40%).
 - **One lone punch** = `INVALID_PUNCH`, a device error — never silently an
   absence.
+
+`entryWindowBufferMinutes`/`fullDayThresholdPercent`/`halfDayThresholdPercent`
+are `AttendanceRule` (`GET`/`PUT /api/attendance-rules`), company-scoped the
+same way `SalaryRule` is (Step 0) - the defaults above are what every company
+gets until it customizes its own.
 
 ---
 
@@ -716,6 +723,7 @@ Headers: Authorization: Bearer <token>, Content-Type: application/json
   "totalDays": 2.0,
   "reason": "Family function",
   "status": "PENDING",
+  "origin": "SELF_SERVICE",
   "supervisorId": "SUP001",
   "approverId": null,
   "approvalComments": null,
@@ -793,6 +801,17 @@ GET  http://localhost:8080/api/leave-balances/EMP005?year=2026
 | `POST /api/leaves/{id}/cancel` | **restored**, if it had been approved |
 
 All three take the same body: `{ "approverId": "...", "comments": "..." }`.
+
+**Backfilling instead of this whole chain:** `POST /api/leaves/hr-create`
+(`LEAVE_APPROVE`) skips apply and supervisor-endorsement and goes straight
+to what Step 9 just produced - `"status": "APPROVED"`, balance consumed
+immediately - but with `"origin": "HR_DIRECT"` instead of `"SELF_SERVICE"`.
+Same request body as Step 7's apply plus `approverId` (overwritten
+server-side with the caller). Same hard-block on insufficient balance. Its
+CSV bulk variant is `POST /api/leaves/bulk-import` (header:
+`userId,leaveType,fromDate,toDate,duration,reason`), same
+`{totalRows, successCount, failureCount, succeeded, errors}` shape as the
+employee bulk import in Step 3.
 
 ---
 
@@ -1271,8 +1290,9 @@ Masters follow standard REST — `POST` create, `PUT /{id}` update, `GET /{id}`,
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` (+ `POST /bulk/varied`, `POST /bulk/csv`) |
 | Attendance | `/api/attendance` |
+| Attendance rules | `/api/attendance-rules` |
 | Holidays | `/api/holidays` |
-| Leave | `/api/leaves` |
+| Leave | `/api/leaves` (+ `POST /hr-create`, `POST /bulk-import`) |
 | Leave balances | `/api/leave-balances` |
 | Salary rules | `/api/salary-rules` |
 | Payroll | `/api/payroll` (+ `POST /bulk-generate`, `GET /debug`) |
@@ -1320,11 +1340,11 @@ and regenerate" and "Salary revision" for what each of these does and why.
 
 ### Bulk & CSV endpoints
 
-All four below share one response shape - `{totalRows, successCount,
+All five below share one response shape - `{totalRows, successCount,
 failureCount, succeeded: [...], errors: [{rowNumber, identifier, message}]}` -
 because every row is attempted independently: one bad row (a duplicate code,
 an unknown employee, a period already generated) fails only that row and
-shows up in `errors`, it never aborts the rest of the batch. The three
+shows up in `errors`, it never aborts the rest of the batch. The four
 `multipart/form-data` ones need Postman's **Body → form-data**, key `file`,
 type **File** — not raw JSON.
 
@@ -1366,6 +1386,14 @@ Only employeeId is required; every amount defaults to 0. regenerate=true
 recomputes an already-generated row as a new revision instead of erroring it.
 Amount columns tolerate the same Excel-style formatting as the employee
 import above (commas, ₹/$, stray whitespace).
+
+POST /api/leaves/bulk-import                                (multipart, key "file")
+Header row: userId,leaveType,fromDate,toDate,duration,reason
+Required: userId, leaveType, fromDate, toDate. duration defaults to FULL_DAY
+          when blank; reason is optional. Each row runs the same path as
+          POST /api/leaves/hr-create - already APPROVED, balance consumed
+          immediately, same hard-block on insufficient balance. Requires
+          LEAVE_APPROVE.
 
 GET /api/payroll/debug?month=9&year=2026
 Same rows /api/payroll?month=&year= returns, plus liveGrossSalary/livePfBasic/

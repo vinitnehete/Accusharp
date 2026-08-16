@@ -7,11 +7,13 @@ import com.accusharp.hrms.entity.LeaveRequest;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveDuration;
+import com.accusharp.hrms.enums.LeaveOrigin;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.repository.AttendanceRuleRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.DepartmentRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
@@ -21,6 +23,7 @@ import com.accusharp.hrms.repository.LeaveRequestRepository;
 import com.accusharp.hrms.repository.PayrollRepository;
 import com.accusharp.hrms.repository.SalaryRuleRepository;
 import com.accusharp.hrms.repository.ShiftRepository;
+import com.accusharp.hrms.repository.ShiftScheduleRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,8 +63,10 @@ class TenantIsolationHttpTest {
     @Autowired private EmployeeRepository employeeRepository;
     @Autowired private HolidayRepository holidayRepository;
     @Autowired private SalaryRuleRepository salaryRuleRepository;
+    @Autowired private AttendanceRuleRepository attendanceRuleRepository;
     @Autowired private DepartmentRepository departmentRepository;
     @Autowired private ShiftRepository shiftRepository;
+    @Autowired private ShiftScheduleRepository shiftScheduleRepository;
     @Autowired private PayrollRepository payrollRepository;
     @Autowired private LeaveRequestRepository leaveRequestRepository;
     @Autowired private LeaveBalanceRepository leaveBalanceRepository;
@@ -82,7 +87,9 @@ class TenantIsolationHttpTest {
     void setUp() {
         holidayRepository.deleteAll();
         salaryRuleRepository.deleteAll();
+        attendanceRuleRepository.deleteAll();
         departmentRepository.deleteAll();
+        shiftScheduleRepository.deleteAll();
         shiftRepository.deleteAll();
         payrollRepository.deleteAll();
         leaveRequestRepository.deleteAll();
@@ -330,7 +337,7 @@ class TenantIsolationHttpTest {
                 .userId("EMPB001").leaveType(LeaveType.CASUAL_LEAVE)
                 .fromDate(LocalDate.of(2026, 6, 1)).toDate(LocalDate.of(2026, 6, 1))
                 .duration(LeaveDuration.FULL_DAY).totalDays(new BigDecimal("1.0"))
-                .status(LeaveStatus.PENDING).appliedAt(java.time.Instant.now())
+                .status(LeaveStatus.PENDING).origin(LeaveOrigin.SELF_SERVICE).appliedAt(java.time.Instant.now())
                 .build());
 
         // approverId is required by validation even though the controller always

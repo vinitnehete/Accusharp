@@ -2,6 +2,7 @@ package com.accusharp.hrms;
 
 import com.accusharp.hrms.entity.PlatformUser;
 import com.accusharp.hrms.enums.PlatformRole;
+import com.accusharp.hrms.repository.AttendanceRuleRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.HolidayRepository;
@@ -38,6 +39,7 @@ class CompanyOnboardingHttpTest {
     @Autowired private EmployeeRepository employeeRepository;
     @Autowired private HolidayRepository holidayRepository;
     @Autowired private SalaryRuleRepository salaryRuleRepository;
+    @Autowired private AttendanceRuleRepository attendanceRuleRepository;
     @Autowired private PasswordEncoder passwordEncoder;
 
     private final HttpClient http = HttpClient.newHttpClient();
@@ -55,6 +57,7 @@ class CompanyOnboardingHttpTest {
     void setUp() {
         holidayRepository.deleteAll();
         salaryRuleRepository.deleteAll();
+        attendanceRuleRepository.deleteAll();
         employeeRepository.deleteAll();
         companyRepository.deleteAll();
         platformUserRepository.deleteAll();

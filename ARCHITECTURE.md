@@ -201,11 +201,12 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
   midnight, so its window ends on the following calendar day - but the day still
   belongs to the shift's *start* date. This is handled once, in
   `AttendanceCalculationService`, so no caller has to think about midnight.
-- **Punch window.** Asymmetric on purpose: it opens 60 minutes before the start
-  (people badge in early) and closes `overtimeWindowMinutes` after the scheduled
-  end (default 4 hours). A symmetric buffer would make a long overtime day look
-  like a missing exit punch, so the closing side is configurable per shift and
-  sized for real overtime.
+- **Punch window.** Asymmetric on purpose: it opens `entryWindowBufferMinutes`
+  before the start (people badge in early, 60 by default) and closes
+  `overtimeWindowMinutes` after the scheduled end (default 4 hours). A
+  symmetric buffer would make a long overtime day look like a missing exit
+  punch, so the closing side is configurable per shift and sized for real
+  overtime.
 - **Windows are exclusive.** A night shift's window crosses midnight and, with
   an overtime window on top, can reach into the hours the *next* scheduled day
   is already collecting for. A day's window is therefore truncated where the
@@ -218,11 +219,23 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
 - **Break.** With four or more punches the middle pairs are real in/out cycles,
   so the actual time outside is used. Otherwise the shift's configured unpaid
   break applies.
-- **Day value.** 75% of the shift earns a full day, 40% earns a half day, below
-  that is absent. One lone punch is an invalid punch (a device error), not an
-  absence.
+- **Day value.** `fullDayThresholdPercent` of the shift earns a full day (75%
+  by default), `halfDayThresholdPercent` earns a half day (40% by default),
+  below that is absent. One lone punch is an invalid punch (a device error),
+  not an absence.
 - **Holidays, weekly offs and approved leave** are layered on top, so *absent*
   only ever means "expected to work and did not".
+
+All three configurable numbers above - `entryWindowBufferMinutes`,
+`fullDayThresholdPercent`, `halfDayThresholdPercent` - live on
+`AttendanceRule`, resolved in `AttendanceService` and passed into
+`AttendanceCalculationService` alongside the `Shift`. It follows the exact
+per-company + global-default pattern `SalaryRule` and `Holiday` already use
+(see "Bulk / CSV mutation endpoints" below and `SalaryRuleService`'s
+Javadoc) - everything else attendance calculation used to hardcode
+identically for every company (shift timings, grace period, break minutes,
+overtime window, weekly-offs, holidays) was already per-company via `Shift`
+and `Holiday`; these three were the only genuinely global constants left.
 
 ### Attendance is generated, then reviewed
 
@@ -305,8 +318,14 @@ netSalary        = totalEarnings - totalDeduction
 - **LOP deduction** is reported on the slip for transparency but is *not* added
   to the deduction total - the earnings were already prorated down by the same
   days, so adding it would deduct twice.
-- **Overtime** is paid only to `overtimeEligible` employees, on hours the
-  attendance engine measured against each day's own shift length.
+- **Overtime** is paid only to `overtimeEligible` employees, and the hours it's
+  paid on depend on the same two payment models above: `PERMANENT`/`CONTRACT`/
+  `INTERN` use the attendance engine's daily-summed value (each day measured
+  against that day's own shift length); `DAY_WISE` has no fixed daily shift to
+  measure against, so its overtime is the month's `totalHours` past the fixed
+  monthly base instead - `dayWiseDaysInMonth x standardHoursPerDay` (208h at
+  the defaults) - not a sum of daily excesses. Both feed the same
+  `otAllowance = overtimeHours x perHour x overtimeRateMultiplier`.
 
 ### Immutable payroll history
 
@@ -333,18 +352,21 @@ read.
 
 ### Bulk / CSV mutation endpoints
 
-Three endpoints share one shape for driving a mutation from a frontend CSV
+Four endpoints share one shape for driving a mutation from a frontend CSV
 upload or a large JSON list, rather than one HTTP call per row:
 `POST /api/employees/bulk-import`, `POST /api/shift-schedules/bulk/varied`
-(+ its CSV sibling `/bulk/csv`), and `POST /api/payroll/bulk-generate`. Each
-parses independently-failable rows (`EmployeeCsvParser`, `ShiftAssignmentCsvParser`,
-`PayrollCsvParser` in `com.accusharp.hrms.util`), then runs every row through
-the *same* single-row service call a non-bulk request would make - `EmployeeService.create`,
-`ShiftSchedulingService.assign`, `PayrollService.generate`/`regenerate` - inside its
-own try/catch, so a bad row never aborts the batch and never bypasses a guard
-(admin-escalation, tenant scoping, supervisor-owns-team) a single call would
-enforce. The uniform result, `BulkImportResult<T>` (`{totalRows, successCount,
-failureCount, succeeded, errors}`), is what every one of them returns.
+(+ its CSV sibling `/bulk/csv`), `POST /api/payroll/bulk-generate`, and
+`POST /api/leaves/bulk-import`. Each parses independently-failable rows
+(`EmployeeCsvParser`, `ShiftAssignmentCsvParser`, `PayrollCsvParser`,
+`LeaveCsvParser` in `com.accusharp.hrms.util`), then runs every row through
+the *same* single-row service call a non-bulk request would make -
+`EmployeeService.create`, `ShiftSchedulingService.assign`,
+`PayrollService.generate`/`regenerate`, `LeaveService.hrDirectCreate` - inside
+its own try/catch, so a bad row never aborts the batch and never bypasses a
+guard (admin-escalation, tenant scoping, supervisor-owns-team) a single call
+would enforce. The uniform result, `BulkImportResult<T>` (`{totalRows,
+successCount, failureCount, succeeded, errors}`), is what every one of them
+returns.
 
 `POST /api/employees/bulk-import` alone also accepts `?format=csv`, which
 skips the JSON envelope and returns `EmployeeCredentialsCsvWriter`'s
@@ -373,6 +395,18 @@ restored on cancellation. A rejection never touches it. Overlapping open or
 approved requests are refused, half days are only valid on a single-day request,
 and the balance is checked at application time so the approver never hits an
 empty quota.
+
+`LeaveService.hrDirectCreate` is a second entry point into the same terminal
+state, not a second workflow: HR/ADMIN (`LEAVE_APPROVE`) skips application and
+endorsement entirely for backfilling a day that already happened, but runs
+the identical date/overlap/balance validations `apply` does - a direct entry
+hard-blocks on insufficient balance rather than being allowed to silently
+overdraw it - then consumes balance immediately, same as `approve`. `POST
+/api/leaves/bulk-import` (`LeaveCsvParser`) is its CSV variant, same
+independently-failable-row shape as the other bulk/CSV endpoints below.
+`LeaveRequest.origin` (`SELF_SERVICE`/`HR_DIRECT`) is what distinguishes the
+two once both sit at `APPROVED` - the leave-side analog of `DailyAttendance`'s
+`GENERATED`/`MANUAL` `recordStatus`.
 
 ## Security &amp; multi-tenancy
 

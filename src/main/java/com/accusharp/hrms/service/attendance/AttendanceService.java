@@ -6,6 +6,7 @@ import com.accusharp.hrms.dto.AttendanceGenerationResponse;
 import com.accusharp.hrms.dto.AttendanceRecordResponse;
 import com.accusharp.hrms.dto.DailyAttendanceResponse;
 import com.accusharp.hrms.dto.MonthlyAttendanceResponse;
+import com.accusharp.hrms.entity.AttendanceRule;
 import com.accusharp.hrms.entity.DailyAttendance;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Employee;
@@ -22,6 +23,7 @@ import com.accusharp.hrms.repository.DailyAttendanceRepository;
 import com.accusharp.hrms.repository.DeviceLogRepository;
 import com.accusharp.hrms.repository.MonthlyAttendanceSummaryRepository;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
+import com.accusharp.hrms.service.AttendanceRuleService;
 import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.HolidayService;
@@ -88,6 +90,7 @@ public class AttendanceService {
     private final HolidayService holidayService;
     private final EmployeeService employeeService;
     private final AuditService auditService;
+    private final AttendanceRuleService attendanceRuleService;
 
     // ---- generation --------------------------------------------------------
 
@@ -134,10 +137,11 @@ public class AttendanceService {
         LocalDate first = month.atDay(1);
         LocalDate last = month.atEndOfMonth();
 
+        AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
         Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, first, last);
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(userId, first, last);
-        List<WindowedSchedule> roster = windowed(userId, first, last);
+        List<WindowedSchedule> roster = windowed(userId, first, last, rule);
         Map<LocalDate, DailyAttendance> existing = indexByDate(dailyAttendanceRepository
                 .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, first, last));
 
@@ -160,7 +164,7 @@ public class AttendanceService {
                 continue;
             }
 
-            DailyAttendanceResponse computed = computeFromPunches(userId, windowedSchedule, holidays, leaveDays);
+            DailyAttendanceResponse computed = computeFromPunches(userId, windowedSchedule, holidays, leaveDays, rule);
             DailyAttendance record = current != null ? current : new DailyAttendance();
             applyComputed(record, userId, schedule, computed, holidays.contains(date));
 
@@ -225,6 +229,7 @@ public class AttendanceService {
             Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, date, date);
             Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                     leaveCalculationService.approvedLeaveDaysBetween(userId, date, date);
+            AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
 
             List<DeviceLog> corrected = List.of(
                     DeviceLog.builder().userId(userId).logDate(request.getFirstIn()).build(),
@@ -232,7 +237,7 @@ public class AttendanceService {
 
             DailyAttendanceResponse computed = attendanceCalculationService.calculateDay(
                     userId, date, schedule.getShift(), corrected, schedule.isWeekOff(),
-                    holidays.contains(date), leaveDays.containsKey(date));
+                    holidays.contains(date), leaveDays.containsKey(date), rule);
 
             applyComputed(record, userId, schedule, computed, holidays.contains(date));
 
@@ -346,17 +351,18 @@ public class AttendanceService {
                 .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, fromDate, toDate));
 
         Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
         Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, fromDate, toDate);
         // Read across the whole window, not just the first month of it.
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(userId, fromDate, toDate);
 
-        return windowed(userId, fromDate, toDate).stream()
+        return windowed(userId, fromDate, toDate, rule).stream()
                 .map(windowedSchedule -> {
                     DailyAttendance record = stored.get(windowedSchedule.schedule().getShiftDate());
                     return record != null
                             ? toDailyResponse(record)
-                            : computeFromPunches(userId, windowedSchedule, holidays, leaveDays);
+                            : computeFromPunches(userId, windowedSchedule, holidays, leaveDays, rule);
                 })
                 .toList();
     }
@@ -414,7 +420,8 @@ public class AttendanceService {
     /** One day of attendance derived from the raw punches in the shift window. */
     private DailyAttendanceResponse computeFromPunches(String userId, WindowedSchedule windowedSchedule,
                                                        Set<LocalDate> holidays,
-                                                       Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays) {
+                                                       Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays,
+                                                       AttendanceRule rule) {
         ShiftSchedule schedule = windowedSchedule.schedule();
         LocalDate date = schedule.getShiftDate();
 
@@ -423,7 +430,7 @@ public class AttendanceService {
                         userId, windowedSchedule.windowStart(), windowedSchedule.windowEnd());
 
         return attendanceCalculationService.calculateDay(userId, date, schedule.getShift(), punches,
-                schedule.isWeekOff(), holidays.contains(date), leaveDays.containsKey(date));
+                schedule.isWeekOff(), holidays.contains(date), leaveDays.containsKey(date), rule);
     }
 
     /**
@@ -445,7 +452,7 @@ public class AttendanceService {
      * known at both ends - which is what makes a night shift on the last day of
      * the month hand over correctly to the first day of the next.
      */
-    private List<WindowedSchedule> windowed(String userId, LocalDate fromDate, LocalDate toDate) {
+    private List<WindowedSchedule> windowed(String userId, LocalDate fromDate, LocalDate toDate, AttendanceRule rule) {
         List<ShiftSchedule> roster = shiftScheduleRepository
                 .findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
                         userId, fromDate.minusDays(1), toDate.plusDays(1));
@@ -458,13 +465,13 @@ public class AttendanceService {
                 continue;
             }
 
-            LocalDateTime start = attendanceCalculationService.windowStart(date, schedule.getShift());
+            LocalDateTime start = attendanceCalculationService.windowStart(date, schedule.getShift(), rule);
             LocalDateTime end = attendanceCalculationService.windowEnd(date, schedule.getShift());
 
             if (i + 1 < roster.size()) {
                 ShiftSchedule next = roster.get(i + 1);
                 LocalDateTime nextStart = attendanceCalculationService
-                        .windowStart(next.getShiftDate(), next.getShift());
+                        .windowStart(next.getShiftDate(), next.getShift(), rule);
                 if (nextStart.isBefore(end)) {
                     end = nextStart;
                 }
@@ -497,17 +504,18 @@ public class AttendanceService {
         LocalDate last = month.atEndOfMonth();
 
         Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
         Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, first, last);
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(employee.getUserId(), first, last);
 
-        List<WindowedSchedule> roster = windowed(employee.getUserId(), first, last);
+        List<WindowedSchedule> roster = windowed(employee.getUserId(), first, last, rule);
 
         List<DailyAttendanceResponse> days = new ArrayList<>(roster.size());
         Set<LocalDate> workingDates = new HashSet<>();
         for (WindowedSchedule windowedSchedule : roster) {
             ShiftSchedule schedule = windowedSchedule.schedule();
-            days.add(computeFromPunches(employee.getUserId(), windowedSchedule, holidays, leaveDays));
+            days.add(computeFromPunches(employee.getUserId(), windowedSchedule, holidays, leaveDays, rule));
             if (!schedule.isWeekOff() && !holidays.contains(schedule.getShiftDate())) {
                 workingDates.add(schedule.getShiftDate());
             }

@@ -5,6 +5,7 @@ import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.repository.AttendanceRuleRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.DepartmentRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
@@ -51,6 +52,7 @@ class EmployeeSalaryStructureHttpTest {
     @Autowired private CompanyRepository companyRepository;
     @Autowired private EmployeeRepository employeeRepository;
     @Autowired private SalaryRuleRepository salaryRuleRepository;
+    @Autowired private AttendanceRuleRepository attendanceRuleRepository;
     @Autowired private HolidayRepository holidayRepository;
     @Autowired private DepartmentRepository departmentRepository;
     @Autowired private ShiftRepository shiftRepository;
@@ -72,6 +74,7 @@ class EmployeeSalaryStructureHttpTest {
     void setUp() {
         holidayRepository.deleteAll();
         salaryRuleRepository.deleteAll();
+        attendanceRuleRepository.deleteAll();
         departmentRepository.deleteAll();
         payrollRepository.deleteAll();
         leaveRequestRepository.deleteAll();

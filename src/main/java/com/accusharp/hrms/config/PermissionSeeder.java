@@ -86,6 +86,7 @@ public class PermissionSeeder {
                 PermissionCode.SHIFT_SCHEDULE_MANAGE, PermissionCode.SHIFT_SCHEDULE_READ,
                 PermissionCode.ATTENDANCE_READ, PermissionCode.ATTENDANCE_GENERATE,
                 PermissionCode.ATTENDANCE_CORRECT, PermissionCode.ATTENDANCE_UNLOCK,
+                PermissionCode.ATTENDANCE_RULE_READ, PermissionCode.ATTENDANCE_RULE_MANAGE,
                 PermissionCode.HOLIDAY_MANAGE, PermissionCode.HOLIDAY_READ,
                 PermissionCode.LEAVE_APPLY, PermissionCode.LEAVE_READ,
                 PermissionCode.LEAVE_SUPERVISOR_APPROVE, PermissionCode.LEAVE_APPROVE,

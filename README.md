@@ -487,17 +487,35 @@ mysql -uroot -proot alsama -e "INSERT INTO device_logs (device_log_id, device_id
 
 ### How punches are read
 
-- Punches are matched to the scheduled shift's window: **60 minutes before** the
-  start (people badge in early) and up to `overtimeWindowMinutes` **after** the
-  scheduled end (people stay late). The window is deliberately not symmetric -
-  a late exit is overtime, not a missing punch.
+- Punches are matched to the scheduled shift's window: `entryWindowBufferMinutes`
+  **before** the start (people badge in early, 60 by default) and up to
+  `overtimeWindowMinutes` **after** the scheduled end (people stay late). The
+  window is deliberately not symmetric - a late exit is overtime, not a missing
+  punch.
 - **First punch = in, last punch = out.**
 - With 4+ punches, the gaps in the middle are treated as the real break.
   Otherwise the shift's configured `breakMinutes` is used.
 - Worked time = span between first and last punch, minus break.
-- 75% of the shift = full day, 40% = half day, below that = absent.
+- `fullDayThresholdPercent` of the shift = full day (75% by default),
+  `halfDayThresholdPercent` = half day (40% by default), below that = absent.
 - **One lone punch** is flagged `INVALID_PUNCH` - a device or user error, not an
   absence. These need fixing before payroll.
+
+The three configurable numbers above (`entryWindowBufferMinutes`,
+`fullDayThresholdPercent`, `halfDayThresholdPercent`) live on `AttendanceRule`,
+company-scoped exactly like `SalaryRule` (§3.1) - a company without its own
+customized rule falls back to the global default, which is what every company
+used before this was configurable:
+
+```bash
+curl http://localhost:8080/api/attendance-rules
+curl -X PUT http://localhost:8080/api/attendance-rules -H 'Content-Type: application/json' \
+  -d '{"entryWindowBufferMinutes":60,"fullDayThresholdPercent":75,"halfDayThresholdPercent":40}'
+```
+
+`halfDayThresholdPercent` must be less than `fullDayThresholdPercent`. A
+change only affects attendance generated or regenerated afterward - see
+"Generate the attendance payroll will be paid from" below.
 
 ---
 
@@ -623,6 +641,44 @@ approved):
 curl -X POST http://localhost:8080/api/leaves/1/cancel -H 'Content-Type: application/json' -d '{"approverId":"HR001","comments":"Withdrawn by employee"}'
 ```
 
+### HR entering an already-approved leave directly
+
+For backfilling a day that already happened - an employee took time off
+informally and HR wants attendance/payroll to reflect it - not for a
+forward-looking request. Skips apply and supervisor-endorsement entirely:
+the leave is created `APPROVED` immediately and consumes balance the same
+moment, same hard-block on insufficient balance as the normal flow:
+
+```bash
+curl -X POST http://localhost:8080/api/leaves/hr-create -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"userId":"EMP001","leaveType":"CASUAL_LEAVE","fromDate":"2026-09-24","toDate":"2026-09-24","duration":"FULL_DAY","reason":"Backfilling an informal day off"}'
+```
+
+Requires `LEAVE_APPROVE` - the same trust bar as final approval, since this
+*is* an approval, just without a preceding request to approve. The response
+carries `"origin":"HR_DIRECT"` (`"origin":"SELF_SERVICE"` for a leave that
+went through the normal chain) so reports and history can tell the two
+apart even once both sit at `APPROVED`.
+
+**Bulk CSV variant**, for backfilling several employees/periods at once -
+same independently-failable-row contract as `/api/employees/bulk-import`:
+
+```bash
+curl -X POST http://localhost:8080/api/leaves/bulk-import -H "Authorization: Bearer $TOKEN" -F "file=@leaves.csv;type=text/csv"
+```
+
+CSV header (case-insensitive, any column order):
+
+```
+userId,leaveType,fromDate,toDate,duration,reason
+```
+
+Only `userId`, `leaveType`, `fromDate` and `toDate` are required; `duration`
+defaults to `FULL_DAY` when blank, `reason` is optional. A row that fails
+(bad date, unknown leave type, overlapping leave, insufficient balance) is
+reported in `errors` and never blocks the rest of the file - identical
+`{totalRows, successCount, failureCount, succeeded, errors}` shape as every
+other bulk/CSV endpoint.
+
 ### Queues and calendar
 
 ```bash
@@ -707,7 +763,8 @@ stray whitespace are stripped before parsing.
 | `lopDays` | `workingDays - presentDays - paidLeaveDays` |
 | `payableDays` | Days actually paid |
 | `earnBasicDA`, `earnHra`, ... | Each component prorated by payable days |
-| `otAllowance` | Overtime hours x per-hour rate x multiplier |
+| `overtimeHours` | `PERMANENT`/`CONTRACT`/`INTERN`: sum of each day's own excess over its shift. `DAY_WISE`: `totalHours` past the fixed `dayWiseDaysInMonth x standardHoursPerDay` base (208h at the defaults) - a day-wise worker has no fixed daily shift to measure against |
+| `otAllowance` | `overtimeHours` x per-hour rate x multiplier |
 | `totalEarnings` | Earnings + bonus + incentive + overtime |
 | `pf` vs `pfDeduction` | Full-month PF (informational) vs what is actually deducted |
 | `lopDeduction` | **Shown for transparency, not added to the total** |
@@ -850,8 +907,9 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all) |
 | Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |
+| Attendance rules | `/api/attendance-rules` |
 | Holidays | `/api/holidays` |
-| Leave | `/api/leaves` |
+| Leave | `/api/leaves` (`POST /hr-create` - HR-direct already-approved entry; `POST /bulk-import` - its CSV bulk variant) |
 | Leave balances | `/api/leave-balances` |
 | Salary rules | `/api/salary-rules` |
 | Payroll | `/api/payroll` (`POST /bulk-generate` - CSV bulk run; `GET /debug` - full per-employee breakdown with live drift flags) |

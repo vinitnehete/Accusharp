@@ -333,7 +333,15 @@ public class PayrollService {
         payroll.setLopDays(lopDays);
         payroll.setPayableDays(payableDays);
         payroll.setTotalHours(attendance.getTotalHours());
-        payroll.setOvertimeHours(attendance.getOvertimeHours());
+        // DAY_WISE has no fixed daily shift to measure each day's overtime
+        // against - only a fixed monthly expectation (dayWiseDaysInMonth *
+        // standardHoursPerDay) the month's total hours are compared to.
+        // Everyone else keeps the attendance engine's daily-summed value
+        // (each day measured against that day's own shift length).
+        BigDecimal overtimeHours = dayWise
+                ? monthlyOvertimeHours(attendance.getTotalHours(), rule)
+                : attendance.getOvertimeHours();
+        payroll.setOvertimeHours(overtimeHours);
 
         // ---- earnings ------------------------------------------------------
         payroll.setEarnBasicDA(salaryCalculationService.prorate(employee.getBasicDA(), totalDays, payableDays));
@@ -356,7 +364,7 @@ public class PayrollService {
         BigDecimal perHour = salaryCalculationService.divide(perDay, rule.getStandardHoursPerDay());
         payroll.setPerDay(perDay);
         payroll.setPerHour(perHour);
-        payroll.setOtAllowance(overtimeAllowance(employee, attendance, perHour, rule));
+        payroll.setOtAllowance(overtimeAllowance(employee, overtimeHours, perHour, rule));
 
         payroll.setBonus(salaryCalculationService.scaled(request.getBonus()));
         payroll.setIncentive(salaryCalculationService.scaled(request.getIncentive()));
@@ -411,18 +419,32 @@ public class PayrollService {
     }
 
     /**
-     * Overtime is paid only to eligible employees, on hours the attendance
-     * engine already measured against each day's own shift length.
+     * Overtime is paid only to eligible employees, on whichever
+     * {@code overtimeHours} figure this employee's status uses - the
+     * attendance engine's daily-summed value for everyone salaried, or
+     * {@link #monthlyOvertimeHours} for DAY_WISE (see {@link #build}).
      */
-    private BigDecimal overtimeAllowance(Employee employee, MonthlyAttendanceSummary attendance,
+    private BigDecimal overtimeAllowance(Employee employee, BigDecimal overtimeHours,
                                          BigDecimal perHour, SalaryRule rule) {
-        if (!employee.isOvertimeEligible() || attendance.getOvertimeHours() == null) {
+        if (!employee.isOvertimeEligible() || overtimeHours == null) {
             return BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP);
         }
-        return attendance.getOvertimeHours()
+        return overtimeHours
                 .multiply(perHour)
                 .multiply(rule.getOvertimeRateMultiplier())
                 .setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * DAY_WISE overtime against the fixed monthly base - {@code
+     * dayWiseDaysInMonth * standardHoursPerDay} (208h at the defaults) - not
+     * the sum of each day's own shift overtime a day-wise worker has no
+     * fixed daily shift to measure against.
+     */
+    private BigDecimal monthlyOvertimeHours(BigDecimal totalHours, SalaryRule rule) {
+        BigDecimal baseHours = BigDecimal.valueOf(rule.getDayWiseDaysInMonth())
+                .multiply(rule.getStandardHoursPerDay());
+        return totalHours.subtract(baseHours).max(BigDecimal.ZERO).setScale(SCALE, RoundingMode.HALF_UP);
     }
 
     /**
