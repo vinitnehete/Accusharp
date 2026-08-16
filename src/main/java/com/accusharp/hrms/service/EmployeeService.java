@@ -3,8 +3,10 @@ package com.accusharp.hrms.service;
 import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
+import com.accusharp.hrms.dto.SalaryRevisionRequest;
 import com.accusharp.hrms.dto.SalaryStructureRequest;
 import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.entity.SalaryRevision;
 import com.accusharp.hrms.entity.SalaryRule;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PrincipalType;
@@ -16,6 +18,7 @@ import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
+import com.accusharp.hrms.repository.SalaryRevisionRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
@@ -26,6 +29,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
@@ -61,6 +66,7 @@ public class EmployeeService {
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
     private final DefaultRosterService defaultRosterService;
+    private final SalaryRevisionRepository salaryRevisionRepository;
 
     /**
      * Without an initial password, a newly created employee could never log
@@ -205,6 +211,73 @@ public class EmployeeService {
         auditService.record("EMPLOYEE_SALARY_STRUCTURE_REGENERATE_ALL", "Employee", null,
                 AuditOutcome.SUCCESS, "count=" + employees.size());
         return employees.size();
+    }
+
+    /**
+     * Records a salary hike/promotion/correction and applies it: updates
+     * grossSalary, then re-derives basicDA/hra/conveyance/education from the
+     * company's current {@link SalaryRule} - unless the employee's structure
+     * is overridden, in which case {@link SalaryCalculationService#applyCalculatedFields}
+     * would leave those four fields stale, so the caller must supply their
+     * replacements in the same request. Writes an immutable {@link
+     * SalaryRevision} row before returning, regardless of which path was
+     * taken - this is the audit trail {@link SalaryRule}'s own Javadoc flags
+     * as missing.
+     */
+    @Transactional
+    public EmployeeResponse reviseSalary(Long id, SalaryRevisionRequest request, String revisedBy) {
+        Employee employee = getEntityById(id);
+        BigDecimal previousGross = salaryCalculationService.scaled(employee.getGrossSalary());
+
+        if (employee.isSalaryStructureOverridden()) {
+            if (request.getBasicDA() == null || request.getHra() == null
+                    || request.getConveyanceAllowance() == null || request.getEducationAllowance() == null) {
+                throw new BusinessRuleException(
+                        "This employee's salary structure is overridden - provide basicDA, hra, "
+                                + "conveyanceAllowance and educationAllowance along with the new gross salary");
+            }
+            employee.setBasicDA(salaryCalculationService.scaled(request.getBasicDA()));
+            employee.setHra(salaryCalculationService.scaled(request.getHra()));
+            employee.setConveyanceAllowance(salaryCalculationService.scaled(request.getConveyanceAllowance()));
+            employee.setEducationAllowance(salaryCalculationService.scaled(request.getEducationAllowance()));
+        }
+
+        employee.setGrossSalary(request.getNewGrossSalary());
+        recalculate(employee);
+        Employee saved = employeeRepository.save(employee);
+
+        BigDecimal hikePercent = previousGross.signum() == 0
+                ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)
+                : request.getNewGrossSalary().subtract(previousGross)
+                        .divide(previousGross, 4, RoundingMode.HALF_UP)
+                        .multiply(new BigDecimal("100"))
+                        .setScale(2, RoundingMode.HALF_UP);
+
+        salaryRevisionRepository.save(SalaryRevision.builder()
+                .employeeId(employee.getUserId())
+                .previousGrossSalary(previousGross)
+                .newGrossSalary(salaryCalculationService.scaled(request.getNewGrossSalary()))
+                .hikePercent(hikePercent)
+                .effectiveDate(request.getEffectiveDate())
+                .reason(request.getReason())
+                .remarks(request.getRemarks())
+                .revisedBy(revisedBy)
+                .createdAt(Instant.now())
+                .build());
+
+        EmployeeResponse response = employeeMapper.toResponse(saved);
+        auditService.record("EMPLOYEE_SALARY_REVISION", "Employee", response.userId(), AuditOutcome.SUCCESS,
+                "previousGross=" + previousGross + ", newGross=" + request.getNewGrossSalary()
+                        + ", hikePercent=" + hikePercent + ", reason=" + request.getReason());
+        return response;
+    }
+
+    /** Every revision for this employee, newest effective date first - the audit trail. */
+    @Transactional(readOnly = true)
+    public List<SalaryRevision> getSalaryRevisions(Long id) {
+        Employee employee = getEntityById(id);
+        assertSelfOrManages(employee.getUserId());
+        return salaryRevisionRepository.findByEmployeeIdOrderByEffectiveDateDescCreatedAtDesc(employee.getUserId());
     }
 
     @Transactional(readOnly = true)
@@ -463,6 +536,42 @@ public class EmployeeService {
         employee.setMedicalAllowance(request.getMedicalAllowance());
         employee.setOtherAllowance(request.getOtherAllowance());
         employee.setOvertimeEligible(request.isOvertimeEligible());
+        applyStructureOverride(employee, request);
+    }
+
+    /**
+     * Optional escape hatch on create/update: give basicDA/hra/conveyance/
+     * education directly - the exact values a company's existing payroll
+     * system already produces - instead of letting {@link SalaryRule} derive
+     * them. A no-op when none are supplied, so every existing caller that
+     * only ever sends grossSalary is unaffected. Partial input is rejected -
+     * a structure with three typed values and one silently rule-derived
+     * would not be the fixed structure the caller intended to freeze.
+     */
+    private void applyStructureOverride(Employee employee, EmployeeRequest request) {
+        BigDecimal basicDA = request.getBasicDA();
+        BigDecimal hra = request.getHra();
+        BigDecimal conveyance = request.getConveyanceAllowance();
+        BigDecimal education = request.getEducationAllowance();
+
+        int provided = 0;
+        if (basicDA != null) provided++;
+        if (hra != null) provided++;
+        if (conveyance != null) provided++;
+        if (education != null) provided++;
+
+        if (provided == 0) {
+            return;
+        }
+        if (provided < 4) {
+            throw new BusinessRuleException(
+                    "Provide basicDA, hra, conveyanceAllowance and educationAllowance together, or none of them");
+        }
+        employee.setBasicDA(salaryCalculationService.scaled(basicDA));
+        employee.setHra(salaryCalculationService.scaled(hra));
+        employee.setConveyanceAllowance(salaryCalculationService.scaled(conveyance));
+        employee.setEducationAllowance(salaryCalculationService.scaled(education));
+        employee.setSalaryStructureOverridden(true);
     }
 
     /** Walks up the proposed chain and rejects any cycle. */

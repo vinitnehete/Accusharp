@@ -17,18 +17,20 @@ approved leave and is absent once without leave.
 | [`docs/testing/multi-company-smoke-test.sh`](docs/testing/multi-company-smoke-test.sh) | A separate curl-based script proving multi-company isolation and self-service scoping over real HTTP - see SECURITY.md |
 
 **This is a manual/Postman walkthrough of one payroll cycle, not the
-automated test suite.** The app also has ~90 JUnit tests
-(`./mvnw test`, or `./mvnw test -Dtest=ClassName` for one class) across 13
+automated test suite.** The app also has 118 JUnit tests
+(`./mvnw test`, or `./mvnw test -Dtest=ClassName` for one class) across 17
 classes under `src/test/java/com/accusharp/hrms/` - unit tests for the
-calculation services (`calculation/`), full-flow integration tests
-(`PayrollFlowIntegrationTest`, `AttendanceRegularisationTest`,
-`NightShiftMonthBoundaryTest`), and real-HTTP tests spinning up the app on a
-random port (`AuthApiHttpTest`, `TenantIsolationHttpTest`,
-`SelfServiceScopingHttpTest`, `CompanyOnboardingHttpTest`, `AuditLogHttpTest`,
-`AttendanceApiHttpTest`) that log in over the wire the same way this document
-does, then drive the API with a real `HttpClient`. Those run on every change
-and are the first thing to check if something here stops matching reality;
-this document is for a human working through the same cycle by hand.
+calculation services (`calculation/`) and pure CSV parsing (`util/EmployeeCsvParserTest`),
+full-flow integration tests (`PayrollFlowIntegrationTest`,
+`AttendanceRegularisationTest`, `NightShiftMonthBoundaryTest`), and real-HTTP
+tests spinning up the app on a random port (`AuthApiHttpTest`,
+`TenantIsolationHttpTest`, `SelfServiceScopingHttpTest`,
+`CompanyOnboardingHttpTest`, `AuditLogHttpTest`, `AttendanceApiHttpTest`,
+`EmployeeSalaryStructureHttpTest`, `EmployeeSalaryRevisionHttpTest`) that log
+in over the wire the same way this document does, then drive the API with a
+real `HttpClient`. Those run on every change and are the first thing to
+check if something here stops matching reality; this document is for a
+human working through the same cycle by hand.
 
 ---
 
@@ -40,6 +42,7 @@ this document is for a human working through the same cycle by hand.
 - [Step 1 — Create a designation](#step-1--create-a-designation)
 - [Step 2 — Create the employee](#step-2--create-the-employee)
   - [Manual salary structure override and regenerate](#manual-salary-structure-override-and-regenerate)
+  - [Salary revision (hike, promotion, correction)](#salary-revision-hike-promotion-correction)
 - [Step 3 — Create a holiday](#step-3--create-a-holiday)
 - [Step 4 — Roster the month](#step-4--roster-the-month)
 - [Step 5 — Load punches (DB, not API)](#step-5--load-punches-db-not-api)
@@ -323,7 +326,13 @@ education  = 13000 × 10%  =  1300
 grossSalaryWage           = 22050
 ```
 
-`basicDA` and friends are not on the request at all — you cannot send them.
+`grossSalaryWage` is never on the request at all — it's always the
+server-computed sum. `basicDA`/`hra`/`conveyanceAllowance`/
+`educationAllowance` normally derive the same way, but *can* be sent -
+all four together, never a subset - if you already know the exact figures
+(migrating from an existing payroll system, say) and don't want them
+recalculated. See ["Structure override at creation"](README.md#34-employees)
+in README.md.
 
 ### Field reference
 
@@ -393,6 +402,59 @@ overridden employee individually if you actually want that.
 
 Neither call touches already-generated payroll. Re-run `/api/payroll/regenerate`
 (Step 11) for any period you want to reflect the corrected structure.
+
+### Salary revision (hike, promotion, correction)
+
+A raise is not a plain `PUT /api/employees/5` - that overwrites `grossSalary`
+with no record of what it used to be. Use the dedicated endpoint instead:
+
+```
+POST http://localhost:8080/api/employees/5/salary-revision
+Headers: Authorization: Bearer <token>, Content-Type: application/json
+```
+
+```json
+{
+  "newGrossSalary": 28000,
+  "effectiveDate": "2026-09-01",
+  "reason": "ANNUAL_INCREMENT",
+  "remarks": "Yearly appraisal"
+}
+```
+
+**200 OK** — the employee, with `grossSalary: 28000` and `basicDA`/`hra`/etc.
+re-derived from the current `SalaryRule`, same formula as a normal create.
+`reason` is one of `ANNUAL_INCREMENT`, `PROMOTION`, `MARKET_CORRECTION`,
+`OTHER`.
+
+**If the employee is currently `salaryStructureOverridden`, re-deriving is
+not possible** — a frozen structure never follows `grossSalary` on its own
+(same rule as `PUT .../salary-structure` above) — so the request must also
+carry the replacement structure:
+
+```json
+{
+  "newGrossSalary": 28000,
+  "effectiveDate": "2026-09-01",
+  "reason": "PROMOTION",
+  "basicDA": 13800, "hra": 5600, "conveyanceAllowance": 1350, "educationAllowance": 1350
+}
+```
+
+Omitting those four for an overridden employee is a **400**, not a silent
+partial update.
+
+Every revision is recorded, not just applied. Pull the history:
+
+```
+GET http://localhost:8080/api/employees/5/salary-revisions
+```
+
+**200 OK** — an array, newest `effectiveDate` first, each entry carrying
+`previousGrossSalary`, `newGrossSalary`, computed `hikePercent`,
+`effectiveDate`, `reason` and `revisedBy` (who applied it). This is the
+answer to "what was this person paid before, and when did it change" - a
+question a plain salary edit alone can never answer after the fact.
 
 ---
 
@@ -1205,7 +1267,7 @@ Masters follow standard REST — `POST` create, `PUT /{id}` update, `GET /{id}`,
 | Companies | `/api/companies` |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
-| Employees | `/api/employees` (+ `POST /bulk-import`) |
+| Employees | `/api/employees` (+ `POST /bulk-import` [`?format=csv` for a credentials sheet], `POST /{id}/salary-revision`, `GET /{id}/salary-revisions`) |
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` (+ `POST /bulk/varied`, `POST /bulk/csv`) |
 | Attendance | `/api/attendance` |
@@ -1247,10 +1309,14 @@ PUT  /api/employees/5/salary-structure
 { "basicDA": 13500, "hra": 5400, "conveyanceAllowance": 1350, "educationAllowance": 1350 }
 POST /api/employees/5/salary-structure/regenerate
 POST /api/employees/salary-structure/regenerate-all
+
+POST /api/employees/5/salary-revision
+{ "newGrossSalary": 28000, "effectiveDate": "2026-09-01", "reason": "ANNUAL_INCREMENT" }
+GET  /api/employees/5/salary-revisions
 ```
 
 See [Step 2](#step-2--create-the-employee)'s "Manual salary structure override
-and regenerate" for what each of the three does and why.
+and regenerate" and "Salary revision" for what each of these does and why.
 
 ### Bulk & CSV endpoints
 
@@ -1265,11 +1331,25 @@ type **File** — not raw JSON.
 ```
 POST /api/employees/bulk-import                            (multipart, key "file")
 Header row: userId,employeeCode,employeeName,companyId,departmentId,designationId,
-            supervisorUserId,joiningDate,dateOfBirth,status,role,email,phone,
-            grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible
+            supervisorUserId,joiningDate,dateOfBirth,status,recordStatus,role,email,phone,
+            grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible,
+            basicDA,hra,conveyanceAllowance,educationAllowance
 Required: userId, employeeCode, employeeName, status, grossSalary, pfBasic,
           medicalAllowance, otherAllowance. Same admin-escalation guard and
-          one-time temporaryPassword-per-row as Step 2.
+          one-time temporaryPassword-per-row as Step 2. The last four columns
+          are optional and only make sense together - fill in all four on a
+          row to use those exact values instead of deriving them, leave all
+          four blank to derive as usual, filling in only some fails that row.
+          Numeric columns tolerate Excel-style formatting - "41,000.00",
+          "₹ 41,000.00" and "$15,000.00" all parse fine, only genuinely
+          non-numeric text fails (EmployeeCsvParserTest).
+
+POST /api/employees/bulk-import?format=csv                  (multipart, key "file")
+Same import, but returns a downloadable text/csv credentials sheet
+(userId,employeeCode,employeeName,temporaryPassword) for the rows that
+succeeded, instead of the JSON body above - the practical way to hand out
+50-500 temporary passwords with no email/SMS infrastructure to send them
+automatically. See SECURITY.md's Phase 11.
 
 POST /api/shift-schedules/bulk/varied                       (JSON — each entry its own shift, unlike /bulk)
 { "assignments": [
@@ -1284,6 +1364,8 @@ POST /api/payroll/bulk-generate?month=9&year=2026&regenerate=false   (multipart,
 Header row: employeeId,bonus,incentive,tds,advanceDeduction,loanDeduction,canteen
 Only employeeId is required; every amount defaults to 0. regenerate=true
 recomputes an already-generated row as a new revision instead of erroring it.
+Amount columns tolerate the same Excel-style formatting as the employee
+import above (commas, ₹/$, stray whitespace).
 
 GET /api/payroll/debug?month=9&year=2026
 Same rows /api/payroll?month=&year= returns, plus liveGrossSalary/livePfBasic/

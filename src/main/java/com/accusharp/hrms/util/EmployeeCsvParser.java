@@ -25,11 +25,19 @@ import java.util.List;
  *
  * <p>Expected header (case-insensitive, order-independent): {@code userId,
  * employeeCode, employeeName, companyId, departmentId, designationId,
- * supervisorUserId, joiningDate, dateOfBirth, status, role, email, phone,
- * grossSalary, pfBasic, medicalAllowance, otherAllowance, overtimeEligible}.
+ * supervisorUserId, joiningDate, dateOfBirth, status, recordStatus, role, email, phone,
+ * grossSalary, pfBasic, medicalAllowance, otherAllowance, overtimeEligible,
+ * basicDA, hra, conveyanceAllowance, educationAllowance}.
  * {@code companyId} is ignored for a company-scoped caller - {@code
  * EmployeeController} always overwrites it with the caller's own company, the
  * same as a single create - so it only matters for a platform-level import.
+ *
+ * <p>The last four columns are optional and only make sense together: a
+ * company migrating employees from an existing payroll system can put their
+ * already-known basicDA/hra/conveyanceAllowance/educationAllowance directly
+ * in the sheet instead of letting {@code SalaryRule} derive them - see
+ * {@link EmployeeRequest}'s Javadoc. Leave all four blank to keep deriving
+ * from the rule, as before.
  *
  * <p>Every row is parsed independently: one malformed row becomes a {@link
  * ParsedCsvRow#failed} entry rather than aborting the file, so a typo in row
@@ -94,6 +102,10 @@ public final class EmployeeCsvParser {
         request.setMedicalAllowance(parseDecimal(record, "medicalAllowance", true));
         request.setOtherAllowance(parseDecimal(record, "otherAllowance", true));
         request.setOvertimeEligible(parseBoolean(record, "overtimeEligible"));
+        request.setBasicDA(parseDecimal(record, "basicDA", false));
+        request.setHra(parseDecimal(record, "hra", false));
+        request.setConveyanceAllowance(parseDecimal(record, "conveyanceAllowance", false));
+        request.setEducationAllowance(parseDecimal(record, "educationAllowance", false));
         return request;
     }
 
@@ -123,7 +135,7 @@ public final class EmployeeCsvParser {
             return null;
         }
         try {
-            return Long.valueOf(value);
+            return Long.valueOf(stripThousandsSeparators(value));
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(column + " must be a whole number, got '" + value + "'");
         }
@@ -138,10 +150,21 @@ public final class EmployeeCsvParser {
             return null;
         }
         try {
-            return new BigDecimal(value);
+            return new BigDecimal(stripThousandsSeparators(value));
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(column + " must be a number, got '" + value + "'");
         }
+    }
+
+    /**
+     * Sheets exported from Excel/Sheets commonly format numeric columns with
+     * thousands separators and/or a currency symbol, e.g. {@code "41,000.00"}
+     * or {@code "₹41,000.00"}; strip that decoration so those values still
+     * parse as plain numbers instead of failing with a raw parser error the
+     * uploader can't act on.
+     */
+    private static String stripThousandsSeparators(String value) {
+        return value.replaceAll("[,₹$\\s]", "");
     }
 
     private static LocalDate parseDate(CSVRecord record, String column) {

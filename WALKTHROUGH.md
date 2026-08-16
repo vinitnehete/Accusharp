@@ -163,7 +163,11 @@ Result:
 > /api/employees/bulk-import` takes a CSV upload - one row per employee, same
 > fields as above, same temporary-password-per-row contract. A bad row (a
 > duplicate code, a missing amount) fails only that row; the rest of the file
-> still gets created. See [README.md §3.4.2](README.md#342-bulk-import-from-csv).
+> still gets created. For a real batch, add `?format=csv` to get back a
+> downloadable credentials sheet instead of hunting passwords out of a JSON
+> array one by one - there's no email/SMS infrastructure in this app to send
+> them automatically. See
+> [README.md §3.4.2](README.md#342-bulk-import-from-csv).
 
 **Capture `temporaryPassword` now.** It's returned exactly once, right here,
 and never logged anywhere - it's how Priya logs in for the first time
@@ -185,13 +189,18 @@ education  = 13000 x 10%   =  1300
 grossSalaryWage            = 22050
 ```
 
-You cannot send `basicDA` or `hra` yourself on this request - they are not on
-the create/update DTO at all. That is deliberate: it means a salary breakup
-can never be inconsistent with the configured rule *unless you explicitly say
-so*.
+`grossSalaryWage` can never be sent yourself - it is not on the create/update
+DTO at all, always the server-computed sum. `basicDA`/`hra`/
+`conveyanceAllowance`/`educationAllowance` normally work the same way, but
+*can* be sent - all four together, never some of them - if you already know
+Priya's exact breakup (say, migrating her from a previous payroll system) and
+don't want it recalculated. Sending only one or two of the four is rejected
+outright: a structure that's part typed, part rule-derived isn't really a
+fixed structure. Leave all four out, as above, and the rule keeps deriving
+them as usual.
 
-Sometimes a real payslip does need to differ from the formula. For that,
-there's a dedicated pair of endpoints:
+Sometimes a real payslip needs to differ from the formula *after* the
+employee already exists. For that, there's a dedicated pair of endpoints:
 
 ```bash
 curl -X PUT http://localhost:8080/api/employees/5/salary-structure -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"basicDA":13500,"hra":5400,"conveyanceAllowance":1350,"educationAllowance":1350}'
@@ -206,6 +215,14 @@ curl -X POST http://localhost:8080/api/employees/5/salary-structure/regenerate -
 ```
 
 See the callout after the next table for the whole-company version of this.
+
+> **Giving Priya a raise later is not a plain `PUT /api/employees/5`.** That
+> would overwrite `grossSalary` with no record of what it used to be. Use
+> `POST /api/employees/5/salary-revision` instead - it updates `grossSalary`,
+> re-derives the structure (or, if she's overridden, needs the four
+> replacement values in the same request), and logs the change with a reason
+> and effective date. `GET /api/employees/5/salary-revisions` returns the
+> full history. See [README.md §3.4.3](README.md#343-salary-revision-hike-promotion-correction).
 
 ### Three fields that decide everything downstream
 

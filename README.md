@@ -177,7 +177,17 @@ You send only these money fields:
 |---|---|
 | `grossSalary`, `pfBasic`, `medicalAllowance`, `otherAllowance` | `basicDA`, `hra`, `conveyanceAllowance`, `educationAllowance`, `grossSalaryWage` |
 
-Sending a derived field is rejected - it is not on the request DTO at all.
+`grossSalaryWage` is never accepted from the API - it is always the sum of
+the six components, computed server-side. `basicDA`/`hra`/
+`conveyanceAllowance`/`educationAllowance` normally derive the same way, but
+you may supply all four of them directly in the same create request instead
+- useful when onboarding employees whose exact breakup is already known from
+an existing payroll system, so the numbers you already trust are not
+recalculated. Supplying all four marks the employee overridden, exactly like
+[§3.4.1](#341-manual-salary-structure-override-and-regeneration)'s `PUT
+.../salary-structure`; supplying only some of them is rejected - a structure
+that is part typed, part rule-derived is not a fixed structure. Leave all
+four blank (as above) to keep letting the rule derive them.
 
 **`status`** decides how the person is paid:
 
@@ -256,14 +266,25 @@ curl -X POST http://localhost:8080/api/employees/bulk-import -H "Authorization: 
 CSV header (case-insensitive, any column order):
 
 ```
-userId,employeeCode,employeeName,companyId,departmentId,designationId,supervisorUserId,joiningDate,dateOfBirth,status,role,email,phone,grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible
+userId,employeeCode,employeeName,companyId,departmentId,designationId,supervisorUserId,joiningDate,dateOfBirth,status,recordStatus,role,email,phone,grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible,basicDA,hra,conveyanceAllowance,educationAllowance
 ```
 
 Only `userId`, `employeeCode`, `employeeName`, `status`, `grossSalary`,
 `pfBasic`, `medicalAllowance` and `otherAllowance` are required; everything
 else may be left blank. `companyId` is ignored for a company-scoped caller -
 same as a single create, the caller's own company always wins. Dates are
-`yyyy-MM-dd`.
+`yyyy-MM-dd`. The last four columns are the same optional structure-override
+fields described above - fill in all four on a row to use those exact
+values instead of deriving them, leave all four blank to derive as usual,
+or filling in only some of them fails that row (see §3.4).
+
+Numeric columns (`grossSalary`, `pfBasic`, `medicalAllowance`,
+`otherAllowance`, `basicDA`, `hra`, `conveyanceAllowance`,
+`educationAllowance`, plus the `Long` columns `companyId`/`departmentId`/
+`designationId`) tolerate Excel-style formatting - thousands separators,
+`₹`/`$` symbols, and stray whitespace are stripped before parsing, so
+`"41,000.00"` and `"₹ 41,000.00"` both parse fine. Only genuinely
+non-numeric text fails.
 
 Every row is attempted independently through the exact same path as a single
 `POST /api/employees` - same admin-escalation guard, same one-time temporary
@@ -285,6 +306,55 @@ only that row**; the response tells you exactly which:
 
 Capture every `temporaryPassword` in `succeeded` now, same as a single
 create - it is never shown again.
+
+**For a real batch (tens to hundreds of rows), reading passwords out of that
+JSON one by one does not scale** - there is no email/SMS infrastructure in
+this app to deliver them automatically (see [SECURITY.md](SECURITY.md)).
+Add `?format=csv` to get a downloadable credentials sheet instead, built
+from the exact same run:
+
+```bash
+curl -X POST "http://localhost:8080/api/employees/bulk-import?format=csv" -H "Authorization: Bearer $TOKEN" -F "file=@employees.csv;type=text/csv" -o credentials.csv
+```
+
+Returns `text/csv` (`userId,employeeCode,employeeName,temporaryPassword`,
+one row per employee actually created - failed rows are not in it) instead
+of the JSON body above. Same one-time-return contract: nothing here is
+persisted or retrievable a second time, so download it now.
+
+#### 3.4.3 Salary revision (hike, promotion, correction)
+
+A gross-salary change is not a plain `PUT /api/employees/{id}` - that would
+silently overwrite the old figure with no record of what it was, when it
+changed, or why. Use the dedicated endpoint instead:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/3/salary-revision -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"newGrossSalary":28000,"effectiveDate":"2026-09-01","reason":"ANNUAL_INCREMENT","remarks":"Yearly appraisal"}'
+```
+
+`reason` is one of `ANNUAL_INCREMENT`, `PROMOTION`, `MARKET_CORRECTION`,
+`OTHER`. This updates `grossSalary` and re-derives `basicDA`/`hra`/
+`conveyanceAllowance`/`educationAllowance` from the company's current
+`SalaryRule`, same as a normal create. **If the employee is currently
+overridden** (§3.4.1), re-deriving is not possible - a frozen structure
+never follows `grossSalary` on its own - so the same request must also
+carry the four replacement values:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/3/salary-revision -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"newGrossSalary":28000,"effectiveDate":"2026-09-01","reason":"PROMOTION","basicDA":13500,"hra":5800,"conveyanceAllowance":1100,"educationAllowance":1100}'
+```
+
+Every revision is recorded, not just applied - `previousGrossSalary`,
+`newGrossSalary`, the computed `hikePercent`, `effectiveDate`, `reason` and
+who applied it. Pull the full history for an employee:
+
+```bash
+curl http://localhost:8080/api/employees/3/salary-revisions -H "Authorization: Bearer $TOKEN"
+```
+
+Newest `effectiveDate` first. This is the audit trail for "what was this
+person paid before, and when did it change" - something a plain salary
+update alone can never answer after the fact.
 
 ### 3.5 Holidays
 
@@ -625,7 +695,9 @@ attendance generated for the period, or one already paid this month, fails
 only that row (`{"totalRows":..., "succeeded":[...], "errors":[...]}`).
 Add `&regenerate=true` to recompute rows that are already generated as a new
 revision instead of erroring them - the same choice `/regenerate` gives a
-single employee.
+single employee. The amount columns tolerate Excel-style formatting the same
+way the employee import does (§3.4.2) - thousands separators, `₹`/`$`, and
+stray whitespace are stripped before parsing.
 
 ### Reading the result
 
@@ -774,7 +846,7 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Companies | `/api/companies` (`POST /onboard` creates the company plus its first admin - see [SECURITY.md](SECURITY.md)) |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
-| Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding) |
+| Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding, `?format=csv` for a downloadable credentials sheet; `POST /{id}/salary-revision`, `GET /{id}/salary-revisions` - hike/promotion history) |
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all) |
 | Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |

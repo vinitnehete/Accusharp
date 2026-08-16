@@ -14,9 +14,15 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 
 /**
- * Only the fields a client may set. basicDA, hra, conveyance, education and
- * grossSalaryWage are always derived server-side from the current SalaryRule
- * and are deliberately absent here.
+ * Only the fields a client may set. grossSalaryWage is always derived
+ * server-side and is deliberately absent here. basicDA/hra/conveyanceAllowance/
+ * educationAllowance are normally derived from the current SalaryRule too -
+ * but a company onboarding employees from an existing payroll system may
+ * already know their exact, fixed structure and not want it recalculated.
+ * Supplying all four here overrides the derivation and marks the employee's
+ * structure overridden, exactly as {@code PUT .../salary-structure} does.
+ * Supplying only some of them is rejected - a structure that is part typed,
+ * part rule-derived is not the fixed structure the caller intended.
  */
 @Data
 public class EmployeeRequest {
@@ -75,4 +81,18 @@ public class EmployeeRequest {
     private BigDecimal otherAllowance;
 
     private boolean overtimeEligible;
+
+    // ---- optional structure override - provide all four or none, see class Javadoc ----
+
+    @DecimalMin(value = "0")
+    private BigDecimal basicDA;
+
+    @DecimalMin(value = "0")
+    private BigDecimal hra;
+
+    @DecimalMin(value = "0")
+    private BigDecimal conveyanceAllowance;
+
+    @DecimalMin(value = "0")
+    private BigDecimal educationAllowance;
 }

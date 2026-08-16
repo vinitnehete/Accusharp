@@ -44,7 +44,9 @@ service/
   report/       ReportService, DashboardService
 util/         AmountInWords, TemporaryPasswordGenerator,
               EmployeeCsvParser, ShiftAssignmentCsvParser, PayrollCsvParser (CSV -> request DTO,
-              one independently-failable row at a time - see "Bulk / CSV mutation endpoints" below)
+              one independently-failable row at a time - see "Bulk / CSV mutation endpoints" below),
+              EmployeeCredentialsCsvWriter (bulk-import's created employees -> a downloadable
+              userId/employeeCode/employeeName/temporaryPassword sheet, see SECURITY.md)
 ```
 
 Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
@@ -77,13 +79,17 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | `LeaveRequest`, `LeaveBalance` | `leave_request`, `leave_balance` | Balance is always quota minus used |
 | `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Cached rollup of the stored days |
 | `SalaryRule` | `salary_rule` | One row per company holding every percentage and slab, plus one `company = null` global default a company falls back to until it customizes its own - see [SECURITY.md](SECURITY.md) |
+| `SalaryRevision` | `salary_revision` | Append-only history of one employee's gross-salary changes (hike/promotion/correction) - see "Salary revision history" below |
 | `Payroll` | `payroll` | Immutable snapshot per employee/month/year/revision |
 
 ### Salary structure
 
 Derived on every employee write from the current `SalaryRule`, so it can never
-drift from configuration. `basicDA`, `hra`, `conveyanceAllowance`,
-`educationAllowance` and `grossSalaryWage` are **not** accepted from the API.
+drift from configuration. `grossSalaryWage` is never accepted from the API -
+it is always the sum of the six components below, computed server-side.
+`basicDA`, `hra`, `conveyanceAllowance` and `educationAllowance` are the same
+way by default, but may be supplied directly on create (single or bulk CSV) -
+see "Structure override at creation" below.
 
 ```
 basicDA              = max(grossSalary x basicDaPercent, basicDaMinimumThreshold)
@@ -132,6 +138,55 @@ Payroll itself needs no separate refresh: `PayrollService.build()` always
 reads `basicDA`/`hra`/etc. straight off the `Employee` row at generate/
 regenerate time, so once the employee's structure is corrected, the next
 `POST /api/payroll/regenerate` for that period picks it up.
+
+#### Structure override at creation
+
+`PUT /api/employees/{id}/salary-structure` (above) is a two-step flow: create
+with a derived structure, then override it afterward. A company onboarding
+employees from an existing payroll system already knows the exact,
+government-compliant breakup for each person and should not have to do
+either step - `EmployeeRequest` (and `EmployeeCsvParser`'s CSV rows) accept
+the same four fields directly on create. `EmployeeService.applyStructureOverride`
+is the single choke point both the single-create and bulk-CSV-import
+endpoints share: all four fields present sets them verbatim and flips
+`salaryStructureOverridden`, all four absent leaves derivation exactly as
+before, and anything in between - a structure that is part typed, part
+rule-derived - is rejected outright, since it was never a real "fixed
+structure" the caller could have intended. For bulk CSV import this rejection
+is per-row, same as every other CSV validation failure: one bad row never
+costs the rest of the file.
+
+#### Salary revision history
+
+Nothing previously recorded *why* or *when* an employee's `grossSalary`
+changed - a plain `PUT /api/employees/{id}` just overwrote it, same as any
+other field, with no trace of the old value. `SalaryRevision` (table
+`salary_revision`) is the append-only audit trail for that, written by
+`POST /api/employees/{id}/salary-revision`: `previousGrossSalary`,
+`newGrossSalary`, a computed `hikePercent`, `effectiveDate`, `reason`
+(`ANNUAL_INCREMENT`/`PROMOTION`/`MARKET_CORRECTION`/`OTHER`) and who applied
+it. Like `AuditLog`, it stores `employeeId` as a plain scalar rather than a
+JPA relation - a history record is a snapshot of what happened, not a live
+view of current employee state (see `AuditLog`'s own Javadoc and
+[SECURITY.md](SECURITY.md)).
+
+The endpoint updates `grossSalary` and then runs the exact same
+`SalaryCalculationService.applyCalculatedFields` re-derivation as any other
+employee write - which means the same override interaction applies: an
+employee with `salaryStructureOverridden = true` will not have `basicDA`/
+`hra`/etc. move just because `grossSalary` did (derivation is skipped
+entirely while overridden, per "Manual override and regeneration" above), so
+`reviseSalary` requires the four replacement structure values in the same
+request whenever the employee is currently overridden, rather than silently
+leaving them stale. `GET /api/employees/{id}/salary-revisions` returns the
+full history, newest `effectiveDate` first - the same self-service-scoped
+visibility rule as the rest of the employee API (self, direct supervisor, or
+HR/ADMIN).
+
+This is a different gap from the "effective-dated salary rule versions" item
+in **Not implemented** below - that would be a company's `SalaryRule`
+percentages changing over time; `SalaryRevision` is one employee's actual pay
+changing over time. Both are real, unrelated gaps.
 
 ## How the calculations work
 
@@ -290,6 +345,18 @@ own try/catch, so a bad row never aborts the batch and never bypasses a guard
 (admin-escalation, tenant scoping, supervisor-owns-team) a single call would
 enforce. The uniform result, `BulkImportResult<T>` (`{totalRows, successCount,
 failureCount, succeeded, errors}`), is what every one of them returns.
+
+`POST /api/employees/bulk-import` alone also accepts `?format=csv`, which
+skips the JSON envelope and returns `EmployeeCredentialsCsvWriter`'s
+downloadable credentials sheet for the rows that succeeded instead - see
+[SECURITY.md](SECURITY.md) for why that exists (no email/SMS delivery
+infrastructure to hand 50-500 temporary passwords out automatically).
+
+`EmployeeCsvParser` and `PayrollCsvParser`'s numeric columns strip Excel-style
+formatting (thousands separators, `₹`/`$`, stray whitespace) before parsing,
+rather than surfacing commons-csv's raw `NumberFormatException` for a value
+that's actually correct - `"41,000.00"` is exactly as valid an input as
+`"41000.00"`.
 
 Existing `POST /api/shift-schedules/bulk` (one shift, many employees, a date
 range) is unrelated to this family - it stays a single validated operation

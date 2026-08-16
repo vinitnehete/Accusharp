@@ -4,18 +4,22 @@ import com.accusharp.hrms.dto.BulkImportResult;
 import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
+import com.accusharp.hrms.dto.SalaryRevisionRequest;
 import com.accusharp.hrms.dto.SalaryStructureRequest;
+import com.accusharp.hrms.entity.SalaryRevision;
 import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.EmployeeService;
+import com.accusharp.hrms.util.EmployeeCredentialsCsvWriter;
 import com.accusharp.hrms.util.EmployeeCsvParser;
 import com.accusharp.hrms.util.ParsedCsvRow;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Valid;
 import jakarta.validation.Validator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -55,11 +59,21 @@ public class EmployeeController {
      * same one-time temporary password per employee - so one bad row (a
      * duplicate userId, a missing required column) fails only that row; the
      * rest of the file still gets created and returned in {@code succeeded}.
+     *
+     * <p>{@code format=json} (default) returns the full {@link BulkImportResult}
+     * - every created employee plus every row error, for a caller that wants
+     * to show both. {@code format=csv} instead returns a downloadable sheet of
+     * just {@code userId, employeeCode, employeeName, temporaryPassword} for
+     * the rows that succeeded - there is no email/SMS infrastructure in this
+     * app to deliver 50-500 temporary passwords automatically (see
+     * SECURITY.md), so this is what HR actually hands out. Built from the same
+     * in-memory result this call already produced, never a second lookup.
      */
     @PreAuthorize("@authz.can('EMPLOYEE_CREATE')")
     @PostMapping(value = "/bulk-import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public BulkImportResult<EmployeeCreationResponse> bulkImport(@AuthenticationPrincipal UserPrincipal principal,
-                                                                   @RequestParam("file") MultipartFile file) {
+    public ResponseEntity<?> bulkImport(@AuthenticationPrincipal UserPrincipal principal,
+                                         @RequestParam("file") MultipartFile file,
+                                         @RequestParam(defaultValue = "json") String format) {
         List<ParsedCsvRow<EmployeeRequest>> rows = EmployeeCsvParser.parse(file);
         List<EmployeeCreationResponse> succeeded = new ArrayList<>();
         List<BulkImportResult.RowError> errors = new ArrayList<>();
@@ -83,7 +97,15 @@ public class EmployeeController {
                 errors.add(new BulkImportResult.RowError(row.rowNumber(), request.getUserId(), e.getMessage()));
             }
         }
-        return BulkImportResult.of(rows.size(), succeeded, errors);
+
+        if ("csv".equalsIgnoreCase(format)) {
+            byte[] csv = EmployeeCredentialsCsvWriter.write(succeeded);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("text/csv"))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"employee-credentials.csv\"")
+                    .body(csv);
+        }
+        return ResponseEntity.ok(BulkImportResult.of(rows.size(), succeeded, errors));
     }
 
     /** CSV rows are built by hand, not bound from a validated {@code @RequestBody}, so validation runs explicitly. */
@@ -149,6 +171,28 @@ public class EmployeeController {
     @PostMapping("/salary-structure/regenerate-all")
     public Map<String, Integer> regenerateAllSalaryStructures() {
         return Map.of("regenerated", employeeService.regenerateAllSalaryStructures());
+    }
+
+    /**
+     * Records a salary hike/promotion/correction: sets the new gross salary,
+     * re-derives the structure from the current {@code SalaryRule} (or, for
+     * an overridden employee, applies the replacement structure supplied in
+     * the same request - see {@link SalaryRevisionRequest}'s Javadoc), and
+     * writes an immutable history row.
+     */
+    @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")
+    @PostMapping("/{id}/salary-revision")
+    public EmployeeResponse reviseSalary(@AuthenticationPrincipal UserPrincipal principal,
+                                          @PathVariable Long id,
+                                          @Valid @RequestBody SalaryRevisionRequest request) {
+        return employeeService.reviseSalary(id, request, principal.getUsername());
+    }
+
+    /** Every past revision for this employee, newest effective date first. */
+    @PreAuthorize("@authz.can('EMPLOYEE_READ')")
+    @GetMapping("/{id}/salary-revisions")
+    public List<SalaryRevision> getSalaryRevisions(@PathVariable Long id) {
+        return employeeService.getSalaryRevisions(id);
     }
 
     @PreAuthorize("@authz.can('EMPLOYEE_READ')")

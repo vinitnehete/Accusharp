@@ -165,6 +165,99 @@ class EmployeeSalaryStructureHttpTest {
         assertThat(stillOverridden.body().get("salaryStructureOverridden").asBoolean()).isTrue();
     }
 
+    @Test
+    @DisplayName("all four structure fields at create time override the derived structure")
+    void createWithFullStructureOverride() {
+        Resp created = send("POST", "/api/employees", """
+                {"userId": "EMP010", "employeeCode": "EMP-EMP010", "employeeName": "Onboarded Direct",
+                 "status": "PERMANENT", "role": "EMPLOYEE",
+                 "grossSalary": 30000, "pfBasic": 12000, "medicalAllowance": 1250, "otherAllowance": 500,
+                 "basicDA": 14000, "hra": 5600, "conveyanceAllowance": 1400, "educationAllowance": 1400}""",
+                hrToken);
+        assertThat(created.status()).isEqualTo(201);
+        JsonNode employeeNode = created.body().get("employee");
+        assertThat(employeeNode.get("basicDA").asDouble()).isEqualTo(14000.0);
+        assertThat(employeeNode.get("hra").asDouble()).isEqualTo(5600.0);
+        assertThat(employeeNode.get("conveyanceAllowance").asDouble()).isEqualTo(1400.0);
+        assertThat(employeeNode.get("educationAllowance").asDouble()).isEqualTo(1400.0);
+        assertThat(employeeNode.get("salaryStructureOverridden").asBoolean()).isTrue();
+        // 14000+5600+1400+1400+1250+500
+        assertThat(employeeNode.get("grossSalaryWage").asDouble()).isEqualTo(24150.0);
+    }
+
+    @Test
+    @DisplayName("a partially-filled structure override at create time is rejected")
+    void createWithPartialStructureOverrideRejected() {
+        Resp created = send("POST", "/api/employees", """
+                {"userId": "EMP011", "employeeCode": "EMP-EMP011", "employeeName": "Bad Onboard",
+                 "status": "PERMANENT", "role": "EMPLOYEE",
+                 "grossSalary": 30000, "pfBasic": 12000, "medicalAllowance": 1250, "otherAllowance": 500,
+                 "basicDA": 14000}""",
+                hrToken);
+        assertThat(created.status()).isEqualTo(400);
+        assertThat(employeeRepository.existsByUserId("EMP011")).isFalse();
+    }
+
+    @Test
+    @DisplayName("leaving all four structure fields blank at create time still derives from the rule as before")
+    void createWithNoStructureOverrideDerivesAsUsual() {
+        Resp created = send("POST", "/api/employees", """
+                {"userId": "EMP012", "employeeCode": "EMP-EMP012", "employeeName": "Normal Onboard",
+                 "status": "PERMANENT", "role": "EMPLOYEE",
+                 "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0}""",
+                hrToken);
+        assertThat(created.status()).isEqualTo(201);
+        JsonNode employeeNode = created.body().get("employee");
+        assertThat(employeeNode.get("basicDA").asDouble()).isEqualTo(10000.0); // 50% of gross
+        assertThat(employeeNode.get("salaryStructureOverridden").asBoolean()).isFalse();
+    }
+
+    @Test
+    @DisplayName("bulk CSV import: a row with the full override structure and a row with none "
+            + "both succeed, a row with a partial override fails independently")
+    void bulkImportWithStructureOverrideColumns() {
+        String csv = "userId,employeeCode,employeeName,status,grossSalary,pfBasic,medicalAllowance,otherAllowance,"
+                + "basicDA,hra,conveyanceAllowance,educationAllowance\n"
+                + "EMP020,EMP-EMP020,Onboarded Direct,PERMANENT,30000,12000,1250,500,14000,5600,1400,1400\n"
+                + "EMP021,EMP-EMP021,Normal Onboard,PERMANENT,20000,8000,1000,0,,,,\n"
+                + "EMP022,EMP-EMP022,Bad Onboard,PERMANENT,20000,8000,1000,0,14000,,,\n";
+
+        Resp result = sendMultipart("/api/employees/bulk-import", "employees.csv", csv, hrToken);
+        assertThat(result.status()).isEqualTo(200);
+        assertThat(result.body().get("totalRows").asInt()).isEqualTo(3);
+        assertThat(result.body().get("successCount").asInt()).isEqualTo(2);
+        assertThat(result.body().get("failureCount").asInt()).isEqualTo(1);
+
+        JsonNode error = result.body().get("errors").get(0);
+        assertThat(error.get("identifier").asString()).isEqualTo("EMP022");
+
+        Employee overridden = employeeRepository.findByUserId("EMP020").orElseThrow();
+        assertThat(overridden.getBasicDA()).isEqualByComparingTo("14000.00");
+        assertThat(overridden.isSalaryStructureOverridden()).isTrue();
+
+        Employee derived = employeeRepository.findByUserId("EMP021").orElseThrow();
+        assertThat(derived.getBasicDA()).isEqualByComparingTo("10000.00"); // 50% of 20000
+        assertThat(derived.isSalaryStructureOverridden()).isFalse();
+
+        assertThat(employeeRepository.existsByUserId("EMP022")).isFalse();
+    }
+
+    @Test
+    @DisplayName("bulk-import with format=csv returns a downloadable credentials sheet "
+            + "for the rows that succeeded, not the row that failed")
+    void bulkImportCsvFormatReturnsCredentialsSheet() {
+        String csv = "userId,employeeCode,employeeName,status,grossSalary,pfBasic,medicalAllowance,otherAllowance\n"
+                + "EMP030,EMP-EMP030,Good Row One,PERMANENT,20000,8000,1000,0\n"
+                + "EMP031,,Missing Code,PERMANENT,20000,8000,1000,0\n"; // employeeCode blank -> fails
+
+        RawResp result = sendMultipartRaw("/api/employees/bulk-import?format=csv", "employees.csv", csv, hrToken);
+        assertThat(result.status()).isEqualTo(200);
+        assertThat(result.contentType()).contains("text/csv");
+        assertThat(result.body()).contains("userId,employeeCode,employeeName,temporaryPassword");
+        assertThat(result.body()).contains("EMP030,EMP-EMP030,Good Row One,");
+        assertThat(result.body()).doesNotContain("EMP031");
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     private record Resp(int status, JsonNode body) {
@@ -205,6 +298,59 @@ class EmployeeSalaryStructureHttpTest {
 
     private String port() {
         return environment.getProperty("local.server.port");
+    }
+
+    private Resp sendMultipart(String path, String fileName, String csvContent, String bearerToken) {
+        try {
+            String boundary = "----AccusharpTestBoundary" + System.nanoTime();
+            String body = "--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"\r\n"
+                    + "Content-Type: text/csv\r\n\r\n"
+                    + csvContent + "\r\n"
+                    + "--" + boundary + "--\r\n";
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:" + port() + path))
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                    .header("Authorization", "Bearer " + bearerToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, java.nio.charset.StandardCharsets.UTF_8))
+                    .build();
+
+            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            JsonNode responseBody = response.body() == null || response.body().isBlank()
+                    ? null
+                    : objectMapper.readTree(response.body());
+            return new Resp(response.statusCode(), responseBody);
+        } catch (Exception ex) {
+            throw new IllegalStateException("multipart POST " + path + " failed", ex);
+        }
+    }
+
+    private record RawResp(int status, String contentType, String body) {
+    }
+
+    private RawResp sendMultipartRaw(String path, String fileName, String csvContent, String bearerToken) {
+        try {
+            String boundary = "----AccusharpTestBoundary" + System.nanoTime();
+            String body = "--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"\r\n"
+                    + "Content-Type: text/csv\r\n\r\n"
+                    + csvContent + "\r\n"
+                    + "--" + boundary + "--\r\n";
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:" + port() + path))
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                    .header("Authorization", "Bearer " + bearerToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, java.nio.charset.StandardCharsets.UTF_8))
+                    .build();
+
+            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            String contentType = response.headers().firstValue("Content-Type").orElse(null);
+            return new RawResp(response.statusCode(), contentType, response.body());
+        } catch (Exception ex) {
+            throw new IllegalStateException("multipart POST " + path + " failed", ex);
+        }
     }
 
     private Employee saveEmployee(String userId, String name, Role role) {

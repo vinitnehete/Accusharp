@@ -104,7 +104,7 @@ public final class PayrollCsvParser {
             return BigDecimal.ZERO;
         }
         try {
-            BigDecimal parsed = new BigDecimal(value);
+            BigDecimal parsed = new BigDecimal(value.replaceAll("[,₹$\\s]", ""));
             if (parsed.signum() < 0) {
                 throw new IllegalArgumentException(column + " cannot be negative, got '" + value + "'");
             }
