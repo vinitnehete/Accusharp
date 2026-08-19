@@ -1,6 +1,5 @@
 package com.accusharp.hrms.service.report;
 
-import com.accusharp.hrms.dto.DailyAttendanceResponse;
 import com.accusharp.hrms.dto.ReportDtos;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.LeaveRequest;
@@ -60,10 +59,28 @@ public class DashboardService {
         LocalDate today = asOf == null ? LocalDate.now() : asOf;
         List<Employee> active = employeeService.getActiveEntities();
 
-        return new ReportDtos.DashboardResponse(today, buildCards(today, active), buildCharts(today, active));
+        // Same per-employee authorization getDailyAttendance enforces on every
+        // (employee, date) call it used to be reached through - done once per
+        // employee here instead of once per employee per date below, since the
+        // outcome depends only on the caller and the target, never the date.
+        active.forEach(employee -> employeeService.assertSelfOrManages(employee.getUserId()));
+
+        // The 14-day trend and "present today" (today is always its last day)
+        // share one batched attendance lookup per date instead of each
+        // employee being read one day, and one call, at a time.
+        Map<LocalDate, Map<String, AttendanceStatus>> statusesByDate = new LinkedHashMap<>();
+        for (int offset = ATTENDANCE_TREND_DAYS - 1; offset >= 0; offset--) {
+            LocalDate date = today.minusDays(offset);
+            statusesByDate.put(date, attendanceService.statusesOn(active, date));
+        }
+
+        return new ReportDtos.DashboardResponse(today,
+                buildCards(today, active, statusesByDate),
+                buildCharts(today, active, statusesByDate));
     }
 
-    private ReportDtos.Cards buildCards(LocalDate today, List<Employee> active) {
+    private ReportDtos.Cards buildCards(LocalDate today, List<Employee> active,
+                                        Map<LocalDate, Map<String, AttendanceStatus>> statusesByDate) {
         Set<String> companyUserIds = Set.copyOf(userIds(active));
 
         Set<String> onLeaveToday = leaveRequestRepository
@@ -73,9 +90,7 @@ public class DashboardService {
                 .filter(companyUserIds::contains)
                 .collect(Collectors.toSet());
 
-        long presentToday = active.stream()
-                .filter(employee -> isPresentOn(employee.getUserId(), today))
-                .count();
+        long presentToday = countPresent(active, statusesByDate.get(today));
 
         // Only people who were actually scheduled to work can be absent.
         long scheduledToday = shiftScheduleRepository
@@ -111,13 +126,14 @@ public class DashboardService {
                 upcomingAnniversaries(today, companyUserIds));
     }
 
-    private ReportDtos.Charts buildCharts(LocalDate today, List<Employee> active) {
+    private ReportDtos.Charts buildCharts(LocalDate today, List<Employee> active,
+                                          Map<LocalDate, Map<String, AttendanceStatus>> statusesByDate) {
         Set<String> companyUserIds = Set.copyOf(userIds(active));
 
         List<ReportDtos.PointLong> attendanceTrend = new ArrayList<>();
         for (int offset = ATTENDANCE_TREND_DAYS - 1; offset >= 0; offset--) {
             LocalDate date = today.minusDays(offset);
-            long present = active.stream().filter(e -> isPresentOn(e.getUserId(), date)).count();
+            long present = countPresent(active, statusesByDate.get(date));
             attendanceTrend.add(new ReportDtos.PointLong(date.toString(), present));
         }
 
@@ -156,10 +172,18 @@ public class DashboardService {
         return new ReportDtos.Charts(attendanceTrend, departmentStrength, payrollCost, leaveUsagePoints);
     }
 
-    private boolean isPresentOn(String userId, LocalDate date) {
-        List<DailyAttendanceResponse> days = attendanceService.getDailyAttendance(userId, date, date);
-        return days.stream().anyMatch(day -> day.status() == AttendanceStatus.PRESENT
-                || day.status() == AttendanceStatus.HALF_DAY);
+    /**
+     * How many of {@code active} read as present (or half-day) on one date,
+     * given that date's already-batched {@code userId -> status} map from
+     * {@link AttendanceService#statusesOn} - an employee absent from the map
+     * (not scheduled that day) counts as not present, same as an empty
+     * {@code getDailyAttendance} result did before this was batched.
+     */
+    private long countPresent(List<Employee> active, Map<String, AttendanceStatus> statusesForDate) {
+        return active.stream()
+                .map(employee -> statusesForDate.get(employee.getUserId()))
+                .filter(status -> status == AttendanceStatus.PRESENT || status == AttendanceStatus.HALF_DAY)
+                .count();
     }
 
     private List<ReportDtos.PersonEvent> upcomingBirthdays(LocalDate today, Set<String> companyUserIds) {

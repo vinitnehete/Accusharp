@@ -3,6 +3,7 @@ package com.accusharp.hrms.dto;
 import com.accusharp.hrms.enums.SalaryRevisionReason;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -29,6 +30,7 @@ public class SalaryRevisionRequest {
     @NotNull
     private SalaryRevisionReason reason;
 
+    @Size(max = 255)
     private String remarks;
 
     // Required only when the employee's salary structure is currently overridden.

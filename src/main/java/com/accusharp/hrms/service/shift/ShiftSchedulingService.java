@@ -96,10 +96,11 @@ public class ShiftSchedulingService {
                 : Set.of();
 
         List<ShiftSchedule> toSave = new ArrayList<>();
+        Employee scheduler = resolveScheduler(request.getAssignedBy());
 
         for (String userId : request.getUserIds()) {
             employeeService.getEntityByUserId(userId);
-            assertMaySchedule(request.getAssignedBy(), userId);
+            assertMaySchedule(scheduler, request.getAssignedBy(), userId);
 
             Map<LocalDate, ShiftSchedule> existing = indexByDate(shiftScheduleRepository
                     .findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
@@ -158,11 +159,12 @@ public class ShiftSchedulingService {
                 : Set.of();
 
         List<ShiftSchedule> toSave = new ArrayList<>();
+        Employee scheduler = resolveScheduler(request.getAssignedBy());
 
         for (int index = 0; index < request.getUserIds().size(); index++) {
             String userId = request.getUserIds().get(index);
             employeeService.getEntityByUserId(userId);
-            assertMaySchedule(request.getAssignedBy(), userId);
+            assertMaySchedule(scheduler, request.getAssignedBy(), userId);
 
             Map<LocalDate, ShiftSchedule> existing = indexByDate(shiftScheduleRepository
                     .findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
@@ -214,10 +216,11 @@ public class ShiftSchedulingService {
         }
 
         List<ShiftSchedule> toSave = new ArrayList<>();
+        Employee scheduler = resolveScheduler(request.getAssignedBy());
 
         for (String userId : request.getUserIds()) {
             employeeService.getEntityByUserId(userId);
-            assertMaySchedule(request.getAssignedBy(), userId);
+            assertMaySchedule(scheduler, request.getAssignedBy(), userId);
 
             List<ShiftSchedule> sourceRoster = shiftScheduleRepository
                     .findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
@@ -404,10 +407,24 @@ public class ShiftSchedulingService {
      * admin tooling) skips the check.
      */
     private void assertMaySchedule(String assignedBy, String userId) {
-        if (assignedBy == null || assignedBy.isBlank() || assignedBy.equals(userId)) {
+        assertMaySchedule(resolveScheduler(assignedBy), assignedBy, userId);
+    }
+
+    /**
+     * Resolves the acting scheduler once - for {@link #assignBulk},
+     * {@link #autoRotate} and {@link #copyMonth}, which otherwise re-resolved
+     * the identical {@code assignedBy} employee on every iteration of their
+     * per-userId loop.
+     */
+    private Employee resolveScheduler(String assignedBy) {
+        return (assignedBy == null || assignedBy.isBlank()) ? null : employeeService.getEntityByUserId(assignedBy);
+    }
+
+    /** Same check as {@link #assertMaySchedule(String, String)}, given an already-resolved actor (or none). */
+    private void assertMaySchedule(Employee actor, String assignedBy, String userId) {
+        if (actor == null || assignedBy.equals(userId)) {
             return;
         }
-        Employee actor = employeeService.getEntityByUserId(assignedBy);
         switch (actor.getRole()) {
             case ADMIN, HR -> { /* full roster access */ }
             case SUPERVISOR -> {

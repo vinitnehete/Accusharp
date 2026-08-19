@@ -3,6 +3,7 @@ package com.accusharp.hrms.service.payroll;
 import com.accusharp.hrms.dto.SalarySlipResponse;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.util.AmountInWords;
+import com.accusharp.hrms.util.CsvSanitizer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -213,7 +214,7 @@ public class SalarySlipService {
         if (value == null) {
             return "";
         }
-        String cleaned = value.replace("\"", "\"\"");
+        String cleaned = CsvSanitizer.neutralizeFormula(value).replace("\"", "\"\"");
         return cleaned.contains(",") ? "\"" + cleaned + "\"" : cleaned;
     }
 

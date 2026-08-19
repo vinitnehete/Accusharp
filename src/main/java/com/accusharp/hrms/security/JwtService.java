@@ -31,6 +31,15 @@ public class JwtService {
     private static final String CLAIM_ROLE = "role";
     private static final String AUDIENCE = "accusharp-hrms-api";
 
+    // Must match application.properties's jwt.secret fallback exactly. That
+    // fallback is committed source, so it provides zero security - anyone who
+    // can read this repository can sign a token for any user/role/company. A
+    // live test forging a PLATFORM_OWNER token with this exact value against
+    // a running instance that never set JWT_SECRET confirmed the bypass
+    // works, hence refusing to start rather than only logging a warning.
+    private static final String INSECURE_DEFAULT_SECRET =
+            "dev-only-insecure-default-secret-change-me-0123456789abcdef";
+
     private final SecretKey signingKey;
     private final String issuer;
     private final long accessTokenExpiryMinutes;
@@ -38,6 +47,15 @@ public class JwtService {
     public JwtService(@Value("${jwt.secret}") String secret,
                       @Value("${jwt.issuer:accusharp-hrms}") String issuer,
                       @Value("${jwt.access-token-expiry-minutes:15}") long accessTokenExpiryMinutes) {
+        if (INSECURE_DEFAULT_SECRET.equals(secret)) {
+            throw new IllegalStateException(
+                    "jwt.secret is still the placeholder value committed in application.properties. "
+                            + "Set the JWT_SECRET environment variable to a real, random value (at "
+                            + "least 32 bytes) before running this application anywhere its network "
+                            + "is reachable outside your own machine. Until that's set, anyone who has "
+                            + "read this source file can forge a valid access token for any user, any "
+                            + "role, any company - refusing to start rather than running insecurely.");
+        }
         this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.issuer = issuer;
         this.accessTokenExpiryMinutes = accessTokenExpiryMinutes;

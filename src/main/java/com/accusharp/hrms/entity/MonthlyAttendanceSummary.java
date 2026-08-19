@@ -16,7 +16,8 @@ import java.math.BigDecimal;
 @Entity
 @Table(name = "emp_monthly_attendance_summary",
         uniqueConstraints = @UniqueConstraint(name = "uk_monthly_summary",
-                columnNames = {"user_id", "`month`"}))
+                columnNames = {"user_id", "`month`"}),
+        indexes = @Index(name = "idx_monthly_summary_month", columnList = "`month`"))
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

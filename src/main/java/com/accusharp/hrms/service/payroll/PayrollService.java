@@ -121,9 +121,17 @@ public class PayrollService {
     /** Runs payroll for every active employee, skipping periods already done. */
     @Transactional
     public List<Payroll> generateForAll(int month, int year, String generatedBy) {
-        return employeeService.getActiveEntities().stream()
-                .filter(employee -> payrollRepository.findByEmployeeIdAndMonthAndYearAndStatus(
-                        employee.getUserId(), month, year, PayrollStatus.GENERATED).isEmpty())
+        List<Employee> employees = employeeService.getActiveEntities();
+
+        // One IN-clause query for "who's already generated this period" instead
+        // of one findBy... per employee.
+        List<String> employeeIds = employees.stream().map(Employee::getUserId).toList();
+        Set<String> alreadyGenerated = payrollRepository
+                .findAllByEmployeeIdInAndMonthAndYearAndStatus(employeeIds, month, year, PayrollStatus.GENERATED)
+                .stream().map(Payroll::getEmployeeId).collect(Collectors.toSet());
+
+        return employees.stream()
+                .filter(employee -> !alreadyGenerated.contains(employee.getUserId()))
                 .map(employee -> {
                     PayrollRequest request = new PayrollRequest();
                     request.setEmployeeId(employee.getUserId());
@@ -290,7 +298,7 @@ public class PayrollService {
         // fresh recompute, which would discard their corrections. Refuses
         // outright if the period was never generated.
         MonthlyAttendanceSummary attendance =
-                attendanceService.getGeneratedSummary(employee.getUserId(), period);
+                attendanceService.getGeneratedSummary(employee, period);
 
         Payroll payroll = new Payroll();
         payroll.setEmployeeId(employee.getUserId());
@@ -413,7 +421,7 @@ public class PayrollService {
 
         // Freeze the attendance this payroll was computed from, so the slip
         // stays reproducible. Correcting it later means unlock, fix, regenerate.
-        attendanceService.lockMonth(employee.getUserId(), period);
+        attendanceService.lockMonth(employee, period);
 
         return saved;
     }

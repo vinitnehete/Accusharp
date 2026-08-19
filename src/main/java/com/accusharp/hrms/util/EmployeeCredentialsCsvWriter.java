@@ -38,8 +38,11 @@ public final class EmployeeCredentialsCsvWriter {
         try (var writer = new OutputStreamWriter(out, StandardCharsets.UTF_8);
              CSVPrinter printer = new CSVPrinter(writer, FORMAT)) {
             for (EmployeeCreationResponse response : created) {
-                printer.printRecord(response.employee().userId(), response.employee().employeeCode(),
-                        response.employee().employeeName(), response.temporaryPassword());
+                printer.printRecord(
+                        CsvSanitizer.neutralizeFormula(response.employee().userId()),
+                        CsvSanitizer.neutralizeFormula(response.employee().employeeCode()),
+                        CsvSanitizer.neutralizeFormula(response.employee().employeeName()),
+                        response.temporaryPassword());
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);

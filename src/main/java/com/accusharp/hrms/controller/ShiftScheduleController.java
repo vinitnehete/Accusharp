@@ -98,13 +98,7 @@ public class ShiftScheduleController {
                 errors.add(new BulkImportResult.RowError(row.rowNumber(), null, row.error()));
                 continue;
             }
-            ShiftAssignmentRequest entry = row.value();
-            entry.setAssignedBy(principal.getUsername());
-            try {
-                succeeded.add(shiftSchedulingService.assign(entry));
-            } catch (RuntimeException e) {
-                errors.add(new BulkImportResult.RowError(row.rowNumber(), entry.getUserId(), e.getMessage()));
-            }
+            applyOne(row.value(), row.rowNumber(), principal.getUsername(), succeeded, errors);
         }
         return BulkImportResult.of(rows.size(), succeeded, errors);
     }
@@ -116,14 +110,20 @@ public class ShiftScheduleController {
         int rowNumber = 0;
         for (ShiftAssignmentRequest entry : assignments) {
             rowNumber++;
-            entry.setAssignedBy(assignedBy);
-            try {
-                succeeded.add(shiftSchedulingService.assign(entry));
-            } catch (RuntimeException e) {
-                errors.add(new BulkImportResult.RowError(rowNumber, entry.getUserId(), e.getMessage()));
-            }
+            applyOne(entry, rowNumber, assignedBy, succeeded, errors);
         }
         return BulkImportResult.of(assignments.size(), succeeded, errors);
+    }
+
+    /** Shared by {@link #assignBulkCsv} and {@link #applyEach} - applies one entry, routing its outcome to succeeded/errors. */
+    private void applyOne(ShiftAssignmentRequest entry, int rowNumber, String assignedBy,
+                           List<ShiftScheduleResponse> succeeded, List<BulkImportResult.RowError> errors) {
+        entry.setAssignedBy(assignedBy);
+        try {
+            succeeded.add(shiftSchedulingService.assign(entry));
+        } catch (RuntimeException e) {
+            errors.add(new BulkImportResult.RowError(rowNumber, entry.getUserId(), e.getMessage()));
+        }
     }
 
     @PreAuthorize("@authz.can('SHIFT_SCHEDULE_MANAGE')")

@@ -37,6 +37,7 @@ public class EmployeeRequest {
     private String employeeCode;
 
     @NotBlank
+    @Size(max = 255)
     private String employeeName;
 
     private Long companyId;

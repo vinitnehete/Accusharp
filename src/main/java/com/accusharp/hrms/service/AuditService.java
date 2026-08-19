@@ -6,6 +6,7 @@ import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.repository.AuditLogRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
+import com.accusharp.hrms.util.CsvSanitizer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -132,7 +133,7 @@ public class AuditService {
         if (value == null) {
             return "";
         }
-        String cleaned = value.replace("\"", "\"\"");
+        String cleaned = CsvSanitizer.neutralizeFormula(value).replace("\"", "\"\"");
         return cleaned.contains(",") ? "\"" + cleaned + "\"" : cleaned;
     }
 }

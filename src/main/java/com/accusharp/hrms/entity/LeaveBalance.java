@@ -16,7 +16,8 @@ import java.math.BigDecimal;
 @Entity
 @Table(name = "leave_balance",
         uniqueConstraints = @UniqueConstraint(name = "uk_leave_balance",
-                columnNames = {"user_id", "leave_year", "leave_type"}))
+                columnNames = {"user_id", "leave_year", "leave_type"}),
+        indexes = @Index(name = "idx_leave_balance_year", columnList = "leave_year"))
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
