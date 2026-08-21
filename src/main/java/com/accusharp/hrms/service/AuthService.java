@@ -6,11 +6,13 @@ import com.accusharp.hrms.entity.PlatformUser;
 import com.accusharp.hrms.entity.RefreshToken;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PrincipalType;
+import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.PlatformUserRepository;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
 import com.accusharp.hrms.security.JwtService;
+import com.accusharp.hrms.security.LoginRateLimiter;
 import com.accusharp.hrms.security.RefreshTokenService;
 import com.accusharp.hrms.security.UserPrincipal;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +46,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final PasswordEncoder passwordEncoder;
     private final AuditService auditService;
+    private final LoginRateLimiter loginRateLimiter;
 
     @Value("${security.max-failed-login-attempts:5}")
     private int maxFailedAttempts;
@@ -58,7 +61,29 @@ public class AuthService {
      * silently defeating lockout. Each {@code save()} below commits on its
      * own via Spring Data's per-method transaction instead.
      */
-    public TokenResponse login(String username, String rawPassword) {
+    /**
+     * IP-throttled on top of the dispatch below: {@code assertNotThrottled}
+     * rejects outright if this address has already failed too many times
+     * recently, and every failure path inside {@code dispatchLogin} -
+     * unknown username, wrong password, locked, disabled - uniformly throws
+     * {@link AuthenticationFailedException}, so counting failures here in one
+     * place catches all of them without needing a rate-limiter call at each
+     * individual throw site. See {@link LoginRateLimiter}'s Javadoc for why
+     * this exists alongside, not instead of, the per-account lockout below.
+     */
+    public TokenResponse login(String username, String rawPassword, String clientAddress) {
+        loginRateLimiter.assertNotThrottled(clientAddress);
+        try {
+            TokenResponse response = dispatchLogin(username, rawPassword);
+            loginRateLimiter.recordSuccess(clientAddress);
+            return response;
+        } catch (AuthenticationFailedException failure) {
+            loginRateLimiter.recordFailure(clientAddress);
+            throw failure;
+        }
+    }
+
+    private TokenResponse dispatchLogin(String username, String rawPassword) {
         var employee = employeeRepository.findByUserId(username);
         if (employee.isPresent()) {
             return loginAsEmployee(employee.get(), rawPassword);
@@ -76,6 +101,13 @@ public class AuthService {
 
     private TokenResponse loginAsEmployee(Employee employee, String rawPassword) {
         if (!employee.isAccountEnabled()) {
+            throw new AuthenticationFailedException("Account is disabled");
+        }
+        // Defense in depth alongside accountEnabled: EmployeeService#deactivate sets
+        // both together, but a plain update() can also set recordStatus directly
+        // (e.g. bulk-import, a future admin path) without going through deactivate().
+        // A soft-deleted employee must never be able to authenticate either way.
+        if (employee.getRecordStatus() != RecordStatus.ACTIVE) {
             throw new AuthenticationFailedException("Account is disabled");
         }
         if (employee.isAccountLocked()) {
@@ -96,7 +128,7 @@ public class AuthService {
         Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
         auditService.recordWithActor(employee.getUserId(), PrincipalType.EMPLOYEE, companyId,
                 "LOGIN", "Account", employee.getUserId(), AuditOutcome.SUCCESS, null);
-        return issueTokens(principal);
+        return issueTokens(principal, employee.isMustChangePassword());
     }
 
     private TokenResponse loginAsPlatformUser(PlatformUser user, String rawPassword) {
@@ -120,7 +152,8 @@ public class AuthService {
         log.info("auth.login.success username={} type=PLATFORM", user.getUsername());
         auditService.recordWithActor(user.getUsername(), PrincipalType.PLATFORM, null,
                 "LOGIN", "Account", user.getUsername(), AuditOutcome.SUCCESS, null);
-        return issueTokens(principal);
+        // PlatformUser has no temporary-password/forced-change concept.
+        return issueTokens(principal, false);
     }
 
     private void registerFailedAttempt(Employee employee) {
@@ -162,20 +195,26 @@ public class AuthService {
     public TokenResponse refresh(String rawRefreshToken) {
         RefreshToken consumed = refreshTokenService.consume(rawRefreshToken);
 
-        UserPrincipal principal = switch (consumed.getPrincipalType()) {
-            case EMPLOYEE -> employeeRepository.findByUserId(consumed.getPrincipalId())
-                    .filter(Employee::isAccountEnabled)
-                    .filter(e -> !e.isAccountLocked())
-                    .map(UserPrincipal::fromEmployee)
-                    .orElseThrow(() -> new AuthenticationFailedException("Account is no longer available"));
-            case PLATFORM -> platformUserRepository.findByUsername(consumed.getPrincipalId())
+        boolean mustChangePassword = false;
+        UserPrincipal principal;
+        switch (consumed.getPrincipalType()) {
+            case EMPLOYEE -> {
+                Employee employee = employeeRepository.findByUserId(consumed.getPrincipalId())
+                        .filter(Employee::isAccountEnabled)
+                        .filter(e -> !e.isAccountLocked())
+                        .orElseThrow(() -> new AuthenticationFailedException("Account is no longer available"));
+                principal = UserPrincipal.fromEmployee(employee);
+                mustChangePassword = employee.isMustChangePassword();
+            }
+            case PLATFORM -> principal = platformUserRepository.findByUsername(consumed.getPrincipalId())
                     .filter(PlatformUser::isEnabled)
                     .filter(u -> !u.isAccountLocked())
                     .map(UserPrincipal::fromPlatformUser)
                     .orElseThrow(() -> new AuthenticationFailedException("Account is no longer available"));
-        };
+            default -> throw new AuthenticationFailedException("Account is no longer available");
+        }
 
-        return issueTokens(principal);
+        return issueTokens(principal, mustChangePassword);
     }
 
     /**
@@ -204,6 +243,7 @@ public class AuthService {
                 }
                 employee.setPasswordHash(passwordEncoder.encode(newPassword));
                 employee.setPasswordChangedAt(Instant.now());
+                employee.setMustChangePassword(false);
                 employeeRepository.save(employee);
                 refreshTokenRepository.revokeAllForPrincipal(PrincipalType.EMPLOYEE, employee.getUserId());
             }
@@ -223,10 +263,10 @@ public class AuthService {
         auditService.record("PASSWORD_CHANGE", "Account", principal.getUsername(), AuditOutcome.SUCCESS, null);
     }
 
-    private TokenResponse issueTokens(UserPrincipal principal) {
+    private TokenResponse issueTokens(UserPrincipal principal, boolean mustChangePassword) {
         String accessToken = jwtService.generateAccessToken(principal);
         String refreshToken = refreshTokenService.issue(principal.getType(), principal.getUsername());
         return new TokenResponse(accessToken, refreshToken, "Bearer", jwtService.getAccessTokenExpirySeconds(),
-                principal.getType(), principal.getUsername(), principal.getRole());
+                principal.getType(), principal.getUsername(), principal.getRole(), mustChangePassword);
     }
 }

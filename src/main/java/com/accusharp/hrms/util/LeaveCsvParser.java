@@ -28,7 +28,7 @@ public final class LeaveCsvParser {
     }
 
     public static List<ParsedCsvRow<LeaveHrDirectRequest>> parse(MultipartFile file) {
-        return CsvRowParser.parse(file, LeaveCsvParser::toRequest);
+        return CsvRowParser.parse(file, "leaveType", LeaveCsvParser::toRequest);
     }
 
     private static LeaveHrDirectRequest toRequest(CSVRecord record) {

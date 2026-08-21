@@ -10,6 +10,7 @@ import com.accusharp.hrms.repository.ShiftRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -33,8 +34,16 @@ import java.time.LocalTime;
 @Slf4j
 public class DataSeeder {
 
-    /** Demo-only credential for every seeded account. Never used past local/demo setup. */
-    private static final String SEED_PASSWORD = "Accusharp@123";
+    // Same reasoning and same pattern as JwtService's INSECURE_DEFAULT_SECRET
+    // guard: this value is committed and public, so on an empty database this
+    // seeder would otherwise silently create a PLATFORM_OWNER account (full
+    // company create/delete + audit-purge rights) with a password anyone who
+    // has read this source file already knows. Refusing to start is the same
+    // choice made there, for the same reason.
+    private static final String INSECURE_DEFAULT_SEED_PASSWORD = "Accusharp@123";
+
+    @Value("${hrms.seed.platform-owner-password}")
+    private String seedPassword;
 
     private final CategoryRepository categoryRepository;
     private final ShiftRepository shiftRepository;
@@ -45,6 +54,17 @@ public class DataSeeder {
     @Bean
     ApplicationRunner seedReferenceData() {
         return args -> {
+            if (INSECURE_DEFAULT_SEED_PASSWORD.equals(seedPassword)
+                    && !platformUserRepository.existsByUsername("platform_owner")) {
+                throw new IllegalStateException(
+                        "hrms.seed.enabled is true and hrms.seed.platform-owner-password is still the "
+                                + "placeholder value committed in source. On an empty database this would "
+                                + "create a PLATFORM_OWNER account (full company create/delete and audit-purge "
+                                + "rights) with a password anyone who has read this repository already knows. "
+                                + "Set HRMS_SEED_PLATFORM_OWNER_PASSWORD to a real, random value, or set "
+                                + "hrms.seed.enabled=false if this database already has its own platform owner "
+                                + "or doesn't need one seeded.");
+            }
             salaryRuleService.getActiveRule();
             seedShifts();
             seedCategories();
@@ -102,7 +122,7 @@ public class DataSeeder {
         }
         platformUserRepository.save(PlatformUser.builder()
                 .username("platform_owner")
-                .passwordHash(passwordEncoder.encode(SEED_PASSWORD))
+                .passwordHash(passwordEncoder.encode(seedPassword))
                 .email("owner@accusharp.example")
                 .role(PlatformRole.PLATFORM_OWNER)
                 .enabled(true)

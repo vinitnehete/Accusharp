@@ -209,4 +209,15 @@ public class Payroll {
 
     @Column(name = "generated_by", length = 50)
     private String generatedBy;
+
+    /**
+     * Optimistic lock. Two concurrent {@code regenerate()} calls both reading
+     * the same GENERATED row and both marking it SUPERSEDED - the second
+     * writer here gets a clean version-conflict failure instead of silently
+     * clobbering the first writer's status change before either has
+     * attempted the new revision's insert (which the {@code
+     * uk_payroll_period_revision} unique constraint guards separately).
+     */
+    @Version
+    private Long version;
 }

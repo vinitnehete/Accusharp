@@ -34,6 +34,7 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -82,14 +83,16 @@ public class EmployeeService {
         if (employeeRepository.existsByUserId(request.getUserId())) {
             throw new ConflictException("Employee already exists with userId " + request.getUserId());
         }
-        if (employeeRepository.existsByEmployeeCode(request.getEmployeeCode())) {
-            throw new ConflictException("Employee already exists with code " + request.getEmployeeCode());
+        if (employeeCodeInUse(request.getCompanyId(), request.getEmployeeCode())) {
+            throw new ConflictException(
+                    "Employee already exists in this company with code " + request.getEmployeeCode());
         }
 
         String temporaryPassword = TemporaryPasswordGenerator.generate();
         Employee employee = new Employee();
         apply(employee, request);
         employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
+        employee.setMustChangePassword(true);
         recalculate(employee);
         Employee saved = employeeRepository.save(employee);
         EmployeeResponse response = employeeMapper.toResponse(saved);
@@ -115,6 +118,7 @@ public class EmployeeService {
         Employee employee = getEntityById(id);
         String temporaryPassword = TemporaryPasswordGenerator.generate();
         employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
+        employee.setMustChangePassword(true);
         employee.setPasswordChangedAt(Instant.now());
         employee.setAccountLocked(false);
         employee.setFailedLoginAttempts(0);
@@ -133,10 +137,11 @@ public class EmployeeService {
                 .ifPresent(other -> {
                     throw new ConflictException("Another employee already uses userId " + request.getUserId());
                 });
-        employeeRepository.findByEmployeeCode(request.getEmployeeCode())
+        findByEmployeeCodeInCompany(request.getCompanyId(), request.getEmployeeCode())
                 .filter(other -> !other.getId().equals(id))
                 .ifPresent(other -> {
-                    throw new ConflictException("Another employee already uses code " + request.getEmployeeCode());
+                    throw new ConflictException(
+                            "Another employee in this company already uses code " + request.getEmployeeCode());
                 });
 
         apply(employee, request);
@@ -148,6 +153,19 @@ public class EmployeeService {
         // Covers status changing to PERMANENT or a re-activation - a no-op otherwise.
         defaultRosterService.ensureForEmployee(saved);
         return response;
+    }
+
+    /** employeeCode is unique per company (or per shared-null-company scope), not globally. */
+    private boolean employeeCodeInUse(Long companyId, String employeeCode) {
+        return companyId == null
+                ? employeeRepository.existsByEmployeeCodeAndCompanyIsNull(employeeCode)
+                : employeeRepository.existsByEmployeeCodeAndCompanyId(employeeCode, companyId);
+    }
+
+    private Optional<Employee> findByEmployeeCodeInCompany(Long companyId, String employeeCode) {
+        return companyId == null
+                ? employeeRepository.findByEmployeeCodeAndCompanyIsNull(employeeCode)
+                : employeeRepository.findByEmployeeCodeAndCompanyId(employeeCode, companyId);
     }
 
     /**
@@ -390,11 +408,23 @@ public class EmployeeService {
         return employeeMapper.toResponse(employeeRepository.save(employee));
     }
 
-    /** Deactivates rather than deletes - payroll history must keep resolving. */
+    /**
+     * Deactivates rather than deletes - payroll history must keep resolving.
+     *
+     * <p>Also disables the login account and stamps {@code relievingDate}
+     * (if not already set) - a deactivated employee must not still be able
+     * to authenticate, and payroll needs a last-working-day to bound
+     * proration for the month they leave in (see {@code
+     * PayrollService#employedDaysInPeriod}).
+     */
     @Transactional
     public EmployeeResponse deactivate(Long id) {
         Employee employee = getEntityById(id);
         employee.setRecordStatus(RecordStatus.INACTIVE);
+        employee.setAccountEnabled(false);
+        if (employee.getRelievingDate() == null) {
+            employee.setRelievingDate(java.time.LocalDate.now());
+        }
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
         auditService.record("EMPLOYEE_DEACTIVATE", "Employee", response.userId(), AuditOutcome.SUCCESS, null);
         return response;

@@ -7,6 +7,7 @@ import com.accusharp.hrms.dto.TokenResponse;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.AuthService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -21,8 +22,22 @@ public class AuthController {
     private final AuthService authService;
 
     @PostMapping("/login")
-    public TokenResponse login(@Valid @RequestBody LoginRequest request) {
-        return authService.login(request.getUsername(), request.getPassword());
+    public TokenResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
+        return authService.login(request.getUsername(), request.getPassword(), clientAddress(httpRequest));
+    }
+
+    /**
+     * The proxy/load-balancer-forwarded address when present (trusted here
+     * since this app's own deployment sits behind its own reverse proxy, not
+     * arbitrary internet clients who could forge the header directly against
+     * this service), falling back to the direct socket address otherwise.
+     */
+    private String clientAddress(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
     }
 
     @PostMapping("/refresh")

@@ -10,6 +10,7 @@ public record TokenResponse(
         long expiresInSeconds,
         PrincipalType principalType,
         String username,
-        String role
+        String role,
+        boolean mustChangePassword
 ) {
 }

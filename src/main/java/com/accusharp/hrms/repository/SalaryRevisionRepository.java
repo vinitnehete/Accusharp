@@ -8,4 +8,7 @@ import java.util.List;
 public interface SalaryRevisionRepository extends JpaRepository<SalaryRevision, Long> {
 
     List<SalaryRevision> findByEmployeeIdOrderByEffectiveDateDescCreatedAtDesc(String employeeId);
+
+    /** Chronological order - what payroll walks to reconstruct which gross salary applied on which day. */
+    List<SalaryRevision> findByEmployeeIdOrderByEffectiveDateAsc(String employeeId);
 }

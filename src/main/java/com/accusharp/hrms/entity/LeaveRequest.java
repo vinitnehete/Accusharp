@@ -75,4 +75,8 @@ public class LeaveRequest {
 
     @Column(name = "decided_at")
     private Instant decidedAt;
+
+    /** Optimistic lock - guards against two concurrent decisions (approve/reject/cancel) on the same request. */
+    @Version
+    private Long version;
 }

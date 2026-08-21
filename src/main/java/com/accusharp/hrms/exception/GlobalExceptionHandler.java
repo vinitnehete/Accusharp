@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -34,6 +35,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConflictException.class)
     public ResponseEntity<ApiError> handleConflict(ConflictException ex, HttpServletRequest request) {
         return build(HttpStatus.CONFLICT, ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(TooManyRequestsException.class)
+    public ResponseEntity<ApiError> handleTooManyRequests(TooManyRequestsException ex, HttpServletRequest request) {
+        return build(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage(), request);
     }
 
     @ExceptionHandler(AuthenticationFailedException.class)
@@ -73,6 +79,21 @@ public class GlobalExceptionHandler {
                                                        HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST,
                 "Parameter '" + ex.getName() + "' has invalid value '" + ex.getValue() + "'", request);
+    }
+
+    /**
+     * A concurrent writer got there first - the row this request read (and
+     * was about to update) has since moved on to a newer version. Distinct
+     * from {@link DataIntegrityViolationException} below: this is two valid
+     * requests racing each other, not a constraint violation, but the client
+     * response is the same shape - a 409 asking them to retry with fresh data.
+     */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ResponseEntity<ApiError> handleOptimisticLock(OptimisticLockingFailureException ex,
+                                                          HttpServletRequest request) {
+        log.warn("Optimistic lock conflict on {} {}", request.getMethod(), request.getRequestURI());
+        return build(HttpStatus.CONFLICT,
+                "This record was changed by someone else just now - please refresh and try again", request);
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

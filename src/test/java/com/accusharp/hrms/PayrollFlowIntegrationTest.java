@@ -9,8 +9,11 @@ import com.accusharp.hrms.dto.SalarySlipResponse;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.Payroll;
+import com.accusharp.hrms.entity.SalaryRevision;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.entity.ShiftSchedule;
+import com.accusharp.hrms.enums.SalaryRevisionReason;
+import com.accusharp.hrms.repository.SalaryRevisionRepository;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveDuration;
 import com.accusharp.hrms.enums.LeaveType;
@@ -41,6 +44,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.YearMonth;
@@ -70,6 +74,7 @@ class PayrollFlowIntegrationTest {
     @Autowired private LeaveRequestRepository leaveRequestRepository;
     @Autowired private LeaveBalanceRepository leaveBalanceRepository;
     @Autowired private PayrollRepository payrollRepository;
+    @Autowired private SalaryRevisionRepository salaryRevisionRepository;
     @Autowired private MonthlyAttendanceSummaryRepository monthlyAttendanceSummaryRepository;
     @Autowired private SalaryRuleService salaryRuleService;
     @Autowired private SalaryCalculationService salaryCalculationService;
@@ -84,6 +89,7 @@ class PayrollFlowIntegrationTest {
     void setUp() {
         // The context is shared across test methods, so every table this flow
         // touches is reset - otherwise leave from one test leaks into the next.
+        salaryRevisionRepository.deleteAll();
         payrollRepository.deleteAll();
         dailyAttendanceRepository.deleteAll();
         monthlyAttendanceSummaryRepository.deleteAll();
@@ -247,6 +253,145 @@ class PayrollFlowIntegrationTest {
                 .hasMessageContaining("Attendance has not been generated");
     }
 
+    @Test
+    @DisplayName("a mid-month joiner is paid only for the days they were actually employed, "
+            + "not the full calendar month")
+    void midMonthJoinerIsProratedToEmployedDays() {
+        String midMonthJoiner = "EMP101";
+        LocalDate joiningDate = PERIOD.atDay(15);
+
+        Employee employee = Employee.builder()
+                .userId(midMonthJoiner).employeeCode("EMP-101").employeeName("Mid Month Joiner")
+                .status(EmployeeStatus.PERMANENT).recordStatus(RecordStatus.ACTIVE).role(Role.EMPLOYEE)
+                .joiningDate(joiningDate)
+                .grossSalary(new BigDecimal("31000"))
+                .pfBasic(new BigDecimal("9000")).medicalAllowance(new BigDecimal("1250"))
+                .otherAllowance(BigDecimal.ZERO).overtimeEligible(false)
+                .build();
+        salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());
+        employeeRepository.save(employee);
+
+        Shift morning = shiftRepository.findAll().stream()
+                .filter(s -> s.getShiftCode().equals("MORNING")).findFirst().orElseThrow();
+
+        // Rostered and fully attended only from the joining date (15th) to
+        // month end (31st) - 17 of the month's 31 calendar days. Nothing
+        // exists for the 1st-14th, same as a real mid-month hire.
+        List<ShiftSchedule> roster = new ArrayList<>();
+        List<DeviceLog> punches = new ArrayList<>();
+        for (int day = 15; day <= 31; day++) {
+            roster.add(ShiftSchedule.builder()
+                    .userId(midMonthJoiner).shiftDate(PERIOD.atDay(day)).shift(morning).weekOff(false).build());
+            punches.add(punch(PERIOD.atDay(day).atTime(6, 0), midMonthJoiner));
+            punches.add(punch(PERIOD.atDay(day).atTime(15, 0), midMonthJoiner));
+        }
+        shiftScheduleRepository.saveAll(roster);
+        deviceLogRepository.saveAll(punches);
+
+        AttendanceGenerationRequest request = new AttendanceGenerationRequest();
+        request.setMonth(PERIOD);
+        request.setUserIds(List.of(midMonthJoiner));
+        request.setGeneratedBy(HR);
+        attendanceService.generate(request);
+
+        PayrollRequest payrollRequest = new PayrollRequest();
+        payrollRequest.setEmployeeId(midMonthJoiner);
+        payrollRequest.setMonth(PERIOD.getMonthValue());
+        payrollRequest.setYear(PERIOD.getYear());
+        payrollRequest.setGeneratedBy(HR);
+
+        Payroll payroll = payrollService.generate(payrollRequest);
+
+        assertThat(payroll.getWorkingDays()).isEqualTo(17);
+        assertThat(payroll.getPresentDays()).isEqualByComparingTo("17");
+        assertThat(payroll.getLopDays()).isEqualByComparingTo("0");
+        // The regression this test guards against: payableDays must be capped
+        // at the 17 days this employee was actually on the books, not the
+        // full 31-day month.
+        assertThat(payroll.getPayableDays()).isEqualByComparingTo("17");
+        assertThat(payroll.getEarnBasicDA()).isEqualByComparingTo(
+                employee.getBasicDA().multiply(new BigDecimal("17"))
+                        .divide(new BigDecimal("31"), 2, RoundingMode.HALF_UP));
+    }
+
+    @Test
+    @DisplayName("a future-dated salary revision does not apply early - this period is still paid at the old rate")
+    void futureDatedRevisionDoesNotApplyEarly() {
+        generateAttendance();
+        Employee employee = employeeRepository.findByUserId(EMPLOYEE).orElseThrow();
+        BigDecimal oldGross = employee.getGrossSalary();
+        BigDecimal oldBasicDA = employee.getBasicDA();
+
+        // Revised today for next month - the live field already moved, exactly
+        // like EmployeeService#reviseSalary does, but it must not be earned
+        // this period since effectiveDate is after this period ends.
+        BigDecimal newGross = oldGross.multiply(new BigDecimal("1.2"));
+        employee.setGrossSalary(newGross);
+        salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());
+        employeeRepository.save(employee);
+        salaryRevisionRepository.save(SalaryRevision.builder()
+                .employeeId(EMPLOYEE).previousGrossSalary(oldGross).newGrossSalary(newGross)
+                .hikePercent(new BigDecimal("20.00")).effectiveDate(PERIOD.plusMonths(1).atDay(1))
+                .reason(SalaryRevisionReason.ANNUAL_INCREMENT).createdAt(java.time.Instant.now())
+                .build());
+
+        Payroll payroll = payrollService.generate(payrollRequest());
+
+        assertThat(payroll.getEarnBasicDA())
+                .isEqualByComparingTo(salaryCalculationService.prorate(
+                        oldBasicDA, new BigDecimal(PERIOD.lengthOfMonth()), payroll.getPayableDays()));
+    }
+
+    @Test
+    @DisplayName("a salary revision effective mid-period is split - earned at the old rate before "
+            + "its effective date and the new rate from it on, not one or the other for the whole period")
+    void midPeriodRevisionSplitsEarnings() {
+        generateAttendance();
+        Employee employee = employeeRepository.findByUserId(EMPLOYEE).orElseThrow();
+        BigDecimal oldGross = employee.getGrossSalary();
+        BigDecimal oldBasicDA = employee.getBasicDA();
+
+        BigDecimal newGross = oldGross.multiply(new BigDecimal("1.2"));
+        employee.setGrossSalary(newGross);
+        salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());
+        employeeRepository.save(employee);
+        BigDecimal newBasicDA = employee.getBasicDA();
+        salaryRevisionRepository.save(SalaryRevision.builder()
+                .employeeId(EMPLOYEE).previousGrossSalary(oldGross).newGrossSalary(newGross)
+                .hikePercent(new BigDecimal("20.00")).effectiveDate(PERIOD.atDay(15))
+                .reason(SalaryRevisionReason.PROMOTION).createdAt(java.time.Instant.now())
+                .build());
+
+        Payroll payroll = payrollService.generate(payrollRequest());
+
+        BigDecimal totalDays = new BigDecimal(PERIOD.lengthOfMonth());
+        BigDecimal fullOldRate = salaryCalculationService.prorate(oldBasicDA, totalDays, payroll.getPayableDays());
+        BigDecimal fullNewRate = salaryCalculationService.prorate(newBasicDA, totalDays, payroll.getPayableDays());
+
+        // A genuine blend: neither the old-only nor the new-only figure, and
+        // strictly between them since some days fall on each side of the 15th.
+        assertThat(payroll.getEarnBasicDA()).isNotEqualByComparingTo(fullOldRate);
+        assertThat(payroll.getEarnBasicDA()).isNotEqualByComparingTo(fullNewRate);
+        assertThat(payroll.getEarnBasicDA()).isGreaterThan(fullOldRate).isLessThan(fullNewRate);
+    }
+
+    @Test
+    @DisplayName("an employee relieved mid-month is paid only up to their last working day")
+    void midMonthLeaverIsProratedToEmployedDays() {
+        generateAttendance();
+        Employee employee = employeeRepository.findByUserId(EMPLOYEE).orElseThrow();
+        // Left on the 23rd - the last day they actually punched in setUp().
+        employee.setRelievingDate(PERIOD.atDay(23));
+        employeeRepository.save(employee);
+
+        Payroll payroll = payrollService.generate(payrollRequest());
+
+        // Employed for 23 of the month's 31 days (1st-23rd); attendance already
+        // shows 0 LOP within that window since every rostered day up to the
+        // 23rd was attended and no leave was requested in this test path.
+        assertThat(payroll.getPayableDays()).isEqualByComparingTo("23");
+    }
+
     // ---- fixtures ----------------------------------------------------------
 
     private void generateAttendance() {
@@ -303,6 +448,10 @@ class PayrollFlowIntegrationTest {
     }
 
     private DeviceLog punch(java.time.LocalDateTime at) {
-        return DeviceLog.builder().deviceLogId(punchId++).deviceId(1L).userId(EMPLOYEE).logDate(at).build();
+        return punch(at, EMPLOYEE);
+    }
+
+    private DeviceLog punch(java.time.LocalDateTime at, String userId) {
+        return DeviceLog.builder().deviceLogId(punchId++).deviceId(1L).userId(userId).logDate(at).build();
     }
 }

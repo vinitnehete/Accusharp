@@ -51,9 +51,10 @@ public class CompanyOnboardingService {
         if (employeeRepository.existsByUserId(request.getAdminUserId())) {
             throw new ConflictException("Employee already exists with userId " + request.getAdminUserId());
         }
-        if (employeeRepository.existsByEmployeeCode(request.getAdminEmployeeCode())) {
-            throw new ConflictException("Employee already exists with code " + request.getAdminEmployeeCode());
-        }
+        // No employeeCode pre-check here: it's unique per company (see Employee's
+        // uk_employee_company_code), and this company doesn't exist yet, so there
+        // is nothing for the admin's code to collide with - a code already used by
+        // another company's employee is expected, not an error.
 
         Company company = companyRepository.save(Company.builder()
                 .companyCode(request.getCompanyCode())
@@ -85,6 +86,7 @@ public class CompanyOnboardingService {
                 .accountEnabled(true)
                 .accountLocked(false)
                 .failedLoginAttempts(0)
+                .mustChangePassword(true)
                 .build();
         salaryCalculationService.applyCalculatedFields(admin, salaryRuleService.getActiveRuleForCompany(company));
         admin = employeeRepository.save(admin);

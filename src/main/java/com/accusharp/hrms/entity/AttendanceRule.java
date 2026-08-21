@@ -23,7 +23,10 @@ import java.math.BigDecimal;
  * AttendanceCalculationService}.
  */
 @Entity
-@Table(name = "attendance_rule")
+// Same "one row per company" database-level guard as SalaryRule - see its
+// Javadoc for why this closes the concurrent-duplicate-insert race that a
+// service-layer check-then-act alone cannot.
+@Table(name = "attendance_rule", uniqueConstraints = @UniqueConstraint(columnNames = "company_id"))
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

@@ -6,6 +6,7 @@ import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.DesignationRepository;
+import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.security.TenantContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,7 @@ public class DesignationService {
 
     private final DesignationRepository designationRepository;
     private final CompanyRepository companyRepository;
+    private final EmployeeRepository employeeRepository;
     private final TenantContext tenantContext;
 
     @Transactional
@@ -71,6 +73,14 @@ public class DesignationService {
     public void delete(Long id) {
         Designation designation = getById(id);
         assertWritable(designation);
+        // Same in-use guard DepartmentService/CategoryService already have -
+        // this one was missing (flagged in the audit's database review), so a
+        // delete here either fell through to a generic FK-violation 409 (if a
+        // constraint happened to exist) or silently orphaned employees'
+        // designation_id (if it didn't).
+        if (!employeeRepository.findByDesignationId(id).isEmpty()) {
+            throw new ConflictException("Designation still has employees assigned");
+        }
         designationRepository.delete(designation);
     }
 

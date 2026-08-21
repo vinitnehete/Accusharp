@@ -20,6 +20,17 @@ import java.util.List;
  * row becomes a {@link ParsedCsvRow#failed} entry instead of aborting the
  * whole file, identical contract for all four.
  *
+ * <p>The header row isn't assumed to be line 1: the downloadable Excel
+ * templates (see {@code employeeTemplate.js}) put a title, instructions and
+ * a legend above the real header row for readability, and Excel's "Save As
+ * CSV" carries those rows straight into the file unchanged. Instead, each
+ * caller passes a column name it knows must appear in its header (one of its
+ * own required columns); {@link #parse} scans for the first row containing
+ * that name and treats everything above it as decoration to skip. The same
+ * pass also strips the trailing {@code " *"} the templates append to
+ * required-column headers, since that marker isn't part of the column name
+ * the row mappers look up.
+ *
  * <p>Also the single place a row-count cap is enforced, independent of the
  * {@code spring.servlet.multipart.max-file-size} byte limit - a file well
  * under that byte limit can still carry an unreasonable number of short
@@ -32,12 +43,8 @@ public final class CsvRowParser {
     /** Past this many data rows, the upload is rejected outright rather than processed. */
     public static final int MAX_ROWS = 5000;
 
-    static final CSVFormat DEFAULT_FORMAT = CSVFormat.DEFAULT.builder()
-            .setHeader()
-            .setSkipHeaderRecord(true)
-            .setIgnoreHeaderCase(true)
+    private static final CSVFormat PROBE_FORMAT = CSVFormat.DEFAULT.builder()
             .setIgnoreSurroundingSpaces(true)
-            .setTrim(true)
             .build();
 
     private CsvRowParser() {
@@ -48,12 +55,32 @@ public final class CsvRowParser {
         T map(CSVRecord record);
     }
 
-    public static <T> List<ParsedCsvRow<T>> parse(MultipartFile file, RowMapper<T> mapper) {
+    private record HeaderLocation(int lineIndex, List<String> names) {
+    }
+
+    /**
+     * @param headerHintColumn a column name (case-insensitive) that must appear in the real
+     *                          header row - typically one of the caller's own required columns.
+     *                          Used to find that row among any decorative rows above it.
+     */
+    public static <T> List<ParsedCsvRow<T>> parse(MultipartFile file, String headerHintColumn, RowMapper<T> mapper) {
+        HeaderLocation header = locateHeader(file, headerHintColumn);
+        CSVFormat format = CSVFormat.DEFAULT.builder()
+                .setHeader(header.names().toArray(new String[0]))
+                .setIgnoreHeaderCase(true)
+                .setIgnoreSurroundingSpaces(true)
+                .setTrim(true)
+                .build();
+
         List<ParsedCsvRow<T>> rows = new ArrayList<>();
         try (var reader = new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8);
-             CSVParser parser = DEFAULT_FORMAT.parse(reader)) {
+             CSVParser parser = format.parse(reader)) {
+            int lineIndex = 0;
             int rowNumber = 0;
             for (CSVRecord record : parser) {
+                if (lineIndex++ <= header.lineIndex()) {
+                    continue;
+                }
                 rowNumber++;
                 if (rowNumber > MAX_ROWS) {
                     throw new BusinessRuleException(
@@ -68,13 +95,48 @@ public final class CsvRowParser {
         } catch (IOException | UncheckedIOException e) {
             throw new BusinessRuleException("Could not read the uploaded CSV file: " + e.getMessage());
         } catch (IllegalArgumentException e) {
-            // Thrown by commons-csv itself for a missing/duplicate header row.
+            // Thrown by commons-csv itself for a duplicate header name.
             throw new BusinessRuleException("Malformed CSV header: " + e.getMessage());
         }
         if (rows.isEmpty()) {
             throw new BusinessRuleException("CSV file has no data rows");
         }
         return rows;
+    }
+
+    private static HeaderLocation locateHeader(MultipartFile file, String headerHintColumn) {
+        try (var reader = new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8);
+             CSVParser probe = PROBE_FORMAT.parse(reader)) {
+            int lineIndex = 0;
+            for (CSVRecord record : probe) {
+                for (String cell : record) {
+                    if (stripHeaderMarker(cell).equalsIgnoreCase(headerHintColumn)) {
+                        List<String> names = new ArrayList<>();
+                        for (String c : record) {
+                            names.add(stripHeaderMarker(c));
+                        }
+                        return new HeaderLocation(lineIndex, names);
+                    }
+                }
+                lineIndex++;
+            }
+        } catch (IOException | UncheckedIOException e) {
+            throw new BusinessRuleException("Could not read the uploaded CSV file: " + e.getMessage());
+        }
+        throw new BusinessRuleException(
+                "Could not find a header row containing '" + headerHintColumn + "' - check the file has the expected column names");
+    }
+
+    /** Strips the trailing " *" the downloadable templates append to required-column headers. */
+    private static String stripHeaderMarker(String value) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim();
+        if (trimmed.endsWith("*")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1).trim();
+        }
+        return trimmed;
     }
 
     /**

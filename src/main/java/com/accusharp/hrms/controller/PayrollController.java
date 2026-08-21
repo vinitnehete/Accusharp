@@ -48,13 +48,38 @@ public class PayrollController {
         return payrollService.regenerate(request);
     }
 
+    /**
+     * Runs payroll for every active employee who doesn't already have this
+     * period generated. Each employee is generated as its own call to {@link
+     * PayrollService#generate} - and therefore its own transaction - so one
+     * employee's failure (a roster gap, missing attendance) is reported as a
+     * row error instead of rolling back everyone else already generated in
+     * this run. Same shape as {@link #bulkGenerate}'s per-row isolation.
+     */
     @PreAuthorize("@authz.can('PAYROLL_PROCESS')")
     @PostMapping("/generate-all")
-    public ResponseEntity<List<Payroll>> generateForAll(@AuthenticationPrincipal UserPrincipal principal,
-                                                        @RequestParam int month,
-                                                        @RequestParam int year) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(payrollService.generateForAll(month, year, principal.getUsername()));
+    public BulkImportResult<Payroll> generateForAll(@AuthenticationPrincipal UserPrincipal principal,
+                                                     @RequestParam int month,
+                                                     @RequestParam int year) {
+        List<String> employeeIds = payrollService.pendingGenerationEmployeeIds(month, year);
+        List<Payroll> succeeded = new ArrayList<>();
+        List<BulkImportResult.RowError> errors = new ArrayList<>();
+
+        int row = 0;
+        for (String employeeId : employeeIds) {
+            row++;
+            PayrollRequest request = new PayrollRequest();
+            request.setEmployeeId(employeeId);
+            request.setMonth(month);
+            request.setYear(year);
+            request.setGeneratedBy(principal.getUsername());
+            try {
+                succeeded.add(payrollService.generate(request));
+            } catch (RuntimeException e) {
+                errors.add(new BulkImportResult.RowError(row, employeeId, e.getMessage()));
+            }
+        }
+        return BulkImportResult.of(employeeIds.size(), succeeded, errors);
     }
 
     /**

@@ -37,11 +37,6 @@ public class SalarySlipService {
     }
 
     @Transactional(readOnly = true)
-    public SalarySlipResponse getSlipById(Long payrollId) {
-        return toSlip(payrollService.getById(payrollId));
-    }
-
-    @Transactional(readOnly = true)
     public List<SalarySlipResponse> getSlipsForPeriod(int month, int year) {
         return payrollService.getPeriodForCaller(month, year).stream().map(this::toSlip).toList();
     }

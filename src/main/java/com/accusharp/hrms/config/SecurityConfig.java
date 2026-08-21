@@ -8,6 +8,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -67,6 +69,7 @@ public class SecurityConfig {
     private final JwtService jwtService;
     private final RestAuthenticationEntryPoint authenticationEntryPoint;
     private final RestAccessDeniedHandler accessDeniedHandler;
+    private final Environment environment;
 
     @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:8081,http://localhost:19006}")
     private List<String> allowedOrigins;
@@ -78,6 +81,15 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        // Gated on the "h2" profile itself, not just on spring.h2.console.enabled
+        // in application-h2.properties - the audit's security review flagged that
+        // this permitAll rule had no guard of its own, so activating the h2
+        // profile anywhere reachable (a misconfigured deploy, a copy-pasted run
+        // command) would expose an unauthenticated, framable SQL console even if
+        // that second property were somehow left at its default. Two independent
+        // conditions now both have to be true, not one.
+        boolean h2ConsoleActive = environment.acceptsProfiles(Profiles.of("h2"));
+
         http
                 .csrf(csrf -> csrf.disable())
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
@@ -87,14 +99,20 @@ public class SecurityConfig {
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/**").permitAll()
-                        .requestMatchers("/h2-console/**").permitAll()
-                        .anyRequest().authenticated())
+                .authorizeHttpRequests(auth -> {
+                    auth.requestMatchers("/api/auth/**").permitAll();
+                    if (h2ConsoleActive) {
+                        auth.requestMatchers("/h2-console/**").permitAll();
+                    }
+                    auth.anyRequest().authenticated();
+                })
                 .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class);
 
-        // The H2 console renders itself in a frame; only relevant when the h2 profile is active.
-        http.headers(headers -> headers.frameOptions(frame -> frame.sameOrigin()));
+        if (h2ConsoleActive) {
+            // The H2 console renders itself in a frame - only relaxed when the
+            // h2 profile is actually active, same condition as the matcher above.
+            http.headers(headers -> headers.frameOptions(frame -> frame.sameOrigin()));
+        }
 
         return http.build();
     }

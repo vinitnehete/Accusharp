@@ -5,6 +5,8 @@ import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.Holiday;
 import com.accusharp.hrms.entity.LeaveRequest;
 import com.accusharp.hrms.entity.Payroll;
+import com.accusharp.hrms.entity.Shift;
+import com.accusharp.hrms.entity.ShiftSchedule;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveDuration;
 import com.accusharp.hrms.enums.LeaveOrigin;
@@ -183,6 +185,33 @@ class TenantIsolationHttpTest {
     }
 
     @Test
+    @DisplayName("two companies can independently use the same employeeCode - it's unique per company, not globally")
+    void employeeCodeIsUniquePerCompanyNotGlobally() {
+        // hrA already exists as employeeCode "EMP-HRA001" (see saveEmployee). Company B
+        // using that exact same code for one of its own employees must succeed.
+        String body = """
+                {
+                  "userId": "EMPB002", "employeeCode": "EMP-HRA001", "employeeName": "Same Code, Other Company",
+                  "status": "PERMANENT", "role": "EMPLOYEE",
+                  "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0
+                }
+                """;
+        Resp created = send("POST", "/api/employees", body, hrBToken);
+        assertThat(created.status()).isEqualTo(201);
+
+        // But a second employee inside the SAME company reusing an existing code is still rejected.
+        String duplicateWithinCompany = """
+                {
+                  "userId": "EMPB003", "employeeCode": "EMP-HRA001", "employeeName": "Duplicate In Same Company",
+                  "status": "PERMANENT", "role": "EMPLOYEE",
+                  "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0
+                }
+                """;
+        Resp rejected = send("POST", "/api/employees", duplicateWithinCompany, hrBToken);
+        assertThat(rejected.status()).isEqualTo(409);
+    }
+
+    @Test
     @DisplayName("an employee create request cannot plant the new hire in another company")
     void employeeCreateIgnoresClientSuppliedCompanyId() {
         String body = """
@@ -316,6 +345,32 @@ class TenantIsolationHttpTest {
         Resp delete = send("DELETE",
                 "/api/shift-schedules/EMPB001?fromDate=2026-01-01&toDate=2026-01-31", null, hrAToken);
         assertThat(delete.status()).isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("Company A's HR cannot swap shifts with Company B's employee - "
+            + "closing the one gap the audit found in ShiftSchedulingService.swap")
+    void shiftScheduleSwapCrossTenantIsRejected() {
+        Shift shift = shiftRepository.save(Shift.builder()
+                .shiftCode("TENANT-SWAP-SHIFT").shiftName("Tenant Swap Shift")
+                .startTime(java.time.LocalTime.of(9, 0)).endTime(java.time.LocalTime.of(17, 0))
+                .workingHours(8).breakMinutes(30).graceMinutes(10).overtimeWindowMinutes(240)
+                .build());
+        LocalDate date = LocalDate.of(2026, 6, 15);
+        shiftScheduleRepository.save(ShiftSchedule.builder()
+                .userId("HRA001").shiftDate(date).shift(shift).weekOff(false).assignedBy("HRA001").build());
+        ShiftSchedule targetSchedule = shiftScheduleRepository.save(ShiftSchedule.builder()
+                .userId("EMPB001").shiftDate(date).shift(shift).weekOff(false).assignedBy("HRB001").build());
+
+        Resp swap = send("POST", "/api/shift-schedules/swap", """
+                {"firstUserId": "HRA001", "secondUserId": "EMPB001", "shiftDate": "2026-06-15",
+                 "assignedBy": "HRA001"}""", hrAToken);
+        assertThat(swap.status()).isEqualTo(404);
+
+        // Untouched: Company B's schedule still points at the original shift.
+        ShiftSchedule stillOriginal = shiftScheduleRepository.findById(targetSchedule.getId()).orElseThrow();
+        assertThat(stillOriginal.getShift().getId()).isEqualTo(shift.getId());
+        assertThat(stillOriginal.getUserId()).isEqualTo("EMPB001");
     }
 
     @Test

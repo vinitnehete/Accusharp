@@ -305,6 +305,13 @@ public class ShiftSchedulingService {
         if (request.getFirstUserId().equals(request.getSecondUserId())) {
             throw new BusinessRuleException("Cannot swap an employee with themselves");
         }
+        // Tenant check first, same as every other mutating method in this service -
+        // requireSchedule() below is a raw, unscoped lookup (ShiftSchedule has no
+        // company column of its own), so without this a caller could swap a shift
+        // with another company's employee entirely.
+        employeeService.getEntityByUserId(request.getFirstUserId());
+        employeeService.getEntityByUserId(request.getSecondUserId());
+
         ShiftSchedule first = requireSchedule(request.getFirstUserId(), request.getShiftDate());
         ShiftSchedule second = requireSchedule(request.getSecondUserId(), request.getShiftDate());
 

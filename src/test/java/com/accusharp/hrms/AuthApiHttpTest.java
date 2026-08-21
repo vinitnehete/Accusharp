@@ -131,11 +131,34 @@ class AuthApiHttpTest {
         Resp replayed = send("POST", "/api/auth/refresh",
                 "{\"refreshToken\": \"" + originalRefreshToken + "\"}", null);
         assertThat(replayed.status()).isEqualTo(400);
+    }
 
-        // The rotated token still works.
+    @Test
+    @DisplayName("replaying an already-rotated refresh token revokes the whole session family, "
+            + "including the token that legitimately replaced it")
+    void refreshTokenReuseRevokesEntireFamily() {
+        Resp login = login(USER_ID, PASSWORD);
+        String originalRefreshToken = login.body().get("refreshToken").asString();
+
+        Resp refreshed = send("POST", "/api/auth/refresh",
+                "{\"refreshToken\": \"" + originalRefreshToken + "\"}", null);
+        String newRefreshToken = refreshed.body().get("refreshToken").asString();
+
+        // Replaying the already-consumed original is exactly the "stolen token
+        // used after the legitimate client already rotated" scenario - it must
+        // not just be rejected itself, it must sign out the legitimately
+        // rotated session too, since there's no way to tell from here which
+        // side is the attacker.
+        Resp replayed = send("POST", "/api/auth/refresh",
+                "{\"refreshToken\": \"" + originalRefreshToken + "\"}", null);
+        assertThat(replayed.status()).isEqualTo(400);
+
         Resp secondRefresh = send("POST", "/api/auth/refresh",
                 "{\"refreshToken\": \"" + newRefreshToken + "\"}", null);
-        assertThat(secondRefresh.status()).isEqualTo(200);
+        assertThat(secondRefresh.status()).isEqualTo(400);
+
+        // The only way back in is a fresh login with the real password.
+        assertThat(login(USER_ID, PASSWORD).status()).isEqualTo(200);
     }
 
     @Test
@@ -171,6 +194,44 @@ class AuthApiHttpTest {
 
         assertThat(login(USER_ID, PASSWORD).status()).isEqualTo(401);
         assertThat(login(USER_ID, "New-Password-9").status()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("a new password without both a letter and a digit is rejected")
+    void newPasswordMustContainALetterAndADigit() {
+        String accessToken = login(USER_ID, PASSWORD).body().get("accessToken").asString();
+
+        Resp allLetters = send("POST", "/api/auth/change-password",
+                "{\"currentPassword\": \"" + PASSWORD + "\", \"newPassword\": \"onlyletters\"}", accessToken);
+        assertThat(allLetters.status()).isEqualTo(400);
+
+        Resp allDigits = send("POST", "/api/auth/change-password",
+                "{\"currentPassword\": \"" + PASSWORD + "\", \"newPassword\": \"12345678\"}", accessToken);
+        assertThat(allDigits.status()).isEqualTo(400);
+
+        // Untouched - the original password still works.
+        assertThat(login(USER_ID, PASSWORD).status()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("mustChangePassword is reported on login and cleared once the employee actually changes it")
+    void mustChangePasswordIsReportedThenCleared() {
+        Employee employee = employeeRepository.findByUserId(USER_ID).orElseThrow();
+        employee.setMustChangePassword(true);
+        employeeRepository.save(employee);
+
+        Resp firstLogin = login(USER_ID, PASSWORD);
+        assertThat(firstLogin.status()).isEqualTo(200);
+        assertThat(firstLogin.body().get("mustChangePassword").asBoolean()).isTrue();
+
+        String accessToken = firstLogin.body().get("accessToken").asString();
+        Resp changed = send("POST", "/api/auth/change-password",
+                "{\"currentPassword\": \"" + PASSWORD + "\", \"newPassword\": \"New-Password-9\"}", accessToken);
+        assertThat(changed.status()).isEqualTo(204);
+
+        Resp secondLogin = login(USER_ID, "New-Password-9");
+        assertThat(secondLogin.status()).isEqualTo(200);
+        assertThat(secondLogin.body().get("mustChangePassword").asBoolean()).isFalse();
     }
 
     /**

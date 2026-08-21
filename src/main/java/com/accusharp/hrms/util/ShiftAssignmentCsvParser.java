@@ -24,7 +24,7 @@ public final class ShiftAssignmentCsvParser {
     }
 
     public static List<ParsedCsvRow<ShiftAssignmentRequest>> parse(MultipartFile file) {
-        return CsvRowParser.parse(file, ShiftAssignmentCsvParser::toRequest);
+        return CsvRowParser.parse(file, "shiftCode", ShiftAssignmentCsvParser::toRequest);
     }
 
     private static ShiftAssignmentRequest toRequest(CSVRecord record) {

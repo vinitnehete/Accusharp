@@ -44,7 +44,7 @@ public final class EmployeeCsvParser {
     }
 
     public static List<ParsedCsvRow<EmployeeRequest>> parse(MultipartFile file) {
-        return CsvRowParser.parse(file, EmployeeCsvParser::toRequest);
+        return CsvRowParser.parse(file, "employeeCode", EmployeeCsvParser::toRequest);
     }
 
     private static EmployeeRequest toRequest(CSVRecord record) {
