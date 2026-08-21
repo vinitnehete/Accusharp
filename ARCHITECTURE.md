@@ -297,8 +297,13 @@ Two payment models:
 | | `DAY_WISE` | `PERMANENT` / `CONTRACT` / `INTERN` |
 |---|---|---|
 | Proration base | fixed payable days (26 by default) | the month's working days |
-| Payable days | present + paid leave, capped at the base | working days minus LOP |
+| Payable days | present days alone, capped at the base | working days minus LOP |
 | LOP | not applicable - attendance *is* the pay | derived as above |
+
+For `DAY_WISE`, approved paid leave earns no share of `earn<component>` -
+`payableDays` is `presentDays` capped at `dayWiseDaysInMonth`, full stop. Leave
+still earns its own overtime credit (below), just not a share of the fixed
+salary structure.
 
 ```
 earn<component>  = component x payableDays / prorationBase
@@ -309,7 +314,9 @@ netSalary        = totalEarnings - totalDeduction
 
 - **PF** is deducted on the *prorated* basic (`earnPf`), not the full one. The
   full-month `pf` figure is reported for information only.
-- **ESIC** applies only up to the configured wage ceiling.
+- **ESIC** applies only while the earned `basicDA` (not the full earned gross)
+  stays at or under the configured wage ceiling; above it, both the ceiling
+  test and the deduction percentage are zero.
 - **Professional tax** follows the two-step slab in `SalaryRule`.
 - **MLWF** (Labour Welfare Fund) is a single flat `SalaryRule.mlwfAmount`,
   deducted from the employee only in the June and December payroll runs
@@ -321,11 +328,18 @@ netSalary        = totalEarnings - totalDeduction
 - **Overtime** is paid only to `overtimeEligible` employees, and the hours it's
   paid on depend on the same two payment models above: `PERMANENT`/`CONTRACT`/
   `INTERN` use the attendance engine's daily-summed value (each day measured
-  against that day's own shift length); `DAY_WISE` has no fixed daily shift to
-  measure against, so its overtime is the month's `totalHours` past the fixed
-  monthly base instead - `dayWiseDaysInMonth x standardHoursPerDay` (208h at
-  the defaults) - not a sum of daily excesses. Both feed the same
-  `otAllowance = overtimeHours x perHour x overtimeRateMultiplier`.
+  against that day's own shift length). `DAY_WISE` has no fixed daily shift to
+  measure against, so its overtime is two parts added together:
+  `max(0, totalHours - min(presentDays, dayWiseDaysInMonth) x standardHoursPerDay)`
+  (worked hours past a present-days baseline, itself capped at one standard
+  month so a worker present every single day - no weekly off at all - isn't
+  measured against more than 26 days) **plus** `paidLeaveDays x
+  standardHoursPerDay` added on top unconditionally - approved paid leave
+  always contributes its own overtime hours, never silently absorbed by the
+  present-days cap. Both payment models feed the same
+  `otAllowance = overtimeHours x perHour x overtimeRateMultiplier`. See
+  `PayrollService.monthlyOvertimeHours` and
+  [`DayWisePayrollOvertimeTest`](src/test/java/com/accusharp/hrms/DayWisePayrollOvertimeTest.java).
 
 ### Immutable payroll history
 
@@ -343,9 +357,10 @@ from, which means it silently stops matching the employee master or the
 `SalaryRule` the moment either changes afterward. Rather than re-deriving the
 calculation by hand to find that out, `PayrollService.getPeriodDebugForCaller`
 re-reads both live (the employee's current `grossSalary`/`pfBasic`, the
-company's current rule percentages) and lays them next to what `Payroll`
-actually stored, with `masterDataDrifted`/`ruleDrifted` booleans flagging a
-mismatch. It changes nothing and triggers no recalculation - purely a read
+company's current rule percentages, plus `dayWiseDaysInMonth`/
+`standardHoursPerDay`/`overtimeRateMultiplier` - the rule inputs the overtime
+calculation above depends on) and lays them next to what `Payroll` actually
+stored, with `masterDataDrifted`/`ruleDrifted` booleans flagging a mismatch. It changes nothing and triggers no recalculation - purely a read
 juxtaposing snapshot against current state, gated behind the same
 `PAYROLL_READ` permission and self-or-manages scoping as every other payroll
 read.
@@ -379,6 +394,18 @@ formatting (thousands separators, `₹`/`$`, stray whitespace) before parsing,
 rather than surfacing commons-csv's raw `NumberFormatException` for a value
 that's actually correct - `"41,000.00"` is exactly as valid an input as
 `"41000.00"`.
+
+`CsvRowParser` doesn't assume the header row is line 1 either: the
+downloadable Excel templates (`employeeTemplate.js` on the frontend) put a
+title, instructions and a legend above the real header row for readability,
+and Excel's "Save As CSV" carries those decorative rows straight into the
+file unchanged. Each of the four parsers instead passes a column name it
+knows must appear in its own header (`employeeCode`, `employeeId`,
+`shiftCode`, `leaveType`) and `CsvRowParser` scans for the first row
+containing it, treating everything above as decoration to skip - the same
+pass strips the trailing `" *"` the templates append to required-column
+headers, since that marker isn't part of the column name the row mappers
+look up.
 
 Existing `POST /api/shift-schedules/bulk` (one shift, many employees, a date
 range) is unrelated to this family - it stays a single validated operation

@@ -302,6 +302,15 @@ Numeric columns (`grossSalary`, `pfBasic`, `medicalAllowance`,
 `"41,000.00"` and `"₹ 41,000.00"` both parse fine. Only genuinely
 non-numeric text fails.
 
+The frontend's downloadable template (a formatted `.xlsx`, not a plain CSV)
+puts a title, instructions and a legend above the real header row for
+readability, with a trailing `" *"` marked on every required column header.
+Since Excel's *Save As → CSV* carries those decorative rows into the file
+unchanged, the parser doesn't assume the header is line 1: it scans for the
+row containing a known column name and strips the `" *"` marker, so the
+template can be filled in and uploaded as-is without deleting anything by
+hand first.
+
 Every row is attempted independently through the exact same path as a single
 `POST /api/employees` - same admin-escalation guard, same one-time temporary
 password per row. **One bad row (a duplicate code, a typo'd number) fails
@@ -775,14 +784,15 @@ stray whitespace are stripped before parsing.
 
 | Field | Meaning |
 |---|---|
-| `workingDays` / `presentDays` / `paidLeaveDays` | Attendance the pay is based on |
-| `lopDays` | `workingDays - presentDays - paidLeaveDays` |
-| `payableDays` | Days actually paid |
+| `workingDays` / `presentDays` / `paidLeaveDays` | Attendance the pay is based on. `presentDays` is capped at `dayWiseDaysInMonth` for `DAY_WISE` (matching `payableDays` below), even if attendance recorded more - a worker with no weekly off at all can be present more days than one standard month |
+| `lopDays` | `workingDays - presentDays - paidLeaveDays` (not applicable to `DAY_WISE` - attendance *is* the pay there) |
+| `payableDays` | Days actually paid. `DAY_WISE`: `presentDays` alone, capped at `dayWiseDaysInMonth` - paid leave earns no share of the fixed structure (only its own overtime credit, see `overtimeHours` below). Everyone else: working days minus LOP |
 | `earnBasicDA`, `earnHra`, ... | Each component prorated by payable days |
-| `overtimeHours` | `PERMANENT`/`CONTRACT`/`INTERN`: sum of each day's own excess over its shift. `DAY_WISE`: `totalHours` past the fixed `dayWiseDaysInMonth x standardHoursPerDay` base (208h at the defaults) - a day-wise worker has no fixed daily shift to measure against |
+| `overtimeHours` | `PERMANENT`/`CONTRACT`/`INTERN`: sum of each day's own excess over its shift. `DAY_WISE`: `max(0, totalHours - min(presentDays, dayWiseDaysInMonth) x standardHoursPerDay)` **plus** `paidLeaveDays x standardHoursPerDay` added on top - approved paid leave always contributes its own overtime hours, never absorbed by the present-days cap |
 | `otAllowance` | `overtimeHours` x per-hour rate x multiplier |
 | `totalEarnings` | Earnings + bonus + incentive + overtime |
 | `pf` vs `pfDeduction` | Full-month PF (informational) vs what is actually deducted |
+| `esic` | 0.75% (configurable) of earned `basicDA` - **not** the full earned gross - while it stays at or under `esicWageCeiling`; zero above it |
 | `lopDeduction` | **Shown for transparency, not added to the total** |
 | `mlwf` | Labour Welfare Fund - non-zero only in the June and December payroll run |
 | `totalDeduction` | PF + ESIC + PT + MLWF + TDS + advance + loan + canteen |

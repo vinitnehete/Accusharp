@@ -950,16 +950,16 @@ Note `month` and `year` are **separate numbers** here, not `2026-09`.
   "pf": 1080.0,
   "earnPf": 8640.0,
   "pfDeduction": 1036.8,
-  "esic": 0.0,
+  "esic": 93.6,
   "professionalTax": 200.0,
   "tds": 0.0,
   "advanceDeduction": 2000.0,
   "loanDeduction": 0.0,
   "canteen": 450.0,
   "lopDeduction": 882.0,
-  "totalDeduction": 3686.8,
+  "totalDeduction": 3780.4,
 
-  "netSalary": 18936.2,
+  "netSalary": 18842.6,
 
   "ruleBasicDaPercent": 50.0,
   "rulePfPercent": 12.0,
@@ -988,8 +988,10 @@ earnHra     =  5200 × 24/25 =  4992
 then 12%. PF is charged on the **prorated** basic. The `pf` field (1080 = full
 month) is informational.
 
-**`esic` = 0** — earned gross 22623 exceeds the 21000 ceiling, so she is outside
-the scheme.
+**`esic` = 93.60** — ESIC applies to earned `basicDA`, not the full earned
+gross: 12480 is well under the 21000 ceiling, so 0.75% × 12480 = 93.60. (Her
+earned gross of 22623 *is* above the ceiling, but that no longer matters -
+only `earnBasicDA` is compared to it.)
 
 **`professionalTax` = 200** — gross 26000 is above the 10001 slab threshold.
 
@@ -999,8 +1001,8 @@ it appears purely so the employee can see what the missing day cost.
 
 ```
 netSalary = totalEarnings − totalDeduction
-          = 22623.00 − 3686.80
-          = 18936.20
+          = 22623.00 − 3780.40
+          = 18842.60
 ```
 
 ### Whole company at once
@@ -1053,14 +1055,15 @@ GET  http://localhost:8080/api/salary-slips/EMP005?month=9&year=2026
   ],
   "deductions": [
     { "label": "Provident Fund",   "amount": 1036.8 },
+    { "label": "ESIC",             "amount": 93.6 },
     { "label": "Professional Tax", "amount": 200.0 },
     { "label": "Advance",          "amount": 2000.0 },
     { "label": "Canteen",          "amount": 450.0 }
   ],
   "totalEarnings": 22623.0,
-  "totalDeductions": 3686.8,
-  "netSalary": 18936.2,
-  "netSalaryInWords": "Eighteen Thousand Nine Hundred and Thirty Six Rupees and Twenty Paise Only",
+  "totalDeductions": 3780.4,
+  "netSalary": 18842.6,
+  "netSalaryInWords": "Eighteen Thousand Eight Hundred and Forty Two Rupees and Sixty Paise Only",
   "revision": 1,
   "generatedAt": "2026-08-03T12:27:48.034809Z"
 }
@@ -1085,7 +1088,7 @@ GET  http://localhost:8080/api/salary-slips/export?month=9&year=2026
 
 ```csv
 employeeId,employeeCode,employeeName,department,designation,workingDays,presentDays,paidLeaveDays,lopDays,payableDays,totalEarnings,totalDeductions,netSalary
-EMP005,EMP-005,Priya Kulkarni,Production,Senior Operator,25,22.0,2.0,1.0,24.0,22623.00,3686.80,18936.20
+EMP005,EMP-005,Priya Kulkarni,Production,Senior Operator,25,22.0,2.0,1.0,24.0,22623.00,3780.40,18842.60
 ```
 
 ---
@@ -1178,7 +1181,7 @@ Headers: Authorization: Bearer <token>, Content-Type: application/json
 }
 ```
 
-**200 OK** — `"revision": 2`, `"canteen": 300.0`, `"netSalary": 19086.2`.
+**200 OK** — `"revision": 2`, `"canteen": 300.0`, `"netSalary": 18992.6`.
 
 ```
 GET  http://localhost:8080/api/payroll/employee/EMP005/revisions?month=9&year=2026
@@ -1186,13 +1189,13 @@ GET  http://localhost:8080/api/payroll/employee/EMP005/revisions?month=9&year=20
 
 ```json
 [
-  { "id": 2, "revision": 2, "status": "GENERATED",  "canteen": 300.0, "netSalary": 19086.2 },
-  { "id": 1, "revision": 1, "status": "SUPERSEDED", "canteen": 450.0, "netSalary": 18936.2 }
+  { "id": 2, "revision": 2, "status": "GENERATED",  "canteen": 300.0, "netSalary": 18992.6 },
+  { "id": 1, "revision": 1, "status": "SUPERSEDED", "canteen": 450.0, "netSalary": 18842.6 }
 ]
 ```
 
 **Revision 1 was not overwritten.** If someone asks in March why September's
-slip said ₹18,936.20, the record is still there.
+slip said ₹18,842.60, the record is still there.
 
 The same protection runs the other way: each payroll row snapshots the salary
 structure and rule percentages at generation time, so a raise in October never

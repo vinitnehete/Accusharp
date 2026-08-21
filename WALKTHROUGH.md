@@ -578,18 +578,18 @@ You typed in only the manual amounts: advance ₹2,000, canteen ₹450, bonus
 
  EARNINGS                        DEDUCTIONS
    Basic + DA     12480.0          PF              1036.80
-   HRA             4992.0          ESIC               0.00
+   HRA             4992.0          ESIC              93.60
    Conveyance      1248.0          Prof. Tax        200.00
    Education       1248.0          TDS                0.00
    Medical         1200.0          Advance         2000.00
    Other               0.0         Loan               0.00
    Overtime          455.0         Canteen          450.00
    Bonus            1000.0         ----------------------
-   Incentive           0.0         TOTAL           3686.80
+   Incentive           0.0         TOTAL           3780.40
    ------------------------
    TOTAL           22623.0
 
- NET SALARY  18936.20
+ NET SALARY  18842.60
 ```
 
 ### Where each number came from
@@ -610,8 +610,10 @@ HRA        =  5200 x 24 / 25 =  4992
 **PF = ₹1,036.80.** Her PF basic of 9000 is prorated to 8640 (24/25), then 12%.
 PF is charged on the prorated basic, not the full one.
 
-**ESIC = ₹0.** Her earned gross of 22623 is above the 21000 ceiling, so she is
-outside the scheme.
+**ESIC = ₹93.60.** ESIC applies to earned Basic + DA, not the full earned
+gross: 12480 is well under the 21000 ceiling, so 0.75% × 12480 = 93.60. (Her
+earned gross of 22623 *is* above the ceiling, but that no longer decides it -
+only the earned Basic + DA is compared to it.)
 
 **Professional tax = ₹200.** Gross 26000 is above the 10001 slab threshold.
 
@@ -647,8 +649,8 @@ curl "http://localhost:8080/api/salary-slips/EMP005?month=9&year=2026" -H "Autho
 
 ```
  Accusharp Industries | Priya Kulkarni | September 2026 | rev 1
- net: 18936.20
- in words: Eighteen Thousand Nine Hundred and Thirty Six Rupees and Twenty Paise Only
+ net: 18842.60
+ in words: Eighteen Thousand Eight Hundred and Forty Two Rupees and Sixty Paise Only
 ```
 
 The whole month as a spreadsheet:
@@ -711,8 +713,8 @@ curl "http://localhost:8080/api/payroll/employee/EMP005/revisions?month=9&year=2
 ```
 
 ```
- rev 2  GENERATED   canteen 300.0  net 19086.20
- rev 1  SUPERSEDED  canteen 450.0  net 18936.20
+ rev 2  GENERATED   canteen 300.0  net 18992.60
+ rev 1  SUPERSEDED  canteen 450.0  net 18842.60
 ```
 
 **The old figure was not overwritten.** Revision 1 is preserved exactly as it
