@@ -204,6 +204,16 @@ public class Payroll {
     @Column(name = "rule_esic_percent", precision = 6, scale = 2)
     private BigDecimal ruleEsicPercent;
 
+    /** DAY_WISE's payable-day base and everyone's overtime-hour base at generation time. */
+    @Column(name = "rule_day_wise_days_in_month")
+    private Integer ruleDayWiseDaysInMonth;
+
+    @Column(name = "rule_standard_hours_per_day", precision = 4, scale = 1)
+    private BigDecimal ruleStandardHoursPerDay;
+
+    @Column(name = "rule_overtime_rate_multiplier", precision = 4, scale = 2)
+    private BigDecimal ruleOvertimeRateMultiplier;
+
     @Column(name = "generated_at", nullable = false)
     private Instant generatedAt;
 

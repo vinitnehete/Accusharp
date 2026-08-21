@@ -261,7 +261,10 @@ public class PayrollService {
         boolean ruleDrifted = liveRule != null
                 && (differs(p.getRuleBasicDaPercent(), liveRule.getBasicDaPercent())
                     || differs(p.getRulePfPercent(), liveRule.getPfPercent())
-                    || differs(p.getRuleEsicPercent(), liveRule.getEsicPercent()));
+                    || differs(p.getRuleEsicPercent(), liveRule.getEsicPercent())
+                    || differsInt(p.getRuleDayWiseDaysInMonth(), liveRule.getDayWiseDaysInMonth())
+                    || differs(p.getRuleStandardHoursPerDay(), liveRule.getStandardHoursPerDay())
+                    || differs(p.getRuleOvertimeRateMultiplier(), liveRule.getOvertimeRateMultiplier()));
 
         return new PayrollDebugRow(
                 p.getId(), p.getEmployeeId(), p.getEmployeeName(), p.getEmployeeCode(), p.getCompanyName(),
@@ -286,6 +289,9 @@ public class PayrollService {
                 p.getRuleBasicDaPercent(), liveRule == null ? null : liveRule.getBasicDaPercent(),
                 p.getRulePfPercent(), liveRule == null ? null : liveRule.getPfPercent(),
                 p.getRuleEsicPercent(), liveRule == null ? null : liveRule.getEsicPercent(),
+                p.getRuleDayWiseDaysInMonth(), liveRule == null ? null : liveRule.getDayWiseDaysInMonth(),
+                p.getRuleStandardHoursPerDay(), liveRule == null ? null : liveRule.getStandardHoursPerDay(),
+                p.getRuleOvertimeRateMultiplier(), liveRule == null ? null : liveRule.getOvertimeRateMultiplier(),
 
                 masterDataDrifted, ruleDrifted);
     }
@@ -295,6 +301,13 @@ public class PayrollService {
             return false;
         }
         return stored.compareTo(live) != 0;
+    }
+
+    private static boolean differsInt(Integer stored, Integer live) {
+        if (stored == null || live == null) {
+            return false;
+        }
+        return !stored.equals(live);
     }
 
     // ---- the calculation ---------------------------------------------------
@@ -350,8 +363,13 @@ public class PayrollService {
         BigDecimal payableDays;
         if (dayWise) {
             // Attendance is the pay: no LOP concept, you are paid what you worked.
+            // Paid leave does not add to payableDays - a day-wise worker earns
+            // basicDA/hra/conveyance/education/medical/other only for days
+            // actually present (capped at dayWiseDaysInMonth), not for approved
+            // leave on top of that. Leave still earns its own overtime credit -
+            // see monthlyOvertimeHours - just not a share of the fixed structure.
             lopDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
-            payableDays = presentDays.add(paidLeaveDays).min(totalDays);
+            payableDays = presentDays.min(totalDays);
         } else {
             lopDays = attendance.getLopDays();
             // Capped by how many days of this period the employee was actually
@@ -371,18 +389,24 @@ public class PayrollService {
 
         payroll.setDaysInMonth(period.lengthOfMonth());
         payroll.setWorkingDays((int) attendance.getWorkingDays());
-        payroll.setPresentDays(presentDays);
+        // DAY_WISE presentDays is capped at dayWiseDaysInMonth (26 by default)
+        // to match payableDays, which is already capped the same way - a
+        // day-wise worker present more days than the standard month (no
+        // weekly off at all) is only ever paid for 26 of them, so the stored
+        // figure shouldn't imply otherwise. Everyone else keeps the raw
+        // attendance figure; they have no such cap.
+        payroll.setPresentDays(dayWise ? presentDays.min(totalDays).setScale(1, RoundingMode.HALF_UP) : presentDays);
         payroll.setPaidLeaveDays(paidLeaveDays);
         payroll.setLopDays(lopDays);
         payroll.setPayableDays(payableDays);
         payroll.setTotalHours(attendance.getTotalHours());
         // DAY_WISE has no fixed daily shift to measure each day's overtime
-        // against - only a fixed monthly expectation (dayWiseDaysInMonth *
-        // standardHoursPerDay) the month's total hours are compared to.
-        // Everyone else keeps the attendance engine's daily-summed value
-        // (each day measured against that day's own shift length).
+        // against - only a monthly expectation the month's total hours are
+        // compared to. Everyone else keeps the attendance engine's
+        // daily-summed value (each day measured against that day's own
+        // shift length).
         BigDecimal overtimeHours = dayWise
-                ? monthlyOvertimeHours(attendance.getTotalHours(), rule)
+                ? monthlyOvertimeHours(attendance.getTotalHours(), presentDays, paidLeaveDays, rule)
                 : attendance.getOvertimeHours();
         payroll.setOvertimeHours(overtimeHours);
 
@@ -431,7 +455,9 @@ public class PayrollService {
         payroll.setPf(deductionCalculationService.calculatePf(employee.getPfBasic(), rule));
         payroll.setEarnPf(earnPf);
         payroll.setPfDeduction(deductionCalculationService.calculatePfDeduction(earnPf, rule));
-        payroll.setEsic(deductionCalculationService.calculateEsic(earnGross, rule));
+        // Ceiling and percentage both apply to earnBasicDA (this period's earned
+        // basicDA, attendance-prorated), not the full earnGross.
+        payroll.setEsic(deductionCalculationService.calculateEsic(payroll.getEarnBasicDA(), rule));
         payroll.setProfessionalTax(
                 deductionCalculationService.calculateProfessionalTax(employee.getGrossSalary(), rule));
         payroll.setMlwf(deductionCalculationService.calculateMlwf(request.getMonth(), rule));
@@ -552,15 +578,35 @@ public class PayrollService {
     }
 
     /**
-     * DAY_WISE overtime against the fixed monthly base - {@code
-     * dayWiseDaysInMonth * standardHoursPerDay} (208h at the defaults) - not
-     * the sum of each day's own shift overtime a day-wise worker has no
-     * fixed daily shift to measure against.
+     * DAY_WISE overtime against how many days this employee was actually on
+     * the books for, not the sum of each day's own shift overtime - a
+     * day-wise worker has no fixed daily shift to measure against.
+     *
+     * <p>Two parts, kept separate on purpose:
+     * <ul>
+     *   <li>Worked-hours OT: {@code totalHours - (min(presentDays, dayWiseDaysInMonth)
+     *       * standardHoursPerDay)}. Present days alone are capped at {@code
+     *       dayWiseDaysInMonth} (26 by default) so a month worked without a day
+     *       off doesn't inflate the baseline past one standard month's hours.</li>
+     *   <li>Paid-leave OT: {@code paidLeaveDays * standardHoursPerDay}, added on
+     *       top unconditionally.</li>
+     * </ul>
+     * Approved paid leave must always add its own hours, not just fill
+     * whatever headroom is left under the 26-day cap - capping {@code
+     * presentDays + paidLeaveDays} together (the first version of this
+     * method) let leave get silently absorbed by the cap for any employee
+     * already present close to 26 days, which is the common case, so it
+     * almost never actually counted. Uncapped and additive is the only form
+     * that reliably behaves like "if you have approved leave, it goes into
+     * the OT hours" for every attendance mix, not just the sparse ones.
      */
-    private BigDecimal monthlyOvertimeHours(BigDecimal totalHours, SalaryRule rule) {
-        BigDecimal baseHours = BigDecimal.valueOf(rule.getDayWiseDaysInMonth())
+    private BigDecimal monthlyOvertimeHours(BigDecimal totalHours, BigDecimal presentDays,
+                                            BigDecimal paidLeaveDays, SalaryRule rule) {
+        BigDecimal baseHours = presentDays.min(BigDecimal.valueOf(rule.getDayWiseDaysInMonth()))
                 .multiply(rule.getStandardHoursPerDay());
-        return totalHours.subtract(baseHours).max(BigDecimal.ZERO).setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal workedOvertime = totalHours.subtract(baseHours).max(BigDecimal.ZERO);
+        BigDecimal leaveOvertime = paidLeaveDays.multiply(rule.getStandardHoursPerDay());
+        return workedOvertime.add(leaveOvertime).setScale(SCALE, RoundingMode.HALF_UP);
     }
 
     /**
@@ -674,5 +720,8 @@ public class PayrollService {
         payroll.setRuleBasicDaPercent(rule.getBasicDaPercent());
         payroll.setRulePfPercent(rule.getPfPercent());
         payroll.setRuleEsicPercent(rule.getEsicPercent());
+        payroll.setRuleDayWiseDaysInMonth(rule.getDayWiseDaysInMonth());
+        payroll.setRuleStandardHoursPerDay(rule.getStandardHoursPerDay());
+        payroll.setRuleOvertimeRateMultiplier(rule.getOvertimeRateMultiplier());
     }
 }

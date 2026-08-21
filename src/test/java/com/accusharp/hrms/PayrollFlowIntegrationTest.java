@@ -172,6 +172,52 @@ class PayrollFlowIntegrationTest {
     }
 
     @Test
+    @DisplayName("ESIC is based on earned basicDA, not the full earned gross")
+    void esicIsBasedOnEarnedBasicDaNotEarnedGross() {
+        String userId = "ESIC300";
+        saveEmployee(userId, "EMP-ESIC-300", "Esic Test Worker", Role.EMPLOYEE, new BigDecimal("26000"));
+
+        Shift morning = shiftRepository.findAll().stream()
+                .filter(s -> s.getShiftCode().equals("MORNING")).findFirst().orElseThrow();
+
+        // Fully attended, every day of the month - no leave, no LOP, so
+        // payableDays = totalDays and earnBasicDA equals basicDA exactly.
+        List<ShiftSchedule> roster = new ArrayList<>();
+        List<DeviceLog> punches = new ArrayList<>();
+        for (int day = 1; day <= PERIOD.lengthOfMonth(); day++) {
+            roster.add(ShiftSchedule.builder()
+                    .userId(userId).shiftDate(PERIOD.atDay(day)).shift(morning).weekOff(false).build());
+            punches.add(punch(PERIOD.atDay(day).atTime(6, 0), userId));
+            punches.add(punch(PERIOD.atDay(day).atTime(15, 0), userId));
+        }
+        shiftScheduleRepository.saveAll(roster);
+        deviceLogRepository.saveAll(punches);
+
+        AttendanceGenerationRequest request = new AttendanceGenerationRequest();
+        request.setMonth(PERIOD);
+        request.setUserIds(List.of(userId));
+        request.setGeneratedBy(HR);
+        attendanceService.generate(request);
+
+        PayrollRequest payrollRequest = new PayrollRequest();
+        payrollRequest.setEmployeeId(userId);
+        payrollRequest.setMonth(PERIOD.getMonthValue());
+        payrollRequest.setYear(PERIOD.getYear());
+        payrollRequest.setGeneratedBy(HR);
+        Payroll payroll = payrollService.generate(payrollRequest);
+
+        // basicDA = 50% of 26000 = 13000; earnBasicDA = 13000 (full month, no proration).
+        assertThat(payroll.getEarnBasicDA()).isEqualByComparingTo("13000.00");
+        // earnGross = 13000 (basic) + 5200 (hra) + 1300 (conveyance) + 1300
+        // (education) + 1250 (medical) + 0 (other) = 22050 - above the 21000
+        // ceiling, so the old earnGross-based check would have zeroed ESIC out
+        // entirely even though this employee's basicDA is well under it.
+        assertThat(payroll.getEarnGrossSalary()).isEqualByComparingTo("22050.00");
+        // ESIC = 0.75% of the earned basicDA (13000), not zero.
+        assertThat(payroll.getEsic()).isEqualByComparingTo("97.50");
+    }
+
+    @Test
     @DisplayName("a period can only be generated once")
     void generatingTwiceIsAConflict() {
         generateAttendance();

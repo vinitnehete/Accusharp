@@ -36,14 +36,17 @@ public class DeductionCalculationService {
     }
 
     /**
-     * ESIC applies only while the earned gross stays at or under the ceiling;
-     * above it the employee is out of the scheme and the deduction is zero.
+     * ESIC applies only while the earned basicDA stays at or under the
+     * ceiling; above it the employee is out of the scheme and the deduction
+     * is zero. Both the ceiling test and the deduction itself are against
+     * earned basicDA (this period's attendance-prorated basicDA), not the
+     * full earned gross.
      */
-    public BigDecimal calculateEsic(BigDecimal earnedGross, SalaryRule rule) {
-        if (earnedGross == null || earnedGross.compareTo(rule.getEsicWageCeiling()) > 0) {
+    public BigDecimal calculateEsic(BigDecimal earnedBasicDA, SalaryRule rule) {
+        if (earnedBasicDA == null || earnedBasicDA.compareTo(rule.getEsicWageCeiling()) > 0) {
             return BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP);
         }
-        return salaryCalculationService.percentOf(earnedGross, rule.getEsicPercent());
+        return salaryCalculationService.percentOf(earnedBasicDA, rule.getEsicPercent());
     }
 
     /**

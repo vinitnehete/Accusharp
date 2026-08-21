@@ -86,6 +86,15 @@ public record PayrollDebugRow(
         BigDecimal liveRulePfPercent,
         BigDecimal storedRuleEsicPercent,
         BigDecimal liveRuleEsicPercent,
+        /** DAY_WISE's payable-day base, and the days+leave cap for everyone's overtime base. Null on a payroll generated before this was tracked. */
+        Integer storedRuleDayWiseDaysInMonth,
+        Integer liveRuleDayWiseDaysInMonth,
+        /** Feeds perHour for every employment status, and the overtime-hour base for DAY_WISE. */
+        BigDecimal storedRuleStandardHoursPerDay,
+        BigDecimal liveRuleStandardHoursPerDay,
+        /** Multiplies overtimeHours x perHour into otAllowance for every overtime-eligible employee. */
+        BigDecimal storedRuleOvertimeRateMultiplier,
+        BigDecimal liveRuleOvertimeRateMultiplier,
 
         /** True when the employee's master salary data changed after this payroll was generated. */
         boolean masterDataDrifted,
