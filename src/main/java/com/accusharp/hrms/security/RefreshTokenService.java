@@ -3,7 +3,7 @@ package com.accusharp.hrms.security;
 import com.accusharp.hrms.entity.RefreshToken;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PrincipalType;
-import com.accusharp.hrms.exception.BusinessRuleException;
+import com.accusharp.hrms.exception.AuthenticationFailedException;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
 import com.accusharp.hrms.service.AuditService;
 import lombok.RequiredArgsConstructor;
@@ -86,7 +86,7 @@ public class RefreshTokenService {
      */
     public RefreshToken consume(String rawToken) {
         RefreshToken token = refreshTokenRepository.findByTokenHash(hash(rawToken))
-                .orElseThrow(() -> new BusinessRuleException("Invalid refresh token"));
+                .orElseThrow(() -> new AuthenticationFailedException("Invalid refresh token"));
         if (token.isRevoked()) {
             log.warn("refresh-token.reuse-detected principalType={} principalId={} - revoking entire session family",
                     token.getPrincipalType(), token.getPrincipalId());
@@ -94,10 +94,10 @@ public class RefreshTokenService {
             auditService.recordWithActor(token.getPrincipalId(), token.getPrincipalType(), null,
                     "REFRESH_TOKEN_REUSE_DETECTED", "Account", token.getPrincipalId(), AuditOutcome.FAILURE,
                     "A previously-rotated refresh token was replayed - every session for this account was signed out");
-            throw new BusinessRuleException("Refresh token has already been used or revoked");
+            throw new AuthenticationFailedException("Refresh token has already been used or revoked");
         }
         if (token.getExpiresAt().isBefore(Instant.now())) {
-            throw new BusinessRuleException("Refresh token has expired");
+            throw new AuthenticationFailedException("Refresh token has expired");
         }
         token.setRevoked(true);
         refreshTokenRepository.save(token);

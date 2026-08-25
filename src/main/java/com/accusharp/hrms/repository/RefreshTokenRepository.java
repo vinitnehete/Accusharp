@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.Optional;
 
 public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long> {
@@ -24,4 +25,21 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
     @Query("update RefreshToken r set r.revoked = true "
             + "where r.principalType = :type and r.principalId = :principalId and r.revoked = false")
     void revokeAllForPrincipal(@Param("type") PrincipalType type, @Param("principalId") String principalId);
+
+    /**
+     * Removes tokens that can no longer authenticate anyone - see
+     * {@code RefreshTokenCleanupService} for why this exists and why revoked
+     * rows get a grace period rather than being deleted the moment they are
+     * spent.
+     *
+     * <p>Expiry alone is enough for the first arm: an expired token is refused
+     * regardless of its revoked flag. The second arm covers tokens revoked long
+     * enough ago that replay detection no longer needs them.
+     */
+    @Transactional
+    @Modifying
+    @Query("delete from RefreshToken r "
+            + "where r.expiresAt < :now "
+            + "or (r.revoked = true and r.createdAt < :revokedCutoff)")
+    long deleteSpentTokens(@Param("now") Instant now, @Param("revokedCutoff") Instant revokedCutoff);
 }

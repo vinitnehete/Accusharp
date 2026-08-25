@@ -234,6 +234,17 @@ public class EmployeeController {
      * locked out. Same permission as every other account-affecting change
      * to this employee, same one-time-return contract as {@code create}.
      */
+    /**
+     * Clears a failed-login lockout, leaving the password alone - see
+     * {@code EmployeeService#unlockAccount} for why this is not just
+     * {@code reset-password}.
+     */
+    @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")
+    @PostMapping("/{id}/unlock")
+    public EmployeeResponse unlock(@PathVariable Long id) {
+        return employeeService.unlockAccount(id);
+    }
+
     @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")
     @PostMapping("/{id}/reset-password")
     public EmployeeCreationResponse resetPassword(@PathVariable Long id) {

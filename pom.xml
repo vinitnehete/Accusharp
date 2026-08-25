@@ -71,7 +71,11 @@
 			<version>1.11.0</version>
 		</dependency>
 
-		<!-- Lets the app boot without MySQL: -Dspring-boot.run.profiles=h2 -->
+		<!-- Lets the app boot without MySQL: -Dspring-boot.run.profiles=h2.
+		     Kept at runtime scope so `spring-boot:run` and the test suite can both
+		     use it, but EXCLUDED from the repackaged jar below - a production
+		     artifact has no reason to carry a second database engine and its
+		     web console. -->
 		<dependency>
 			<groupId>com.h2database</groupId>
 			<artifactId>h2</artifactId>
@@ -107,6 +111,12 @@
 						<exclude>
 							<groupId>org.projectlombok</groupId>
 							<artifactId>lombok</artifactId>
+						</exclude>
+						<!-- Keeps the H2 engine and its console out of the shipped jar
+						     while leaving it available for local dev and tests. -->
+						<exclude>
+							<groupId>com.h2database</groupId>
+							<artifactId>h2</artifactId>
 						</exclude>
 					</excludes>
 				</configuration>

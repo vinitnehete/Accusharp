@@ -1,54 +1,90 @@
 package com.accusharp.hrms.controller;
 
 import com.accusharp.hrms.dto.ChangePasswordRequest;
+import com.accusharp.hrms.dto.IssuedTokens;
 import com.accusharp.hrms.dto.LoginRequest;
-import com.accusharp.hrms.dto.RefreshRequest;
 import com.accusharp.hrms.dto.TokenResponse;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
+import com.accusharp.hrms.security.ClientAddressResolver;
+import com.accusharp.hrms.security.RefreshTokenCookie;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * The four authentication endpoints, and the only place in the application
+ * that touches the refresh-token cookie.
+ *
+ * <p>Login and refresh return the access token in the body and set the
+ * refresh token as an httpOnly cookie (see {@link RefreshTokenCookie} for the
+ * attributes and why each one matters). Refresh and logout read that cookie
+ * rather than a request body, so a browser client never has to hold the
+ * refresh token in JavaScript at all - which is the whole point: XSS in the
+ * SPA can no longer steal a seven-day session.
+ */
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
 public class AuthController {
 
     private final AuthService authService;
+    private final RefreshTokenCookie refreshTokenCookie;
+    private final ClientAddressResolver clientAddressResolver;
 
     @PostMapping("/login")
-    public TokenResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
-        return authService.login(request.getUsername(), request.getPassword(), clientAddress(httpRequest));
+    public ResponseEntity<TokenResponse> login(@Valid @RequestBody LoginRequest request,
+                                               HttpServletRequest httpRequest) {
+        IssuedTokens issued = authService.login(
+                request.getUsername(), request.getPassword(), clientAddressResolver.resolve(httpRequest));
+        return withRefreshCookie(issued);
     }
 
     /**
-     * The proxy/load-balancer-forwarded address when present (trusted here
-     * since this app's own deployment sits behind its own reverse proxy, not
-     * arbitrary internet clients who could forge the header directly against
-     * this service), falling back to the direct socket address otherwise.
+     * Rotates the session. The incoming token comes from the cookie, never
+     * from the body - a body parameter would mean JavaScript had to hold the
+     * value to send it, reopening exactly the exposure the cookie closes.
+     *
+     * <p>A missing cookie is a 401 rather than a 400: to every caller this is
+     * the same condition as an expired or revoked token - "your session is
+     * gone, sign in again" - and the SPA's interceptor already treats 401 as
+     * that signal. {@code RefreshTokenService} returns 401 for the revoked,
+     * replayed and expired cases for the same reason.
      */
-    private String clientAddress(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
-    }
-
     @PostMapping("/refresh")
-    public TokenResponse refresh(@Valid @RequestBody RefreshRequest request) {
-        return authService.refresh(request.getRefreshToken());
+    public ResponseEntity<TokenResponse> refresh(
+            @CookieValue(name = RefreshTokenCookie.NAME, required = false) String refreshToken) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new AuthenticationFailedException("No active session - sign in again");
+        }
+        return withRefreshCookie(authService.refresh(refreshToken));
     }
 
+    /**
+     * Revokes the token server-side and clears the cookie. Tolerates a missing
+     * cookie so that signing out of an already-dead session is a no-op success
+     * rather than an error the SPA has to special-case.
+     */
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(@Valid @RequestBody RefreshRequest request) {
-        authService.logout(request.getRefreshToken());
-        return ResponseEntity.noContent().build();
+    public ResponseEntity<Void> logout(
+            @CookieValue(name = RefreshTokenCookie.NAME, required = false) String refreshToken) {
+        if (refreshToken != null && !refreshToken.isBlank()) {
+            authService.logout(refreshToken);
+        }
+        return ResponseEntity.noContent()
+                .header(HttpHeaders.SET_COOKIE, refreshTokenCookie.clear().toString())
+                .build();
+    }
+
+    private ResponseEntity<TokenResponse> withRefreshCookie(IssuedTokens issued) {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, refreshTokenCookie.issue(issued.refreshToken()).toString())
+                .body(issued.response());
     }
 
     /**

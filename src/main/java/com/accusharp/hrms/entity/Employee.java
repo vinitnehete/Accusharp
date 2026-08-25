@@ -4,6 +4,7 @@ import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.Gender;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.security.EncryptedStringConverter;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -128,17 +129,29 @@ public class Employee {
     private String phone;
 
     // ---- statutory & bank details - all optional -----------------------
+    // Encrypted at rest (AES-256-GCM) - see EncryptedStringConverter. These
+    // four are the only employee fields worth anything to someone who gets a
+    // copy of the database, and none of them is ever queried or filtered
+    // (only set and mapped onto a response), which is what makes encrypting
+    // them free of functional consequence.
+    //
+    // The lengths below are CIPHERTEXT widths, not value widths: GCM plus
+    // base64 expands a 30-character account number to roughly 90.
 
-    @Column(name = "uan_no", length = 30)
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "uan_no", length = 255)
     private String uanNo;
 
-    @Column(name = "esic_ip_no", length = 30)
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "esic_ip_no", length = 255)
     private String esicIpNo;
 
-    @Column(name = "bank_account_no", length = 30)
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "bank_account_no", length = 255)
     private String bankAccountNo;
 
-    @Column(name = "bank_ifsc_no", length = 20)
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "bank_ifsc_no", length = 255)
     private String bankIfscNo;
 
     // ---- salary structure -------------------------------------------------

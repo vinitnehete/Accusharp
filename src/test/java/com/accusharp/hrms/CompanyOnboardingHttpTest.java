@@ -22,7 +22,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,6 +44,7 @@ class CompanyOnboardingHttpTest {
     @Autowired private SalaryRuleRepository salaryRuleRepository;
     @Autowired private AttendanceRuleRepository attendanceRuleRepository;
     @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private com.accusharp.hrms.repository.AuditLogRepository auditLogRepository;
 
     private final HttpClient http = HttpClient.newHttpClient();
 
@@ -187,7 +191,7 @@ class CompanyOnboardingHttpTest {
     }
 
     @Test
-    @DisplayName("a platform owner can purge old audit rows, and the purge itself is recorded")
+    @DisplayName("a platform owner can purge genuinely old audit rows, and the purge itself is recorded")
     void platformCanPurgeAuditLog() {
         String platformToken = login("owner1", PLATFORM_PASSWORD);
         String setupBody = """
@@ -196,7 +200,21 @@ class CompanyOnboardingHttpTest {
                  "adminEmail": "admin@purgeco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
         send("POST", "/api/companies/onboard", setupBody, platformToken);
 
-        Resp purge = send("DELETE", "/api/audit-logs?beforeDate=2099-01-01", null, platformToken);
+        // Backdate the trail this test just generated. Previously this purged
+        // with a cutoff of 2099-01-01 - "delete everything" - which the
+        // retention floor now refuses outright, and rightly so: erasing
+        // history written moments ago is the abuse the guard exists to stop,
+        // not the maintenance task this test is about. Ageing the rows keeps
+        // the test exercising the real path.
+        auditLogRepository.findAll().forEach(entry -> {
+            entry.setTimestamp(Instant.now().minus(Duration.ofDays(400)));
+            auditLogRepository.save(entry);
+        });
+
+        LocalDate cutoff = LocalDate.now(ZoneOffset.UTC).minusDays(30);
+        Resp purge = send("DELETE",
+                "/api/audit-logs?beforeDate=" + cutoff + "&confirmExportedUpTo=" + cutoff,
+                null, platformToken);
         assertThat(purge.status()).isEqualTo(200);
         assertThat(purge.body().get("deleted").asLong()).isGreaterThan(0);
 
@@ -204,6 +222,27 @@ class CompanyOnboardingHttpTest {
         Resp logs = send("GET", "/api/audit-logs?limit=5", null, platformToken);
         assertThat(logs.status()).isEqualTo(200);
         assertThat(logs.body().get(0).get("action").asString()).isEqualTo("AUDIT_LOG_PURGE");
+    }
+
+    @Test
+    @DisplayName("purging recent audit history is refused even by a platform owner")
+    void recentAuditHistoryCannotBePurged() {
+        String platformToken = login("owner1", PLATFORM_PASSWORD);
+        LocalDate tomorrow = LocalDate.now(ZoneOffset.UTC).plusDays(1);
+
+        Resp purge = send("DELETE",
+                "/api/audit-logs?beforeDate=" + tomorrow + "&confirmExportedUpTo=" + tomorrow,
+                null, platformToken);
+        assertThat(purge.status()).isEqualTo(400);
+    }
+
+    @Test
+    @DisplayName("purging without the export confirmation is refused")
+    void purgeWithoutExportConfirmationIsRefused() {
+        String platformToken = login("owner1", PLATFORM_PASSWORD);
+        Resp purge = send("DELETE", "/api/audit-logs?beforeDate=2020-01-01", null, platformToken);
+        // Missing required parameter is a client error, not a 500.
+        assertThat(purge.status()).isEqualTo(400);
     }
 
     // ---- helpers -----------------------------------------------------------

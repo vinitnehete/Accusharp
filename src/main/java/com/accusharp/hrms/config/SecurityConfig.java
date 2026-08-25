@@ -17,6 +17,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -27,12 +28,40 @@ import java.util.List;
 /**
  * Stateless JWT security. Two things worth being explicit about:
  *
- * <p><b>CSRF is disabled deliberately, not carelessly.</b> CSRF exists to stop
- * a browser automatically attaching a user's session cookie to a forged
- * cross-site request. This API has no session cookie - the client attaches a
- * bearer token itself on every call - so there is nothing for a forged
- * request to ride on. CSRF protection would be theatre here; it matters again
- * only if a future change starts authenticating via cookies.
+ * <p><b>CSRF is disabled deliberately, and that is still correct now that a
+ * cookie exists.</b> The earlier version of this note said CSRF "matters
+ * again only if a future change starts authenticating via cookies" - that
+ * change has now happened, so here is the re-derivation rather than an
+ * assumption carried forward.
+ *
+ * <p>There are two credentials, and they are split on purpose:
+ * <ul>
+ *   <li>The <b>access token</b> authenticates all ~119 business endpoints and
+ *       travels as an {@code Authorization} header the SPA sets from memory.
+ *       A cross-site page cannot set that header, so a forged request to any
+ *       business endpoint arrives unauthenticated and is rejected. This is
+ *       why the access token was not moved into a cookie: doing so would have
+ *       made every state-changing endpoint in the application CSRF-reachable
+ *       and required a token dance on all of them.</li>
+ *   <li>The <b>refresh token</b> is an httpOnly cookie, so it <em>is</em>
+ *       attached automatically - but only to {@code /api/auth/refresh} and
+ *       {@code /api/auth/logout} ({@code Path=/api/auth}), and only on
+ *       same-site requests ({@code SameSite=Strict}). A cross-site page
+ *       cannot make the browser send it, which is the CSRF control for those
+ *       two endpoints. Even if it could, the attacker cannot read the
+ *       response - the CORS allow-list below permits only this application's
+ *       own origins - so a forced refresh yields no token, only a rotation.</li>
+ * </ul>
+ *
+ * <p>What would invalidate this reasoning: moving the access token into a
+ * cookie, widening the refresh cookie's {@code Path}, or relaxing
+ * {@code SameSite}. Any of those requires turning CSRF protection back on.
+ *
+ * <p><b>Response headers.</b> The header block below is not boilerplate. This
+ * API serves one HTML document ({@code GET /api/salary-slips/&#123;id&#125;/print}),
+ * and it carries salary data, so it must not be framable, sniffable, or able
+ * to load anything off-origin. The same headers also harden every JSON
+ * response at no cost.
  *
  * <p><b>Phase 2.</b> Every {@code /api/**} endpoint other than
  * {@code /api/auth/**} now requires authentication by default
@@ -106,13 +135,33 @@ public class SecurityConfig {
                     }
                     auth.anyRequest().authenticated();
                 })
+                .headers(headers -> {
+                    // Sent only over HTTPS (Spring checks the request itself), so this is
+                    // inert in local HTTP development and active the moment TLS is in front.
+                    headers.httpStrictTransportSecurity(hsts -> hsts
+                            .includeSubDomains(true)
+                            .maxAgeInSeconds(31_536_000));
+                    headers.referrerPolicy(referrer -> referrer
+                            .policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN));
+                    if (h2ConsoleActive) {
+                        // The H2 console renders itself in a frame and needs its own
+                        // scripts - only relaxed when the h2 profile is actually active,
+                        // the same condition as the matcher above. No CSP is applied in
+                        // this mode because the console cannot run under one.
+                        headers.frameOptions(frame -> frame.sameOrigin());
+                    } else {
+                        headers.frameOptions(frame -> frame.deny());
+                        // Deny-by-default. The salary-slip page is self-contained: one
+                        // inline <style> block, no scripts, no images, no forms, no
+                        // off-origin fetches of any kind - so everything except inline
+                        // style can be switched off outright. JSON responses need none
+                        // of it and are unaffected.
+                        headers.contentSecurityPolicy(csp -> csp.policyDirectives(
+                                "default-src 'none'; style-src 'unsafe-inline'; "
+                                        + "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"));
+                    }
+                })
                 .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class);
-
-        if (h2ConsoleActive) {
-            // The H2 console renders itself in a frame - only relaxed when the
-            // h2 profile is actually active, same condition as the matcher above.
-            http.headers(headers -> headers.frameOptions(frame -> frame.sameOrigin()));
-        }
 
         return http.build();
     }

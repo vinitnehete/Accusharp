@@ -1,5 +1,6 @@
 package com.accusharp.hrms.service;
 
+import com.accusharp.hrms.dto.IssuedTokens;
 import com.accusharp.hrms.dto.TokenResponse;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.PlatformUser;
@@ -8,6 +9,7 @@ import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.exception.AuthenticationFailedException;
+import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.PlatformUserRepository;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
@@ -22,7 +24,9 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Locale;
 
 /**
  * Login, refresh, logout and password change for both principal realms.
@@ -71,10 +75,10 @@ public class AuthService {
      * individual throw site. See {@link LoginRateLimiter}'s Javadoc for why
      * this exists alongside, not instead of, the per-account lockout below.
      */
-    public TokenResponse login(String username, String rawPassword, String clientAddress) {
+    public IssuedTokens login(String username, String rawPassword, String clientAddress) {
         loginRateLimiter.assertNotThrottled(clientAddress);
         try {
-            TokenResponse response = dispatchLogin(username, rawPassword);
+            IssuedTokens response = dispatchLogin(username, rawPassword);
             loginRateLimiter.recordSuccess(clientAddress);
             return response;
         } catch (AuthenticationFailedException failure) {
@@ -83,7 +87,7 @@ public class AuthService {
         }
     }
 
-    private TokenResponse dispatchLogin(String username, String rawPassword) {
+    private IssuedTokens dispatchLogin(String username, String rawPassword) {
         var employee = employeeRepository.findByUserId(username);
         if (employee.isPresent()) {
             return loginAsEmployee(employee.get(), rawPassword);
@@ -99,7 +103,7 @@ public class AuthService {
         throw new AuthenticationFailedException(INVALID_CREDENTIALS);
     }
 
-    private TokenResponse loginAsEmployee(Employee employee, String rawPassword) {
+    private IssuedTokens loginAsEmployee(Employee employee, String rawPassword) {
         if (!employee.isAccountEnabled()) {
             throw new AuthenticationFailedException("Account is disabled");
         }
@@ -131,7 +135,7 @@ public class AuthService {
         return issueTokens(principal, employee.isMustChangePassword());
     }
 
-    private TokenResponse loginAsPlatformUser(PlatformUser user, String rawPassword) {
+    private IssuedTokens loginAsPlatformUser(PlatformUser user, String rawPassword) {
         if (!user.isEnabled()) {
             throw new AuthenticationFailedException("Account is disabled");
         }
@@ -192,7 +196,7 @@ public class AuthService {
      * the principal turns out to be disabled, the token should still be
      * spent, not silently un-revoked by a rollback.
      */
-    public TokenResponse refresh(String rawRefreshToken) {
+    public IssuedTokens refresh(String rawRefreshToken) {
         RefreshToken consumed = refreshTokenService.consume(rawRefreshToken);
 
         boolean mustChangePassword = false;
@@ -231,8 +235,36 @@ public class AuthService {
                         "LOGOUT", "Account", token.getPrincipalId(), AuditOutcome.SUCCESS, null));
     }
 
+    /**
+     * Rules that Bean Validation on {@code ChangePasswordRequest} cannot
+     * express, because each needs something the DTO does not have: the
+     * caller's identity, their current password, or knowledge of the hashing
+     * algorithm.
+     */
+    private void assertNewPasswordAcceptable(String username, String currentPassword, String newPassword) {
+        // BCrypt hashes only the first 72 BYTES and silently ignores the rest.
+        // Accepting a longer password would mean the tail contributes nothing -
+        // and that two different passwords sharing a 72-byte prefix would both
+        // authenticate. Better to refuse than to quietly weaken it.
+        if (newPassword.getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new BusinessRuleException(
+                    "Password must be at most 72 bytes - longer passwords are silently truncated "
+                            + "by the hashing algorithm and would not be fully checked");
+        }
+        if (newPassword.equals(currentPassword)) {
+            throw new BusinessRuleException("New password must be different from the current one");
+        }
+        // A password containing the account name is guessable from information
+        // the attacker already has, whatever its length or composition.
+        if (username != null && newPassword.toLowerCase(Locale.ROOT)
+                .contains(username.toLowerCase(Locale.ROOT))) {
+            throw new BusinessRuleException("Password must not contain your username");
+        }
+    }
+
     @Transactional
     public void changePassword(UserPrincipal principal, String currentPassword, String newPassword) {
+        assertNewPasswordAcceptable(principal.getUsername(), currentPassword, newPassword);
         switch (principal.getType()) {
             case EMPLOYEE -> {
                 Employee employee = employeeRepository.findByUserId(principal.getUsername())
@@ -263,10 +295,17 @@ public class AuthService {
         auditService.record("PASSWORD_CHANGE", "Account", principal.getUsername(), AuditOutcome.SUCCESS, null);
     }
 
-    private TokenResponse issueTokens(UserPrincipal principal, boolean mustChangePassword) {
+    /**
+     * The access token goes in the response body; the refresh token is handed
+     * back separately so {@code AuthController} can put it in an httpOnly
+     * cookie and nowhere else. See {@link IssuedTokens}.
+     */
+    private IssuedTokens issueTokens(UserPrincipal principal, boolean mustChangePassword) {
         String accessToken = jwtService.generateAccessToken(principal);
         String refreshToken = refreshTokenService.issue(principal.getType(), principal.getUsername());
-        return new TokenResponse(accessToken, refreshToken, "Bearer", jwtService.getAccessTokenExpirySeconds(),
-                principal.getType(), principal.getUsername(), principal.getRole(), mustChangePassword);
+        TokenResponse response = new TokenResponse(accessToken, "Bearer",
+                jwtService.getAccessTokenExpirySeconds(), principal.getType(), principal.getUsername(),
+                principal.getRole(), mustChangePassword);
+        return new IssuedTokens(response, refreshToken);
     }
 }

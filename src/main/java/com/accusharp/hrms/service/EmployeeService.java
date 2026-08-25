@@ -128,6 +128,33 @@ public class EmployeeService {
         return new EmployeeCreationResponse(response, temporaryPassword);
     }
 
+    /**
+     * Clears a failed-login lockout without touching the password.
+     *
+     * <p>Until this existed the only way back into a locked account was
+     * {@link #resetPassword}, which mints a new temporary password and forces
+     * a change. That is the right tool when the password is genuinely lost,
+     * but it is the wrong one for the far more common case - someone
+     * fat-fingered their own password five times and is now locked out of an
+     * account whose password they know perfectly well. Forcing a credential
+     * rotation for a typo also trains people to treat temporary passwords as
+     * routine, which is exactly the habit that makes them dangerous.
+     *
+     * <p>Audited separately from a reset so the two are distinguishable when
+     * reviewing who regained access to what, and why.
+     */
+    @Transactional
+    public EmployeeResponse unlockAccount(Long id) {
+        Employee employee = getEntityById(id);
+        boolean wasLocked = employee.isAccountLocked();
+        employee.setAccountLocked(false);
+        employee.setFailedLoginAttempts(0);
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        auditService.record("EMPLOYEE_ACCOUNT_UNLOCK", "Employee", response.userId(),
+                AuditOutcome.SUCCESS, "wasLocked=" + wasLocked);
+        return response;
+    }
+
     @Transactional
     public EmployeeResponse update(Long id, EmployeeRequest request) {
         Employee employee = getEntityById(id);
