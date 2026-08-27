@@ -4,9 +4,13 @@ import com.accusharp.hrms.dto.EmployeeCreationResponse;
 import com.accusharp.hrms.dto.EmployeeRequest;
 import com.accusharp.hrms.dto.EmployeeResponse;
 import com.accusharp.hrms.dto.SalaryRevisionRequest;
+import com.accusharp.hrms.dto.SalaryRevisionPreview;
+import com.accusharp.hrms.dto.SalaryStructurePreview;
 import com.accusharp.hrms.dto.SalaryStructureRequest;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.SalaryRevision;
+import com.accusharp.hrms.entity.SalaryStructureRevision;
+import com.accusharp.hrms.enums.SalaryStructureChangeType;
 import com.accusharp.hrms.entity.SalaryRule;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PrincipalType;
@@ -19,6 +23,7 @@ import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
 import com.accusharp.hrms.repository.SalaryRevisionRepository;
+import com.accusharp.hrms.repository.SalaryStructureRevisionRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
@@ -32,6 +37,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -69,6 +76,7 @@ public class EmployeeService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final DefaultRosterService defaultRosterService;
     private final SalaryRevisionRepository salaryRevisionRepository;
+    private final SalaryStructureRevisionRepository salaryStructureRevisionRepository;
 
     /**
      * Without an initial password, a newly created employee could never log
@@ -204,17 +212,39 @@ public class EmployeeService {
      * back to rule-derived values.
      */
     @Transactional
-    public EmployeeResponse updateSalaryStructure(Long id, SalaryStructureRequest request) {
+    public EmployeeResponse updateSalaryStructure(Long id, SalaryStructureRequest request, String revisedBy) {
         Employee employee = getEntityById(id);
+        // Snapshotted before anything is written: the employee row is about to
+        // be overwritten in place, and without this the previous components are
+        // simply gone. See SalaryStructureRevision's Javadoc.
+        StructureSnapshot before = StructureSnapshot.of(employee);
+
         employee.setBasicDA(salaryCalculationService.scaled(request.getBasicDA()));
         employee.setHra(salaryCalculationService.scaled(request.getHra()));
         employee.setConveyanceAllowance(salaryCalculationService.scaled(request.getConveyanceAllowance()));
         employee.setEducationAllowance(salaryCalculationService.scaled(request.getEducationAllowance()));
+
+        // Optional on this request, and null means "leave as it is" - the
+        // single-employee endpoint has only ever sent the four components above.
+        if (request.getMedicalAllowance() != null) {
+            employee.setMedicalAllowance(salaryCalculationService.scaled(request.getMedicalAllowance()));
+        }
+        if (request.getOtherAllowance() != null) {
+            employee.setOtherAllowance(salaryCalculationService.scaled(request.getOtherAllowance()));
+        }
+        // A correction of what gross is, not a raise: no SalaryRevision row is
+        // written, so payroll reads the new figure as having applied throughout
+        // rather than prorating from a date. See the field's Javadoc.
+        if (request.getGrossSalary() != null) {
+            employee.setGrossSalary(salaryCalculationService.scaled(request.getGrossSalary()));
+        }
+
         employee.setSalaryStructureOverridden(true);
         recalculate(employee); // overridden, so this only refreshes grossSalaryWage
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        recordStructureChange(employee, before, SalaryStructureChangeType.OVERRIDE, revisedBy);
         auditService.record("EMPLOYEE_SALARY_STRUCTURE_OVERRIDE", "Employee", response.userId(),
-                AuditOutcome.SUCCESS, null);
+                AuditOutcome.SUCCESS, before.describeChangeTo(employee));
         return response;
     }
 
@@ -225,13 +255,19 @@ public class EmployeeService {
      * change (or an override) not being reflected until this is called.
      */
     @Transactional
-    public EmployeeResponse regenerateSalaryStructure(Long id) {
+    public EmployeeResponse regenerateSalaryStructure(Long id, String revisedBy) {
         Employee employee = getEntityById(id);
+        // Going back onto the company rule discards a hand-set structure just as
+        // surely as setting one does, so it is recorded the same way.
+        StructureSnapshot before = StructureSnapshot.of(employee);
+
         employee.setSalaryStructureOverridden(false);
         recalculate(employee);
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+
+        recordStructureChange(employee, before, SalaryStructureChangeType.REGENERATE, revisedBy);
         auditService.record("EMPLOYEE_SALARY_STRUCTURE_REGENERATE", "Employee", response.userId(),
-                AuditOutcome.SUCCESS, null);
+                AuditOutcome.SUCCESS, before.describeChangeTo(employee));
         return response;
     }
 
@@ -288,6 +324,15 @@ public class EmployeeService {
             employee.setEducationAllowance(salaryCalculationService.scaled(request.getEducationAllowance()));
         }
 
+        // Fixed amounts no rule derives, so a gross change never moves them on
+        // its own. Optional: a revision that only moves gross leaves them alone.
+        if (request.getMedicalAllowance() != null) {
+            employee.setMedicalAllowance(salaryCalculationService.scaled(request.getMedicalAllowance()));
+        }
+        if (request.getOtherAllowance() != null) {
+            employee.setOtherAllowance(salaryCalculationService.scaled(request.getOtherAllowance()));
+        }
+
         employee.setGrossSalary(request.getNewGrossSalary());
         recalculate(employee);
         Employee saved = employeeRepository.save(employee);
@@ -316,6 +361,208 @@ public class EmployeeService {
                 "previousGross=" + previousGross + ", newGross=" + request.getNewGrossSalary()
                         + ", hikePercent=" + hikePercent + ", reason=" + request.getReason());
         return response;
+    }
+
+    /**
+     * One row of a bulk salary-structure override, applied or merely costed.
+     *
+     * <p>Resolved by {@code userId} through the same tenant-checked choke point
+     * every cross-company read uses, so a file naming another company's
+     * employee fails that row exactly as an unknown one does.
+     *
+     * <p>No arithmetic rule is imposed on the four components - the
+     * single-employee endpoint has never required them to add up to
+     * {@code grossSalary} either, and a legitimate override is often exactly
+     * where they stop agreeing. The gap is <em>reported</em> instead, so a
+     * mismatch is read before it is committed rather than discovered later.
+     *
+     * @param dryRun compute what would happen and write nothing
+     */
+    @Transactional
+    public SalaryStructurePreview overrideSalaryStructureByUserId(String userId,
+                                                                  SalaryStructureRequest request,
+                                                                  String revisedBy,
+                                                                  boolean dryRun) {
+        Employee employee = getEntityByUserId(userId);
+        boolean alreadyOverridden = employee.isSalaryStructureOverridden();
+
+        BigDecimal basicDA = salaryCalculationService.scaled(request.getBasicDA());
+        BigDecimal hra = salaryCalculationService.scaled(request.getHra());
+        BigDecimal conveyance = salaryCalculationService.scaled(request.getConveyanceAllowance());
+        BigDecimal education = salaryCalculationService.scaled(request.getEducationAllowance());
+
+        // Where the row is silent the employee's existing value stands, so the
+        // preview has to resolve the same way the write does or it would report
+        // a picture the apply would not produce.
+        BigDecimal medical = request.getMedicalAllowance() != null
+                ? salaryCalculationService.scaled(request.getMedicalAllowance())
+                : nullToZero(employee.getMedicalAllowance());
+        BigDecimal other = request.getOtherAllowance() != null
+                ? salaryCalculationService.scaled(request.getOtherAllowance())
+                : nullToZero(employee.getOtherAllowance());
+
+        BigDecimal previousGross = salaryCalculationService.scaled(employee.getGrossSalary());
+        BigDecimal gross = request.getGrossSalary() != null
+                ? salaryCalculationService.scaled(request.getGrossSalary())
+                : previousGross;
+
+        BigDecimal totalWage = basicDA.add(hra).add(conveyance).add(education).add(medical).add(other);
+
+        if (!dryRun) {
+            updateSalaryStructure(employee.getId(), request, revisedBy);
+        }
+
+        return new SalaryStructurePreview(employee.getUserId(), employee.getEmployeeName(),
+                previousGross, gross, basicDA, hra, conveyance, education, medical, other,
+                totalWage, totalWage.subtract(gross), alreadyOverridden, !dryRun);
+    }
+
+    private BigDecimal nullToZero(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    /**
+     * One row of a bulk salary revision, applied or merely costed.
+     *
+     * <p>Resolves the employee by {@code userId} - the bulk file identifies
+     * them that way, and {@link #getEntityByUserId} is the same tenant-checked
+     * choke point every cross-company read goes through, so a file naming
+     * another company's employee fails that row exactly as an unknown one does.
+     *
+     * @param dryRun compute what would happen and write nothing. These rows
+     *               drive payroll's own salary segmentation, so a file that
+     *               reprices a whole company should be readable before it is
+     *               committed.
+     */
+    @Transactional
+    public SalaryRevisionPreview reviseSalaryByUserId(String userId, SalaryRevisionRequest request,
+                                                      String revisedBy, boolean dryRun) {
+        Employee employee = getEntityByUserId(userId);
+        assertRevisionIsAllowed(employee, request);
+
+        BigDecimal previousGross = salaryCalculationService.scaled(employee.getGrossSalary());
+        BigDecimal hikePercent = hikePercent(previousGross, request.getNewGrossSalary());
+
+        if (!dryRun) {
+            reviseSalary(employee.getId(), request, revisedBy);
+        }
+
+        // Where the row is silent the employee's existing value stands, so the
+        // preview resolves the same way the write does.
+        BigDecimal medical = request.getMedicalAllowance() != null
+                ? salaryCalculationService.scaled(request.getMedicalAllowance())
+                : nullToZero(employee.getMedicalAllowance());
+        BigDecimal other = request.getOtherAllowance() != null
+                ? salaryCalculationService.scaled(request.getOtherAllowance())
+                : nullToZero(employee.getOtherAllowance());
+
+        return new SalaryRevisionPreview(employee.getUserId(), employee.getEmployeeName(),
+                previousGross, salaryCalculationService.scaled(request.getNewGrossSalary()),
+                hikePercent, request.getEffectiveDate(), request.getReason(),
+                medical, other, !dryRun);
+    }
+
+    /**
+     * The two rules a revision has to clear before it is written.
+     *
+     * <p><b>No prior month.</b> A raise decided in August takes effect in
+     * August or later - never backwards into a month that has already been
+     * worked, reported on and very likely paid. Payroll reconstructs the gross
+     * that applied on each day from these rows
+     * ({@code PayrollService.resolveGrossSalarySegments}), so a backdated row
+     * silently reprices a closed period rather than failing loudly.
+     *
+     * <p><b>No duplicate effective date.</b> Uploading the same file twice
+     * would otherwise write a second revision on the same date, giving the
+     * segment splitter a zero-width segment and recording a 0% hike against a
+     * gross the first row already moved.
+     */
+    private void assertRevisionIsAllowed(Employee employee, SalaryRevisionRequest request) {
+        LocalDate firstOfThisMonth = YearMonth.now().atDay(1);
+        if (request.getEffectiveDate().isBefore(firstOfThisMonth)) {
+            throw new BusinessRuleException("effectiveDate " + request.getEffectiveDate()
+                    + " is before the current month - a revision takes effect from the month it is made ("
+                    + firstOfThisMonth + " or later), never retroactively into a month already worked");
+        }
+        if (salaryRevisionRepository.existsByEmployeeIdAndEffectiveDate(
+                employee.getUserId(), request.getEffectiveDate())) {
+            throw new BusinessRuleException(employee.getUserId()
+                    + " already has a salary revision effective " + request.getEffectiveDate()
+                    + " - remove the duplicate row, or choose a different effective date");
+        }
+    }
+
+    private BigDecimal hikePercent(BigDecimal previousGross, BigDecimal newGross) {
+        return previousGross.signum() == 0
+                ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)
+                : newGross.subtract(previousGross)
+                        .divide(previousGross, 4, RoundingMode.HALF_UP)
+                        .multiply(new BigDecimal("100"))
+                        .setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * The seven figures and the frozen flag, as they stood before a change.
+     * Taken by value: the {@link Employee} it came from is about to be mutated
+     * in place, so holding a reference would record the new state twice.
+     */
+    private record StructureSnapshot(BigDecimal basicDA, BigDecimal hra,
+                                     BigDecimal conveyanceAllowance, BigDecimal educationAllowance,
+                                     BigDecimal medicalAllowance, BigDecimal otherAllowance,
+                                     BigDecimal grossSalary, boolean overridden) {
+
+        static StructureSnapshot of(Employee employee) {
+            return new StructureSnapshot(employee.getBasicDA(), employee.getHra(),
+                    employee.getConveyanceAllowance(), employee.getEducationAllowance(),
+                    employee.getMedicalAllowance(), employee.getOtherAllowance(),
+                    employee.getGrossSalary(), employee.isSalaryStructureOverridden());
+        }
+
+        /** A one-line before/after for the audit log's detail column. */
+        String describeChangeTo(Employee after) {
+            return "basicDA " + basicDA + "->" + after.getBasicDA()
+                    + ", hra " + hra + "->" + after.getHra()
+                    + ", conveyance " + conveyanceAllowance + "->" + after.getConveyanceAllowance()
+                    + ", education " + educationAllowance + "->" + after.getEducationAllowance()
+                    + ", medical " + medicalAllowance + "->" + after.getMedicalAllowance()
+                    + ", other " + otherAllowance + "->" + after.getOtherAllowance()
+                    + ", gross " + grossSalary + "->" + after.getGrossSalary()
+                    + ", overridden " + overridden + "->" + after.isSalaryStructureOverridden();
+        }
+    }
+
+    /** Appends the immutable before/after row for a structure change. */
+    private void recordStructureChange(Employee after, StructureSnapshot before,
+                                       SalaryStructureChangeType changeType, String revisedBy) {
+        salaryStructureRevisionRepository.save(SalaryStructureRevision.builder()
+                .employeeId(after.getUserId())
+                .changeType(changeType)
+                .previousBasicDA(before.basicDA())
+                .previousHra(before.hra())
+                .previousConveyanceAllowance(before.conveyanceAllowance())
+                .previousEducationAllowance(before.educationAllowance())
+                .previousMedicalAllowance(before.medicalAllowance())
+                .previousOtherAllowance(before.otherAllowance())
+                .previousGrossSalary(before.grossSalary())
+                .previouslyOverridden(before.overridden())
+                .newBasicDA(after.getBasicDA())
+                .newHra(after.getHra())
+                .newConveyanceAllowance(after.getConveyanceAllowance())
+                .newEducationAllowance(after.getEducationAllowance())
+                .newMedicalAllowance(after.getMedicalAllowance())
+                .newOtherAllowance(after.getOtherAllowance())
+                .newGrossSalary(after.getGrossSalary())
+                .nowOverridden(after.isSalaryStructureOverridden())
+                .revisedBy(revisedBy)
+                .createdAt(Instant.now())
+                .build());
+    }
+
+    /** Every structure change for this employee, newest first - the components' audit trail. */
+    @Transactional(readOnly = true)
+    public List<SalaryStructureRevision> getSalaryStructureRevisions(Long id) {
+        Employee employee = getEntityById(id);
+        return salaryStructureRevisionRepository.findByEmployeeIdOrderByCreatedAtDesc(employee.getUserId());
     }
 
     /** Every revision for this employee, newest effective date first - the audit trail. */

@@ -45,4 +45,15 @@ public class SalaryRevisionRequest {
 
     @DecimalMin(value = "0")
     private BigDecimal educationAllowance;
+
+    /**
+     * Fixed amounts no rule derives, so they never follow a gross salary change
+     * on their own. Optional, and null means "leave as it is" - a revision that
+     * only moves gross does not have to restate them.
+     */
+    @DecimalMin(value = "0")
+    private BigDecimal medicalAllowance;
+
+    @DecimalMin(value = "0")
+    private BigDecimal otherAllowance;
 }

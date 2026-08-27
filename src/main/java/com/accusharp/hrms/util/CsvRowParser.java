@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -67,7 +68,17 @@ public final class CsvRowParser {
      *                          Used to find that row among any decorative rows above it.
      */
     public static <T> List<ParsedCsvRow<T>> parse(MultipartFile file, String headerHintColumn, RowMapper<T> mapper) {
-        HeaderLocation header = locateHeader(file, headerHintColumn);
+        return parse(file, new String[]{headerHintColumn}, mapper);
+    }
+
+    /**
+     * Same, for a file whose header row may be spelled several ways - a salary
+     * export headed {@code Basic + DA} has to be located as surely as one
+     * headed {@code basicDA}, and the header row is found before any column
+     * alias is consulted, so the hint itself has to know the alternatives.
+     */
+    public static <T> List<ParsedCsvRow<T>> parse(MultipartFile file, String[] headerHintColumns, RowMapper<T> mapper) {
+        HeaderLocation header = locateHeader(file, headerHintColumns);
         CSVFormat format = CSVFormat.DEFAULT.builder()
                 .setHeader(header.names().toArray(new String[0]))
                 .setIgnoreHeaderCase(true)
@@ -107,13 +118,13 @@ public final class CsvRowParser {
         return rows;
     }
 
-    private static HeaderLocation locateHeader(MultipartFile file, String headerHintColumn) {
+    private static HeaderLocation locateHeader(MultipartFile file, String[] headerHintColumns) {
         try (var reader = new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8);
              CSVParser probe = PROBE_FORMAT.parse(reader)) {
             int lineIndex = 0;
             for (CSVRecord record : probe) {
                 for (String cell : record) {
-                    if (stripHeaderMarker(cell).equalsIgnoreCase(headerHintColumn)) {
+                    if (matchesAny(stripHeaderMarker(cell), headerHintColumns)) {
                         List<String> names = new ArrayList<>();
                         for (String c : record) {
                             names.add(stripHeaderMarker(c));
@@ -127,7 +138,17 @@ public final class CsvRowParser {
             throw new BusinessRuleException("Could not read the uploaded CSV file: " + e.getMessage());
         }
         throw new BusinessRuleException(
-                "Could not find a header row containing '" + headerHintColumn + "' - check the file has the expected column names");
+                "Could not find a header row containing '" + headerHintColumns[0]
+                        + "' - check the file has the expected column names");
+    }
+
+    private static boolean matchesAny(String cell, String[] candidates) {
+        for (String candidate : candidates) {
+            if (cell.equalsIgnoreCase(candidate)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Strips the trailing " *" the downloadable templates append to required-column headers. */
@@ -191,6 +212,45 @@ public final class CsvRowParser {
     public static boolean parseBoolean(CSVRecord record, String column) {
         String value = get(record, column);
         return value != null && Boolean.parseBoolean(value);
+    }
+
+    /**
+     * A monetary or decimal value, tolerating the thousands separators and
+     * currency symbols a spreadsheet export leaves behind. With
+     * {@code required} a missing column is an error; without it, {@code null}.
+     * A value that is present but unparseable is an error either way - a typo
+     * in a salary figure must never be read as "not supplied".
+     */
+    public static BigDecimal parseDecimal(CSVRecord record, String column, boolean required) {
+        String value = required ? required(record, column) : get(record, column);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return new BigDecimal(stripThousandsSeparators(value));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(column + " must be a number, got '" + value + "'");
+        }
+    }
+
+    /**
+     * A decimal under whichever of several accepted spellings the file
+     * actually carries. Salary columns get exported from reports under their
+     * display headings - {@code Basic + DA}, {@code Con. Allow} - as often as
+     * under their field names, and rejecting a file over a heading nobody
+     * chose is not a useful failure. The first name is the canonical one and
+     * is what error messages quote.
+     */
+    public static BigDecimal parseDecimalAny(CSVRecord record, boolean required, String... columns) {
+        for (String column : columns) {
+            if (record.isMapped(column) && get(record, column) != null) {
+                return parseDecimal(record, column, false);
+            }
+        }
+        if (required) {
+            throw new IllegalArgumentException(columns[0] + " is required");
+        }
+        return null;
     }
 
     /**
