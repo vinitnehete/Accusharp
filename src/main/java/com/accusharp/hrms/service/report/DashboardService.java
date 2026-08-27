@@ -20,11 +20,9 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.Month;
 import java.time.YearMonth;
-import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -210,10 +208,5 @@ public class DashboardService {
 
     private List<String> userIds(List<Employee> employees) {
         return employees.stream().map(Employee::getUserId).toList();
-    }
-
-    @SuppressWarnings("unused")
-    private String monthLabel(YearMonth period) {
-        return period.getMonth().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + period.getYear();
     }
 }

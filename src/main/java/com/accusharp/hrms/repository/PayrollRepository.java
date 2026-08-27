@@ -29,5 +29,12 @@ public interface PayrollRepository extends JpaRepository<Payroll, Long> {
 
     List<Payroll> findAllByMonthAndYearAndStatus(Integer month, Integer year, PayrollStatus status);
 
-    long countByMonthAndYearAndStatus(Integer month, Integer year, PayrollStatus status);
+    /**
+     * Every generated period for a batch of employees, newest first - for the
+     * reports that span runs rather than sitting inside one: the arrears
+     * report (which periods were paid at a superseded gross) and the full &
+     * final worksheet (what the leaver was last paid).
+     */
+    List<Payroll> findAllByEmployeeIdInAndStatusOrderByYearDescMonthDesc(
+            Collection<String> employeeIds, PayrollStatus status);
 }

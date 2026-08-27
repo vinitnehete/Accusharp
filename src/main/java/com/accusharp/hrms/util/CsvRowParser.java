@@ -10,7 +10,10 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -164,5 +167,46 @@ public final class CsvRowParser {
             throw new IllegalArgumentException(column + " is required");
         }
         return value;
+    }
+
+    /**
+     * ISO {@code yyyy-MM-dd}. With {@code required} the missing-column error is
+     * {@link #required}'s; without it an absent column yields {@code null}. A
+     * value that is present but unparseable is an error either way - a typo is
+     * never silently treated as "not supplied".
+     */
+    public static LocalDate parseDate(CSVRecord record, String column, boolean required) {
+        String value = required ? required(record, column) : get(record, column);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException(column + " must be an ISO date (yyyy-MM-dd), got '" + value + "'");
+        }
+    }
+
+    /** Absent or blank reads as {@code false}; anything Java doesn't read as {@code true} is {@code false}. */
+    public static boolean parseBoolean(CSVRecord record, String column) {
+        String value = get(record, column);
+        return value != null && Boolean.parseBoolean(value);
+    }
+
+    /**
+     * Case-insensitive enum lookup. The failure message lists the accepted
+     * constants, because the caller of a bulk import cannot see the enum.
+     */
+    public static <E extends Enum<E>> E parseEnum(CSVRecord record, String column, Class<E> type, boolean required) {
+        String value = required ? required(record, column) : get(record, column);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Enum.valueOf(type, value.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(column + " must be one of " + Arrays.toString(type.getEnumConstants())
+                    + ", got '" + value + "'");
+        }
     }
 }

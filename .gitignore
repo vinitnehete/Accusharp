@@ -4,6 +4,13 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+### Secrets ###
+# Never commit a real environment file - JWT_SECRET, APP_ENCRYPTION_KEY and the
+# database credentials are supplied per-environment, never from the repository.
+.env
+.env.*
+!.env.example
+
 ### STS ###
 .apt_generated
 .classpath

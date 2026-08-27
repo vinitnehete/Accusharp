@@ -6,8 +6,6 @@ import com.accusharp.hrms.enums.LeaveType;
 import org.apache.commons.csv.CSVRecord;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.time.LocalDate;
-import java.time.format.DateTimeParseException;
 import java.util.List;
 
 /**
@@ -34,32 +32,12 @@ public final class LeaveCsvParser {
     private static LeaveHrDirectRequest toRequest(CSVRecord record) {
         LeaveHrDirectRequest request = new LeaveHrDirectRequest();
         request.setUserId(CsvRowParser.required(record, "userId"));
-        request.setLeaveType(parseEnum(record, "leaveType", LeaveType.class, CsvRowParser.required(record, "leaveType")));
-        request.setFromDate(parseDate(record, "fromDate"));
-        request.setToDate(parseDate(record, "toDate"));
-        String duration = CsvRowParser.get(record, "duration");
-        request.setDuration(duration == null
-                ? LeaveDuration.FULL_DAY
-                : parseEnum(record, "duration", LeaveDuration.class, duration));
+        request.setLeaveType(CsvRowParser.parseEnum(record, "leaveType", LeaveType.class, true));
+        request.setFromDate(CsvRowParser.parseDate(record, "fromDate", true));
+        request.setToDate(CsvRowParser.parseDate(record, "toDate", true));
+        LeaveDuration duration = CsvRowParser.parseEnum(record, "duration", LeaveDuration.class, false);
+        request.setDuration(duration == null ? LeaveDuration.FULL_DAY : duration);
         request.setReason(CsvRowParser.get(record, "reason"));
         return request;
-    }
-
-    private static LocalDate parseDate(CSVRecord record, String column) {
-        String value = CsvRowParser.required(record, column);
-        try {
-            return LocalDate.parse(value);
-        } catch (DateTimeParseException e) {
-            throw new IllegalArgumentException(column + " must be an ISO date (yyyy-MM-dd), got '" + value + "'");
-        }
-    }
-
-    private static <E extends Enum<E>> E parseEnum(CSVRecord record, String column, Class<E> type, String value) {
-        try {
-            return Enum.valueOf(type, value.trim().toUpperCase());
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException(column + " must be one of " + java.util.Arrays.toString(type.getEnumConstants())
-                    + ", got '" + value + "'");
-        }
     }
 }

@@ -71,6 +71,19 @@
 			<version>1.11.0</version>
 		</dependency>
 
+		<!-- Pins commons-csv's transitive commons-io above 2.16.1, which carries
+		     CVE-2024-47554 (uncontrolled resource consumption in XmlStreamReader,
+		     fixed in 2.17.0). This application never touches XmlStreamReader, so
+		     the vulnerable path is unreachable - but the CI dependency-check gate
+		     is failBuildOnCVSS=7 and this scores 5.5, so it would not be caught
+		     there. Drop this pin once commons-csv itself is upgraded to a release
+		     that depends on 2.17.0 or later. -->
+		<dependency>
+			<groupId>commons-io</groupId>
+			<artifactId>commons-io</artifactId>
+			<version>2.20.0</version>
+		</dependency>
+
 		<!-- Lets the app boot without MySQL: -Dspring-boot.run.profiles=h2.
 		     Kept at runtime scope so `spring-boot:run` and the test suite can both
 		     use it, but EXCLUDED from the repackaged jar below - a production
@@ -91,12 +104,6 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
-			<scope>test</scope>
-		</dependency>
-
-		<dependency>
-			<groupId>org.springframework.security</groupId>
-			<artifactId>spring-security-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>

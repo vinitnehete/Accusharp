@@ -10,6 +10,8 @@ import com.accusharp.hrms.service.payroll.PayrollService;
 import com.accusharp.hrms.util.ParsedCsvRow;
 import com.accusharp.hrms.util.PayrollCsvParser;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -59,8 +61,8 @@ public class PayrollController {
     @PreAuthorize("@authz.can('PAYROLL_PROCESS')")
     @PostMapping("/generate-all")
     public BulkImportResult<Payroll> generateForAll(@AuthenticationPrincipal UserPrincipal principal,
-                                                     @RequestParam int month,
-                                                     @RequestParam int year) {
+                                                     @RequestParam @Min(1) @Max(12) int month,
+                                                     @RequestParam @Min(2000) @Max(2100) int year) {
         List<String> employeeIds = payrollService.pendingGenerationEmployeeIds(month, year);
         List<Payroll> succeeded = new ArrayList<>();
         List<BulkImportResult.RowError> errors = new ArrayList<>();
@@ -97,8 +99,8 @@ public class PayrollController {
     @PostMapping(value = "/bulk-generate", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public BulkImportResult<Payroll> bulkGenerate(@AuthenticationPrincipal UserPrincipal principal,
                                                     @RequestParam("file") MultipartFile file,
-                                                    @RequestParam int month,
-                                                    @RequestParam int year,
+                                                    @RequestParam @Min(1) @Max(12) int month,
+                                                    @RequestParam @Min(2000) @Max(2100) int year,
                                                     @RequestParam(defaultValue = "false") boolean regenerate) {
         List<ParsedCsvRow<PayrollRequest>> rows = PayrollCsvParser.parse(file, month, year);
         List<Payroll> succeeded = new ArrayList<>();
@@ -146,8 +148,8 @@ public class PayrollController {
     @PreAuthorize("@authz.can('PAYROLL_READ')")
     @GetMapping("/employee/{employeeId}/period")
     public Payroll getCurrent(@PathVariable String employeeId,
-                              @RequestParam int month,
-                              @RequestParam int year) {
+                              @RequestParam @Min(1) @Max(12) int month,
+                              @RequestParam @Min(2000) @Max(2100) int year) {
         return payrollService.getCurrent(employeeId, month, year);
     }
 
@@ -155,14 +157,14 @@ public class PayrollController {
     @PreAuthorize("@authz.can('PAYROLL_READ')")
     @GetMapping("/employee/{employeeId}/revisions")
     public List<Payroll> getRevisions(@PathVariable String employeeId,
-                                      @RequestParam int month,
-                                      @RequestParam int year) {
+                                      @RequestParam @Min(1) @Max(12) int month,
+                                      @RequestParam @Min(2000) @Max(2100) int year) {
         return payrollService.getRevisions(employeeId, month, year);
     }
 
     @PreAuthorize("@authz.can('PAYROLL_READ')")
     @GetMapping
-    public List<Payroll> getPeriod(@RequestParam int month, @RequestParam int year) {
+    public List<Payroll> getPeriod(@RequestParam @Min(1) @Max(12) int month, @RequestParam @Min(2000) @Max(2100) int year) {
         return payrollService.getPeriodForCaller(month, year);
     }
 
@@ -175,7 +177,7 @@ public class PayrollController {
      */
     @PreAuthorize("@authz.can('PAYROLL_READ')")
     @GetMapping("/debug")
-    public List<PayrollDebugRow> getPeriodDebug(@RequestParam int month, @RequestParam int year) {
+    public List<PayrollDebugRow> getPeriodDebug(@RequestParam @Min(1) @Max(12) int month, @RequestParam @Min(2000) @Max(2100) int year) {
         return payrollService.getPeriodDebugForCaller(month, year);
     }
 }

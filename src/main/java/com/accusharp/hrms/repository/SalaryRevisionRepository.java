@@ -3,6 +3,8 @@ package com.accusharp.hrms.repository;
 import com.accusharp.hrms.entity.SalaryRevision;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 
 public interface SalaryRevisionRepository extends JpaRepository<SalaryRevision, Long> {
@@ -11,4 +13,8 @@ public interface SalaryRevisionRepository extends JpaRepository<SalaryRevision, 
 
     /** Chronological order - what payroll walks to reconstruct which gross salary applied on which day. */
     List<SalaryRevision> findByEmployeeIdOrderByEffectiveDateAsc(String employeeId);
+
+    /** Every revision taking effect inside a window, across a batch of employees - the salary revision report. */
+    List<SalaryRevision> findAllByEmployeeIdInAndEffectiveDateBetweenOrderByEffectiveDateDesc(
+            Collection<String> employeeIds, LocalDate from, LocalDate to);
 }

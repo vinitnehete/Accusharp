@@ -13,6 +13,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -73,6 +74,33 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleUnreadableBody(HttpMessageNotReadableException ex,
                                                          HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST, "Malformed or missing JSON request body", request);
+    }
+
+    /**
+     * A constraint on a handler parameter itself - {@code @RequestParam @Min(1)
+     * @Max(12) int month} and friends - rather than on a {@code @RequestBody}
+     * object, which is {@link MethodArgumentNotValidException} above.
+     *
+     * <p>Spring MVC raises this from its own built-in method validation, and
+     * would map it to a 400 itself via {@code DefaultHandlerExceptionResolver}
+     * - but {@code @ExceptionHandler} resolution runs first, so without this
+     * method the catch-all below would claim it and report an ordinary client
+     * mistake as a 500. That is the same reasoning as
+     * {@link #handleMissingParameter}.
+     */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiError> handleParameterValidation(HandlerMethodValidationException ex,
+                                                              HttpServletRequest request) {
+        String message = ex.getParameterValidationResults().stream()
+                .flatMap(result -> {
+                    String name = result.getMethodParameter().getParameterName();
+                    return result.getResolvableErrors().stream()
+                            .map(error -> (name == null ? "parameter" : name)
+                                    + " " + error.getDefaultMessage());
+                })
+                .collect(Collectors.joining("; "));
+        return build(HttpStatus.BAD_REQUEST,
+                message.isBlank() ? "One or more request parameters are invalid" : message, request);
     }
 
     /**

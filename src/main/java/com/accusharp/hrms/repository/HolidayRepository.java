@@ -30,6 +30,4 @@ public interface HolidayRepository extends JpaRepository<Holiday, Long> {
             + "and h.holidayDate between :fromDate and :toDate order by h.holidayDate asc")
     List<Holiday> findAllByCompanyIdAndHolidayDateBetweenOrderByHolidayDateAsc(
             Long companyId, LocalDate fromDate, LocalDate toDate);
-
-    boolean existsByHolidayDateAndOptionalHolidayFalse(LocalDate holidayDate);
 }

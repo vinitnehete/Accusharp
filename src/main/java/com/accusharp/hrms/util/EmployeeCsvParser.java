@@ -9,8 +9,6 @@ import org.apache.commons.csv.CSVRecord;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.time.format.DateTimeParseException;
 import java.util.List;
 
 /**
@@ -57,12 +55,12 @@ public final class EmployeeCsvParser {
         request.setDesignationId(parseLong(record, "designationId"));
         request.setCategoryId(parseLong(record, "categoryId"));
         request.setSupervisorUserId(CsvRowParser.get(record, "supervisorUserId"));
-        request.setJoiningDate(parseDate(record, "joiningDate"));
-        request.setDateOfBirth(parseDate(record, "dateOfBirth"));
-        request.setGender(parseEnum(record, "gender", Gender.class, false));
-        request.setStatus(parseEnum(record, "status", EmployeeStatus.class, true));
-        request.setRecordStatus(parseEnum(record, "recordStatus", RecordStatus.class, false));
-        request.setRole(parseEnum(record, "role", Role.class, false));
+        request.setJoiningDate(CsvRowParser.parseDate(record, "joiningDate", false));
+        request.setDateOfBirth(CsvRowParser.parseDate(record, "dateOfBirth", false));
+        request.setGender(CsvRowParser.parseEnum(record, "gender", Gender.class, false));
+        request.setStatus(CsvRowParser.parseEnum(record, "status", EmployeeStatus.class, true));
+        request.setRecordStatus(CsvRowParser.parseEnum(record, "recordStatus", RecordStatus.class, false));
+        request.setRole(CsvRowParser.parseEnum(record, "role", Role.class, false));
         request.setEmail(CsvRowParser.get(record, "email"));
         request.setPhone(CsvRowParser.get(record, "phone"));
         request.setUanNo(CsvRowParser.get(record, "uanNo"));
@@ -73,7 +71,7 @@ public final class EmployeeCsvParser {
         request.setPfBasic(parseDecimal(record, "pfBasic", true));
         request.setMedicalAllowance(parseDecimal(record, "medicalAllowance", true));
         request.setOtherAllowance(parseDecimal(record, "otherAllowance", true));
-        request.setOvertimeEligible(parseBoolean(record, "overtimeEligible"));
+        request.setOvertimeEligible(CsvRowParser.parseBoolean(record, "overtimeEligible"));
         request.setBasicDA(parseDecimal(record, "basicDA", false));
         request.setHra(parseDecimal(record, "hra", false));
         request.setConveyanceAllowance(parseDecimal(record, "conveyanceAllowance", false));
@@ -108,36 +106,4 @@ public final class EmployeeCsvParser {
         }
     }
 
-    private static LocalDate parseDate(CSVRecord record, String column) {
-        String value = CsvRowParser.get(record, column);
-        if (value == null) {
-            return null;
-        }
-        try {
-            return LocalDate.parse(value);
-        } catch (DateTimeParseException e) {
-            throw new IllegalArgumentException(column + " must be an ISO date (yyyy-MM-dd), got '" + value + "'");
-        }
-    }
-
-    private static boolean parseBoolean(CSVRecord record, String column) {
-        String value = CsvRowParser.get(record, column);
-        return value != null && Boolean.parseBoolean(value);
-    }
-
-    private static <E extends Enum<E>> E parseEnum(CSVRecord record, String column, Class<E> type, boolean required) {
-        String value = CsvRowParser.get(record, column);
-        if (value == null) {
-            if (required) {
-                throw new IllegalArgumentException(column + " is required");
-            }
-            return null;
-        }
-        try {
-            return Enum.valueOf(type, value.trim().toUpperCase());
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException(column + " must be one of " + java.util.Arrays.toString(type.getEnumConstants())
-                    + ", got '" + value + "'");
-        }
-    }
 }

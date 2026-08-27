@@ -43,8 +43,6 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
 
     List<Employee> findByCompanyId(Long companyId);
 
-    long countByRecordStatus(RecordStatus recordStatus);
-
     @Query("""
             select e from Employee e
             where e.recordStatus = com.accusharp.hrms.enums.RecordStatus.ACTIVE

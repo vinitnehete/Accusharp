@@ -103,6 +103,11 @@ public class EmployeeController {
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType("text/csv"))
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"employee-credentials.csv\"")
+                    // This body carries one-time plaintext passwords. Keep it out of
+                    // shared/proxy caches and out of the browser's back-forward cache -
+                    // the file itself already outlives the request in the user's
+                    // downloads folder, which is as far as it should ever travel.
+                    .header(HttpHeaders.CACHE_CONTROL, "no-store")
                     .body(csv);
         }
         return ResponseEntity.ok(BulkImportResult.of(rows.size(), succeeded, errors));
@@ -228,13 +233,6 @@ public class EmployeeController {
     }
 
     /**
-     * Practical stand-in for self-service forgot-password (no email
-     * infrastructure exists to build the real thing) - HR/ADMIN generates a
-     * new temporary password for an employee who's lost theirs or is
-     * locked out. Same permission as every other account-affecting change
-     * to this employee, same one-time-return contract as {@code create}.
-     */
-    /**
      * Clears a failed-login lockout, leaving the password alone - see
      * {@code EmployeeService#unlockAccount} for why this is not just
      * {@code reset-password}.
@@ -245,6 +243,13 @@ public class EmployeeController {
         return employeeService.unlockAccount(id);
     }
 
+    /**
+     * Practical stand-in for self-service forgot-password (no email
+     * infrastructure exists to build the real thing) - HR/ADMIN generates a
+     * new temporary password for an employee who's lost theirs or is
+     * locked out. Same permission as every other account-affecting change
+     * to this employee, same one-time-return contract as {@code create}.
+     */
     @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")
     @PostMapping("/{id}/reset-password")
     public EmployeeCreationResponse resetPassword(@PathVariable Long id) {

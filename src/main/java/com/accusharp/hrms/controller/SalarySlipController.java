@@ -2,6 +2,8 @@ package com.accusharp.hrms.controller;
 
 import com.accusharp.hrms.dto.SalarySlipResponse;
 import com.accusharp.hrms.service.payroll.SalarySlipService;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -26,21 +28,21 @@ public class SalarySlipController {
 
     @GetMapping("/{employeeId}")
     public SalarySlipResponse getSlip(@PathVariable String employeeId,
-                                      @RequestParam int month,
-                                      @RequestParam int year) {
+                                      @RequestParam @Min(1) @Max(12) int month,
+                                      @RequestParam @Min(2000) @Max(2100) int year) {
         return salarySlipService.getSlip(employeeId, month, year);
     }
 
     @GetMapping
-    public List<SalarySlipResponse> getPeriodSlips(@RequestParam int month, @RequestParam int year) {
+    public List<SalarySlipResponse> getPeriodSlips(@RequestParam @Min(1) @Max(12) int month, @RequestParam @Min(2000) @Max(2100) int year) {
         return salarySlipService.getSlipsForPeriod(month, year);
     }
 
     /** Print-ready slip - open in a browser and print or save as PDF. */
     @GetMapping(value = "/{employeeId}/print", produces = MediaType.TEXT_HTML_VALUE)
     public ResponseEntity<String> print(@PathVariable String employeeId,
-                                        @RequestParam int month,
-                                        @RequestParam int year) {
+                                        @RequestParam @Min(1) @Max(12) int month,
+                                        @RequestParam @Min(2000) @Max(2100) int year) {
         String html = salarySlipService.renderHtml(employeeId, month, year);
         return ResponseEntity.ok()
                 .contentType(new MediaType(MediaType.TEXT_HTML, StandardCharsets.UTF_8))
@@ -49,7 +51,7 @@ public class SalarySlipController {
 
     /** Spreadsheet export of the whole period. */
     @GetMapping(value = "/export", produces = "text/csv")
-    public ResponseEntity<String> exportCsv(@RequestParam int month, @RequestParam int year) {
+    public ResponseEntity<String> exportCsv(@RequestParam @Min(1) @Max(12) int month, @RequestParam @Min(2000) @Max(2100) int year) {
         String csv = salarySlipService.renderPeriodCsv(month, year);
         String filename = "salary-slips-%d-%02d.csv".formatted(year, month);
         return ResponseEntity.ok()
