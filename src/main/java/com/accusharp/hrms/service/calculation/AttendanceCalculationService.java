@@ -18,6 +18,25 @@ import java.util.List;
  * Turns raw punches into one day of attendance, interpreted through the shift
  * the employee was actually scheduled on.
  *
+ * <p><b>Only the first and last punch of a day decide it.</b> Anything punched
+ * in between is recorded in {@code device_logs} but has no effect on hours,
+ * break, overtime or status, and the unpaid break is always the shift's
+ * configured {@code breakMinutes}.
+ *
+ * <p>An earlier version tried to be cleverer: with four or more punches and an
+ * even count it treated the middle pairs as real out-and-back-in cycles and
+ * measured the break between them. The device makes that unsafe - a punch row
+ * is just {@code (user_id, log_date)} with no in/out flag, so nothing
+ * distinguishes a genuine mid-shift exit from the reader firing twice on one
+ * badge. In production it fired twice routinely, seconds apart, and the
+ * consequence was severe: punches at 10:25:42, 10:25:44, 20:40:13 and 20:40:14
+ * were read as one minute of work, a ten-hour break, and one more minute -
+ * {@code 614 - 614 = 0} worked minutes, so a full day plus two hours of
+ * overtime scored {@code ABSENT} and became loss of pay. A rule that turns the
+ * most common hardware quirk into an unpaid day is not worth the accuracy it
+ * buys on the rare real mid-shift exit, which is what a manual correction is
+ * for.
+ *
  * <p>The one piece of genuinely non-obvious logic lives here: a night shift's
  * punch window spans into the next calendar day, but the day still belongs to
  * the shift's start date. Keeping that in a single method is why callers never
@@ -74,7 +93,9 @@ public class AttendanceCalculationService {
         LocalDateTime lastOut = punches.getLast().getLogDate();
 
         long spanMinutes = Duration.between(firstIn, lastOut).toMinutes();
-        long breakMinutes = resolveBreakMinutes(punches, shift);
+        // The first and last punch decide the day; everything between them is
+        // ignored. The break is always the shift's configured one.
+        long breakMinutes = shift.getBreakMinutes();
         long workedMinutes = Math.max(0, spanMinutes - breakMinutes);
 
         LocalDateTime graceEnd = shiftDate.atTime(shift.getStartTime()).plusMinutes(shift.getGraceMinutes());
@@ -100,23 +121,6 @@ public class AttendanceCalculationService {
             case HALF_DAY -> new BigDecimal("0.5");
             default -> BigDecimal.ZERO;
         };
-    }
-
-    /**
-     * With four or more punches the middle pairs are real in/out cycles, so
-     * the break is the actual time spent outside. Otherwise fall back to the
-     * shift's configured unpaid break.
-     */
-    private long resolveBreakMinutes(List<DeviceLog> punches, Shift shift) {
-        if (punches.size() < 4 || punches.size() % 2 != 0) {
-            return shift.getBreakMinutes();
-        }
-        long breakMinutes = 0;
-        for (int i = 1; i < punches.size() - 1; i += 2) {
-            breakMinutes += Duration.between(punches.get(i).getLogDate(),
-                    punches.get(i + 1).getLogDate()).toMinutes();
-        }
-        return Math.max(0, breakMinutes);
     }
 
     private AttendanceStatus resolveNonWorkingStatus(int punchCount, boolean weekOff,

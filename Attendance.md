@@ -238,10 +238,23 @@ earlyExitMinutes = max(0, scheduledEnd - lastOut)
 overtimeMinutes  = max(0, workedMinutes - workingHours * 60)
 ```
 
-**Break.** With **four or more punches and an even count**, the middle pairs are
-treated as real out/in cycles and the break is the actual time spent outside.
-Otherwise the shift's configured `breakMinutes` applies. An odd count of five or
-more falls back to the configured break - the pairs cannot be trusted.
+**Only the first and last punch decide the day.** Anything punched in between
+is kept in `device_logs` but has no effect on hours, break, overtime or status.
+The unpaid break is always the shift's configured `breakMinutes`.
+
+> An earlier version tried to be cleverer: with four or more punches and an even
+> count it treated the middle pairs as real out-and-back-in cycles and measured
+> the break between them. The device makes that unsafe - a punch row is just
+> `(user_id, log_date)` with no in/out flag, so nothing distinguishes a genuine
+> mid-shift exit from the reader firing twice on one badge. It fired twice
+> routinely, seconds apart, and the cost was severe: punches at `10:25:42`,
+> `10:25:44`, `20:40:13`, `20:40:14` read as one minute of work, a ten-hour
+> break, and one more minute - `614 - 614 = 0` worked minutes, so a full day
+> plus two hours of overtime scored `ABSENT` and became loss of pay.
+>
+> The trade is deliberate: someone who genuinely leaves mid-shift for three
+> hours is now paid as though they took only the configured break. That is a
+> correction (section 6), not a calculation.
 
 **Day value.** Measured as a share of the shift's paid hours:
 

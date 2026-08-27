@@ -216,9 +216,11 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
   full overtime window survives, and consecutive night shifts never collide.
   The roster is read one day either side of the requested range, which is what
   makes the last night shift of a month hand over correctly to the next month.
-- **Break.** With four or more punches the middle pairs are real in/out cycles,
-  so the actual time outside is used. Otherwise the shift's configured unpaid
-  break applies.
+- **Break.** Only the first and last punch of a day decide it; anything in
+  between is ignored, and the unpaid break is always the shift's configured
+  `breakMinutes`. Measuring the break from middle pairs was unsafe - the device
+  has no in/out flag, so a reader firing twice on one badge was indistinguishable
+  from a real mid-shift exit, and turned a full day into loss of pay.
 - **Day value.** `fullDayThresholdPercent` of the shift earns a full day (75%
   by default), `halfDayThresholdPercent` earns a half day (40% by default),
   below that is absent. One lone punch is an invalid punch (a device error),

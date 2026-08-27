@@ -184,8 +184,8 @@ class AttendanceCalculationServiceTest {
     }
 
     @Test
-    @DisplayName("four punches measure the real break instead of the configured one")
-    void fourPunchesUseActualBreak() {
+    @DisplayName("only the first and last punch decide the day - middle punches are ignored")
+    void middlePunchesDoNotAffectTheDay() {
         List<DeviceLog> punches = List.of(
                 punch(DAY.atTime(6, 0)),
                 punch(DAY.atTime(10, 0)),
@@ -195,9 +195,34 @@ class AttendanceCalculationServiceTest {
         DailyAttendanceResponse day = service.calculateDay("EMP001", DAY, morning(), punches,
                 false, false, false, rule);
 
-        // 9h span - the 30 minutes actually spent out.
-        assertThat(day.breakHours()).isEqualByComparingTo("0.50");
-        assertThat(day.workingHours()).isEqualByComparingTo("8.50");
+        // 9h span, less the shift's configured 60-minute break - the half hour
+        // spent outside at 10:00 makes no difference either way.
+        assertThat(day.breakHours()).isEqualByComparingTo("1.00");
+        assertThat(day.workingHours()).isEqualByComparingTo("8.00");
+        assertThat(day.firstIn()).isEqualTo(DAY.atTime(6, 0));
+        assertThat(day.lastOut()).isEqualTo(DAY.atTime(15, 0));
+    }
+
+    @Test
+    @DisplayName("a reader firing twice on one badge no longer costs the employee the day")
+    void doubleReadsDoNotDestroyTheDay() {
+        // Real punches, SE10098, 21 July 2026. The reader fired twice on entry
+        // and twice on exit, two seconds and one second apart. Measuring the
+        // break from the middle pair made this 614 - 614 = 0 worked minutes, so
+        // a full day plus overtime scored ABSENT and became loss of pay.
+        List<DeviceLog> punches = List.of(
+                punch(DAY.atTime(10, 25, 42)),
+                punch(DAY.atTime(10, 25, 44)),
+                punch(DAY.atTime(20, 40, 13)),
+                punch(DAY.atTime(20, 40, 14)));
+
+        DailyAttendanceResponse day = service.calculateDay("EMP001", DAY, morning(), punches,
+                false, false, false, rule);
+
+        assertThat(day.status()).isEqualTo(AttendanceStatus.PRESENT);
+        assertThat(day.firstIn()).isEqualTo(DAY.atTime(10, 25, 42));
+        assertThat(day.lastOut()).isEqualTo(DAY.atTime(20, 40, 14));
+        assertThat(day.breakHours()).isEqualByComparingTo("1.00");
     }
 
     @Test
