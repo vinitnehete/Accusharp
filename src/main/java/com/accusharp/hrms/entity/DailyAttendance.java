@@ -114,6 +114,26 @@ public class DailyAttendance {
     @Column(name = "updated_by", length = 50)
     private String updatedBy;
 
+    /**
+     * Guards the concurrent-generation race the unique constraint above can only
+     * turn into a constraint violation. Two generation runs for the same
+     * employee and month both read the existing rows, both recompute, and both
+     * write; without a version the later write silently wins with figures
+     * derived from a snapshot taken before the earlier one landed.
+     *
+     * <p>The column is declared {@code not null default 0} rather than plain
+     * nullable on purpose: adding a nullable version column to a table that
+     * already has rows leaves every one of them at {@code NULL}, and Hibernate
+     * then puts {@code row_version = NULL} in the update predicate, which
+     * matches nothing - every existing day would become unwritable. The default
+     * makes the {@code ALTER} backfill existing rows with 0 instead. On any
+     * database where that does not hold, backfill before deploying:
+     * {@code UPDATE emp_daily_attendance SET row_version = 0 WHERE row_version IS NULL;}
+     */
+    @Version
+    @Column(name = "row_version", nullable = false, columnDefinition = "bigint not null default 0")
+    private Long version;
+
     /** A day the employee was expected to work - the LOP denominator. */
     public boolean isWorkingDay() {
         return !weekOff && !holiday;

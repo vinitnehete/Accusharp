@@ -72,7 +72,7 @@ On an **empty** database the app creates:
 
 | | |
 |---|---|
-| Shifts | `MORNING` 06:00-15:00, `GENERAL` 09:00-18:00, `EVENING` 14:00-23:00, `NIGHT` 18:00-08:00 |
+| Shifts | `MORNING` 06:00-19:00, `GENERAL` 09:00-19:00, `EVENING` 14:00-23:00, `NIGHT` 18:00-08:00 - all with `workingHours` 8, `breakMinutes` 0, `graceMinutes` 120, `overtimeWindowMinutes` 240 |
 | Categories | `WORKER`, `STAFF`, `SUPERVISOR`, `MANAGER`, `DIRECTOR` - shared defaults; add more via `/api/categories` |
 | Salary rule | Basic 50%, HRA 40%, Conveyance 10%, Education 10%, PF 12%, ESIC 0.75% |
 | Demo org | Company `ACC`, departments `PROD`/`ADMIN`, and 4 employees |

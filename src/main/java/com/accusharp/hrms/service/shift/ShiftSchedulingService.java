@@ -17,6 +17,7 @@ import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.service.AuditService;
+import com.accusharp.hrms.service.calculation.AttendanceCalculationService;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.HolidayService;
 import lombok.RequiredArgsConstructor;
@@ -25,8 +26,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,6 +57,7 @@ public class ShiftSchedulingService {
     private final HolidayService holidayService;
     private final TenantContext tenantContext;
     private final AuditService auditService;
+    private final AttendanceCalculationService attendanceCalculationService;
 
     // ---- single assignment -------------------------------------------------
 
@@ -79,6 +83,7 @@ public class ShiftSchedulingService {
                 shift.getShiftCode());
         auditService.record("SHIFT_SCHEDULE_ASSIGN", "ShiftSchedule", saved.getUserId() + " " + saved.getShiftDate(),
                 AuditOutcome.SUCCESS, "shift=" + shift.getShiftCode());
+        warnAboutRestGaps(List.of(saved.getUserId()), saved.getShiftDate(), saved.getShiftDate());
         return toResponse(saved);
     }
 
@@ -137,6 +142,7 @@ public class ShiftSchedulingService {
                 request.getFromDate() + ".." + request.getToDate(), AuditOutcome.SUCCESS,
                 "employees=" + request.getUserIds().size() + " days=" + toSave.size()
                         + " shift=" + shift.getShiftCode());
+        warnAboutRestGaps(request.getUserIds(), request.getFromDate(), request.getToDate());
         return saved;
     }
 
@@ -198,6 +204,7 @@ public class ShiftSchedulingService {
         auditService.record("SHIFT_SCHEDULE_AUTO_ROTATE", "ShiftSchedule",
                 request.getFromDate() + ".." + request.getToDate(), AuditOutcome.SUCCESS,
                 "employees=" + request.getUserIds().size() + " days=" + toSave.size());
+        warnAboutRestGaps(request.getUserIds(), request.getFromDate(), request.getToDate());
         return saved;
     }
 
@@ -441,6 +448,50 @@ public class ShiftSchedulingService {
                 }
             }
             default -> throw new BusinessRuleException("Role " + actor.getRole() + " cannot assign shifts");
+        }
+    }
+
+    /**
+     * Flags consecutive assignments nobody could physically work - a night shift
+     * ending 08:00 followed by a morning shift starting 06:00, which the roster
+     * has always accepted and still does.
+     *
+     * <p>Deliberately advisory. HR overrides rosters for real reasons and a hard
+     * rejection would break that; the attendance engine no longer needs
+     * protecting from the data either, since a shift now owns its own span
+     * whatever is assigned after it. But an impossible roster is still almost
+     * always a mistake, and it used to be invisible until someone read a month's
+     * loss of pay - so it is said out loud at the moment it is created.
+     */
+    private void warnAboutRestGaps(Collection<String> userIds, LocalDate fromDate, LocalDate toDate) {
+        for (String userId : userIds) {
+            List<ShiftSchedule> around = shiftScheduleRepository
+                    .findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
+                            userId, fromDate.minusDays(1), toDate.plusDays(1));
+
+            for (int i = 0; i + 1 < around.size(); i++) {
+                ShiftSchedule earlier = around.get(i);
+                ShiftSchedule later = around.get(i + 1);
+                if (earlier.isWeekOff() || later.isWeekOff()
+                        || !later.getShiftDate().equals(earlier.getShiftDate().plusDays(1))) {
+                    continue;
+                }
+                LocalDateTime earlierEnds = attendanceCalculationService
+                        .scheduledEnd(earlier.getShiftDate(), earlier.getShift());
+                LocalDateTime laterStarts = later.getShiftDate().atTime(later.getShift().getStartTime());
+                if (laterStarts.isAfter(earlierEnds)) {
+                    continue;
+                }
+                log.warn("shift.rest-gap userId={} {} {} ends {} but {} {} starts {} - nobody can work both;"
+                                + " attendance will assign the contested punches to the earlier date",
+                        userId, earlier.getShiftDate(), earlier.getShift().getShiftCode(), earlierEnds,
+                        later.getShiftDate(), later.getShift().getShiftCode(), laterStarts);
+                auditService.record("SHIFT_SCHEDULE_REST_GAP", "ShiftSchedule",
+                        userId + " " + earlier.getShiftDate() + ".." + later.getShiftDate(),
+                        AuditOutcome.SUCCESS,
+                        earlier.getShift().getShiftCode() + " ends " + earlierEnds
+                                + " but " + later.getShift().getShiftCode() + " starts " + laterStarts);
+            }
         }
     }
 

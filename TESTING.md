@@ -177,9 +177,9 @@ how the system knows it crosses midnight:
 
 ```json
 [
-  { "id": 1, "shiftCode": "MORNING", "startTime": "06:00:00", "endTime": "15:00:00",
-    "workingHours": 8, "breakMinutes": 60, "graceMinutes": 15, "overtimeWindowMinutes": 240 },
-  { "id": 2, "shiftCode": "GENERAL", "startTime": "09:00:00", "endTime": "18:00:00", "...": "..." },
+  { "id": 1, "shiftCode": "MORNING", "startTime": "06:00:00", "endTime": "19:00:00",
+    "workingHours": 8, "breakMinutes": 0, "graceMinutes": 120, "overtimeWindowMinutes": 240 },
+  { "id": 2, "shiftCode": "GENERAL", "startTime": "09:00:00", "endTime": "19:00:00", "...": "..." },
   { "id": 3, "shiftCode": "EVENING", "startTime": "14:00:00", "endTime": "23:00:00", "...": "..." },
   { "id": 4, "shiftCode": "NIGHT",   "startTime": "18:00:00", "endTime": "08:00:00", "...": "..." }
 ]

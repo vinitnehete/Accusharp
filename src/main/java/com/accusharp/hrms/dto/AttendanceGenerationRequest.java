@@ -31,4 +31,13 @@ public class AttendanceGenerationRequest {
      * that arrived late without discarding what an admin already corrected.
      */
     private boolean overwriteManual;
+
+    /**
+     * Computes everything and reports what would change, without writing a
+     * single row. Attendance decides pay, so a run that moves a month's loss of
+     * pay should be readable before it is committed - particularly when
+     * regenerating a past period, where the previous numbers have already been
+     * seen and possibly acted on.
+     */
+    private boolean dryRun;
 }

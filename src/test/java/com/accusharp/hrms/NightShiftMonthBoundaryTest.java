@@ -254,6 +254,20 @@ class NightShiftMonthBoundaryTest {
         assertThat(claims)
                 .as("the 07:45 handover punch must belong to exactly one day")
                 .isEqualTo(1);
+
+        // Claiming it exactly once is only half the invariant, and on its own it
+        // is satisfied by discarding the punch - which is what used to happen
+        // here: the next day's entry buffer shortened the night shift's window to
+        // before its own 08:00 end, both days were left holding a single punch,
+        // and one ordinary night's work became two days of loss of pay. So assert
+        // the other half too: the night shift closes, and it closes on that punch.
+        assertThat(june30.status())
+                .as("the night shift must close, not be discarded")
+                .isEqualTo(AttendanceStatus.PRESENT);
+        assertThat(june30.lastOut()).isEqualTo(LocalDate.of(2026, 7, 1).atTime(7, 45));
+        assertThat(july1.firstIn())
+                .as("1 July has no punch of its own")
+                .isNull();
     }
 
     // ---- fixtures ----------------------------------------------------------

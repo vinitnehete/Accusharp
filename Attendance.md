@@ -91,10 +91,14 @@ counts towards that day.
     start - 60min    start          end        end + overtimeWindowMinutes
 ```
 
-- **Opens 60 minutes before the start.** People badge in early. This is a fixed
-  constant (`ENTRY_WINDOW_BUFFER`), not configurable.
+- **Opens `entryWindowBufferMinutes` before the start.** People badge in early.
+  Configurable per company on `attendance_rule`, default 60.
 - **Closes `overtimeWindowMinutes` after the scheduled end.** Configurable per
-  shift, default 240 (4 hours). The window is **exclusive** at the end.
+  shift, default 240 (4 hours).
+
+Both edges are *soft*. The span between the shift's own start and its scheduled
+end is not - see "A shift owns its own span" below, which is what decides any
+punch two days both want.
 
 The asymmetry is deliberate. A symmetric buffer would make a long overtime day
 look like a missing exit punch, so the closing side is sized for real overtime.
@@ -126,39 +130,81 @@ day even though the employee punches out on 1 July - including when that crosses
 a month boundary. This is handled in one place (`AttendanceCalculationService`)
 so no caller has to think about midnight.
 
-### Windows are exclusive
+### A shift owns its own span
 
-A night shift's window crosses midnight and, with an overtime window on top, can
-reach into the hours the *next* scheduled day is already collecting for:
+A night shift's window crosses midnight and, with an overtime window on top,
+can reach into the hours the *next* scheduled day is also collecting for:
 
 ```
-30 Jun NIGHT  18:00-08:00 (+240)   window ...............-> 1 Jul 12:00
- 1 Jul GENERAL 09:00-18:00         window   1 Jul 08:00 ->
+15 Jun NIGHT  18:00-08:00 (+240)   window ...............-> 16 Jun 12:00
+16 Jun GENERAL 09:00-19:00         window   16 Jun 08:00 ->
                                             |__overlap__|
 ```
 
-Left alone, a punch in the overlap is claimed by **both** days: the night shift
-swallows the next morning's entry and reports it as its own exit, inflating June
-and corrupting July.
-
-So a day's window is **truncated where the next scheduled day's window opens**:
+Each rostered day therefore claims two spans, and the difference between them
+decides every contested punch:
 
 ```
-effectiveEnd(day) = min(rawEnd(day), windowStart(next rostered day))
+     soft head          CORE (contractual)          soft tail
+    [-----------|===============================|-----------------)
+  start-buffer   shiftStart          scheduledEnd   +overtimeWindow
 ```
 
-It only ever shrinks. Where shifts do not overlap the full overtime window
-survives untouched, and two consecutive night shifts never collide in the first
-place. The roster is read **one day either side** of the requested range so the
-boundary is known at both ends - which is what makes the last night shift of a
-month hand over correctly to the first day of the next.
+The **core** is the shift the employee was actually rostered to work. It
+crosses midnight for a night shift, and it is **inviolable** - no adjacent
+assignment may take a punch out of it. The soft head (people badge in early)
+and the soft tail (people work over) are conveniences, and they yield.
 
-> **Not validated:** the roster will happily accept a night shift (ending 08:00)
-> followed by a morning shift (starting 06:00), which nobody can physically
-> work. The engine no longer double-counts the handover punch, but garbage in is
-> still garbage out. A minimum-rest-gap check on shift assignment is not built.
+Punches are then **partitioned** across days in one pass, so a punch belongs to
+exactly one day by construction rather than by whether two ranges happened to
+overlap. Where two days both claim a punch:
 
----
+1. a day with **independent evidence** of having been worked - at least one
+   punch no other day can claim - beats a day with none. Applied only when it
+   discriminates: if both have their own evidence, or neither does, it decides
+   nothing and the rules below take over;
+2. a day whose **core** contains it beats a day that only claims it softly;
+3. if **both cores** contain it the roster is physically unworkable, so the
+   **earlier shift date** wins and both days are flagged as a roster conflict;
+4. if **neither core** does, it goes to whichever core is nearer - an overtime
+   punch stays with the shift that ran over, an early arrival goes to the shift
+   about to start.
+
+Rule 1 is there because rule 3 alone gets a common case badly wrong. On an
+unworkable `NIGHT -> MORNING` pair a 07:18 punch is inside both cores. If the
+night was simply not worked - no evening punch anywhere - awarding 07:18 to it
+on seniority of date invents a night shift nobody worked *and* strands the
+morning holding only its own exit punch, so both days read `INVALID_PUNCH` and
+both become loss of pay. Asking first whether either day holds a punch that is
+unambiguously its own settles it on evidence rather than calendar order. This
+is not inference from punch clustering: a day either has a punch no other day
+can claim, or it does not.
+
+A weekly off never defends a core: nobody was expected to work it, so it cannot
+take the previous night's exit punch. It keeps its soft window, because someone
+who does turn up on their day off is still `PRESENT`.
+
+> ### The bug this replaced
+>
+> Until this design, a day's window was simply truncated where the *next*
+> rostered day's window opened - `min(rawEnd, nextWindowStart)`, with no floor.
+> The next day's sixty-minute entry buffer therefore outranked the current
+> shift's own end time. A `NIGHT` shift followed by a `GENERAL` day had its
+> window cut to 08:00 *exclusive*, so an employee punching out at exactly 08:00
+> - the scheduled end, the most likely minute of all - had the exit discarded,
+> was left holding one punch, and lost the day to `INVALID_PUNCH` and a day's
+> pay. The next day inherited the orphaned punch and lost its day too. Punching
+> out at 07:59 was a full present day; 08:00 cost two.
+>
+> It needed no unusual data. The seeded shifts did it, `auto-rotate` produced
+> the roster on every rotation boundary, and `DefaultRosterService`'s Sunday
+> week-off rows did it to every Saturday night shift.
+
+> **Still not validated:** the roster accepts a night shift ending 08:00
+> followed by a morning shift starting 06:00, which nobody can physically work.
+> The engine now resolves it deterministically instead of destroying both days,
+> and `SHIFT_SCHEDULE_REST_GAP` is logged and audited when such a pair is
+> assigned - but it is a warning, not a rejection.
 
 ## 3. Stage two: calculating one day
 
@@ -523,20 +569,26 @@ which is almost always enough to see what happened.
 
 Things the system guarantees, each covered by a test:
 
-1. A punch is counted by **exactly one** attendance day.
-2. A day the employee was not rostered on is not an attendance day.
-3. A weekly off or mandatory holiday can never become loss of pay.
-4. A lone punch is `INVALID_PUNCH`, never `ABSENT`.
-5. A regeneration preserves `MANUAL` rows unless explicitly told otherwise.
-6. A locked day is never modified by a regeneration.
-7. A read never writes.
-8. Payroll cannot run against attendance that was never generated.
-9. A night shift belongs to the date it started on, across month and year ends.
-10. Hand-corrected days obey identical calculation rules to device-read days.
+1. A punch is counted by **at most one** attendance day.
+2. A punch inside a shift's contractual span is **never discarded** - the
+   complementary half, and the one whose absence made a night shift's exit
+   vanish while invariant 1 still held.
+3. A day the employee was not rostered on is not an attendance day.
+4. A weekly off or mandatory holiday can never become loss of pay.
+5. A lone punch is `INVALID_PUNCH`, never `ABSENT`.
+6. A regeneration preserves `MANUAL` rows unless explicitly told otherwise.
+7. A locked day is never modified by a regeneration.
+8. A read never writes.
+9. Payroll cannot run against attendance that was never generated.
+10. A night shift belongs to the date it started on, across month and year ends.
+11. Hand-corrected days obey identical calculation rules to device-read days.
+12. Regenerating an unchanged roster produces identical rows.
 
 ## 12. Not covered
 
-- **No rest-gap validation** between consecutive shift assignments (section 2).
+- **No rest-gap *enforcement*** between consecutive shift assignments - an
+  unworkable pair is logged and audited (`SHIFT_SCHEDULE_REST_GAP`), never
+  refused (section 2).
 - **No approval workflow on corrections** - an HR user's edit takes effect
   immediately. The audit trail records who and why, but nobody countersigns.
 - **No partial-month proration on joining or leaving.** An employee who joins
