@@ -238,7 +238,9 @@ class AttendanceRegularisationTest {
 
         assertThat(payroll.getPresentDays()).isEqualByComparingTo("23");
         assertThat(payroll.getLopDays()).isEqualByComparingTo("3");
-        assertThat(payroll.getPayableDays()).isEqualByComparingTo("23");
+        // Salaried against the full 30-day September calendar (week-offs
+        // included), reduced only by the 3 LOP days: 30 - 3 = 27, not 23.
+        assertThat(payroll.getPayableDays()).isEqualByComparingTo("27");
     }
 
     @Test
@@ -266,7 +268,7 @@ class AttendanceRegularisationTest {
         // The paid revision is untouched until payroll is regenerated.
         Payroll regenerated = payrollService.regenerate(payrollRequest());
         assertThat(regenerated.getRevision()).isEqualTo(2);
-        assertThat(regenerated.getPayableDays()).isEqualByComparingTo("23");
+        assertThat(regenerated.getPayableDays()).isEqualByComparingTo("27");
     }
 
     @Test

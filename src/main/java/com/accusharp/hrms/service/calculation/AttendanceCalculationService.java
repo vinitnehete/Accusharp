@@ -1,6 +1,7 @@
 package com.accusharp.hrms.service.calculation;
 
 import com.accusharp.hrms.dto.DailyAttendanceResponse;
+import com.accusharp.hrms.entity.AttendanceRule;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.enums.AttendanceStatus;
@@ -17,6 +18,25 @@ import java.util.List;
  * Turns raw punches into one day of attendance, interpreted through the shift
  * the employee was actually scheduled on.
  *
+ * <p><b>Only the first and last punch of a day decide it.</b> Anything punched
+ * in between is recorded in {@code device_logs} but has no effect on hours,
+ * break, overtime or status, and the unpaid break is always the shift's
+ * configured {@code breakMinutes}.
+ *
+ * <p>An earlier version tried to be cleverer: with four or more punches and an
+ * even count it treated the middle pairs as real out-and-back-in cycles and
+ * measured the break between them. The device makes that unsafe - a punch row
+ * is just {@code (user_id, log_date)} with no in/out flag, so nothing
+ * distinguishes a genuine mid-shift exit from the reader firing twice on one
+ * badge. In production it fired twice routinely, seconds apart, and the
+ * consequence was severe: punches at 10:25:42, 10:25:44, 20:40:13 and 20:40:14
+ * were read as one minute of work, a ten-hour break, and one more minute -
+ * {@code 614 - 614 = 0} worked minutes, so a full day plus two hours of
+ * overtime scored {@code ABSENT} and became loss of pay. A rule that turns the
+ * most common hardware quirk into an unpaid day is not worth the accuracy it
+ * buys on the rare real mid-shift exit, which is what a manual correction is
+ * for.
+ *
  * <p>The one piece of genuinely non-obvious logic lives here: a night shift's
  * punch window spans into the next calendar day, but the day still belongs to
  * the shift's start date. Keeping that in a single method is why callers never
@@ -25,23 +45,19 @@ import java.util.List;
 @Service
 public class AttendanceCalculationService {
 
-    /**
-     * People badge in a little before the hour, so the window opens early. The
-     * closing side is not symmetric - it uses the shift's own overtime window,
-     * because someone who stays hours late has worked overtime and must not be
-     * read as having never punched out.
-     */
-    private static final Duration ENTRY_WINDOW_BUFFER = Duration.ofMinutes(60);
-
-    /** Worked share of the shift needed to earn a full day / half day. */
-    private static final BigDecimal FULL_DAY_THRESHOLD = new BigDecimal("0.75");
-    private static final BigDecimal HALF_DAY_THRESHOLD = new BigDecimal("0.40");
-
     private static final BigDecimal MINUTES_PER_HOUR = new BigDecimal("60");
+    private static final BigDecimal HUNDRED = new BigDecimal("100");
 
-    /** Start of the window in which a punch counts towards this shift day. */
-    public LocalDateTime windowStart(LocalDate shiftDate, Shift shift) {
-        return shiftDate.atTime(shift.getStartTime()).minus(ENTRY_WINDOW_BUFFER);
+    /**
+     * Start of the window in which a punch counts towards this shift day.
+     * People badge in a little before the hour, so the window opens early by
+     * {@code rule.entryWindowBufferMinutes} - not symmetric on the closing
+     * side, which uses the shift's own overtime window instead (see {@link
+     * #windowEnd}), because someone who stays hours late has worked overtime
+     * and must not be read as having never punched out.
+     */
+    public LocalDateTime windowStart(LocalDate shiftDate, Shift shift, AttendanceRule rule) {
+        return shiftDate.atTime(shift.getStartTime()).minusMinutes(rule.getEntryWindowBufferMinutes());
     }
 
     /**
@@ -63,7 +79,7 @@ public class AttendanceCalculationService {
      */
     public DailyAttendanceResponse calculateDay(String userId, LocalDate shiftDate, Shift shift,
                                                 List<DeviceLog> punches, boolean weekOff,
-                                                boolean holiday, boolean onLeave) {
+                                                boolean holiday, boolean onLeave, AttendanceRule rule) {
 
         if (punches.size() < 2) {
             AttendanceStatus status = resolveNonWorkingStatus(punches.size(), weekOff, holiday, onLeave);
@@ -77,7 +93,9 @@ public class AttendanceCalculationService {
         LocalDateTime lastOut = punches.getLast().getLogDate();
 
         long spanMinutes = Duration.between(firstIn, lastOut).toMinutes();
-        long breakMinutes = resolveBreakMinutes(punches, shift);
+        // The first and last punch decide the day; everything between them is
+        // ignored. The break is always the shift's configured one.
+        long breakMinutes = shift.getBreakMinutes();
         long workedMinutes = Math.max(0, spanMinutes - breakMinutes);
 
         LocalDateTime graceEnd = shiftDate.atTime(shift.getStartTime()).plusMinutes(shift.getGraceMinutes());
@@ -89,7 +107,7 @@ public class AttendanceCalculationService {
         long shiftMinutes = (long) shift.getWorkingHours() * 60;
         long overtimeMinutes = Math.max(0, workedMinutes - shiftMinutes);
 
-        AttendanceStatus status = resolveWorkedStatus(workedMinutes, shiftMinutes, weekOff, holiday);
+        AttendanceStatus status = resolveWorkedStatus(workedMinutes, shiftMinutes, weekOff, holiday, rule);
 
         return new DailyAttendanceResponse(userId, shiftDate, shift.getShiftCode(), firstIn, lastOut,
                 toHours(workedMinutes), toHours(breakMinutes), toHours(overtimeMinutes),
@@ -103,23 +121,6 @@ public class AttendanceCalculationService {
             case HALF_DAY -> new BigDecimal("0.5");
             default -> BigDecimal.ZERO;
         };
-    }
-
-    /**
-     * With four or more punches the middle pairs are real in/out cycles, so
-     * the break is the actual time spent outside. Otherwise fall back to the
-     * shift's configured unpaid break.
-     */
-    private long resolveBreakMinutes(List<DeviceLog> punches, Shift shift) {
-        if (punches.size() < 4 || punches.size() % 2 != 0) {
-            return shift.getBreakMinutes();
-        }
-        long breakMinutes = 0;
-        for (int i = 1; i < punches.size() - 1; i += 2) {
-            breakMinutes += Duration.between(punches.get(i).getLogDate(),
-                    punches.get(i + 1).getLogDate()).toMinutes();
-        }
-        return Math.max(0, breakMinutes);
     }
 
     private AttendanceStatus resolveNonWorkingStatus(int punchCount, boolean weekOff,
@@ -141,7 +142,7 @@ public class AttendanceCalculationService {
     }
 
     private AttendanceStatus resolveWorkedStatus(long workedMinutes, long shiftMinutes,
-                                                 boolean weekOff, boolean holiday) {
+                                                 boolean weekOff, boolean holiday, AttendanceRule rule) {
         if (weekOff || holiday) {
             // Worked on a day off - still present, and the hours count as overtime.
             return AttendanceStatus.PRESENT;
@@ -149,10 +150,13 @@ public class AttendanceCalculationService {
         BigDecimal worked = BigDecimal.valueOf(workedMinutes);
         BigDecimal expected = BigDecimal.valueOf(Math.max(shiftMinutes, 1));
 
-        if (worked.compareTo(expected.multiply(FULL_DAY_THRESHOLD)) >= 0) {
+        BigDecimal fullDayThreshold = rule.getFullDayThresholdPercent().divide(HUNDRED, 4, RoundingMode.HALF_UP);
+        BigDecimal halfDayThreshold = rule.getHalfDayThresholdPercent().divide(HUNDRED, 4, RoundingMode.HALF_UP);
+
+        if (worked.compareTo(expected.multiply(fullDayThreshold)) >= 0) {
             return AttendanceStatus.PRESENT;
         }
-        if (worked.compareTo(expected.multiply(HALF_DAY_THRESHOLD)) >= 0) {
+        if (worked.compareTo(expected.multiply(halfDayThreshold)) >= 0) {
             return AttendanceStatus.HALF_DAY;
         }
         return AttendanceStatus.ABSENT;

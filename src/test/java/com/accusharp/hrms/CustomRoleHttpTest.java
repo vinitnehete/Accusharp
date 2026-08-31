@@ -2,6 +2,7 @@ package com.accusharp.hrms;
 
 import com.accusharp.hrms.entity.PlatformUser;
 import com.accusharp.hrms.enums.PlatformRole;
+import com.accusharp.hrms.repository.AttendanceRuleRepository;
 import com.accusharp.hrms.repository.AuditLogRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.CustomRolePermissionRepository;
@@ -50,6 +51,7 @@ class CustomRoleHttpTest {
     @Autowired private EmployeeRepository employeeRepository;
     @Autowired private HolidayRepository holidayRepository;
     @Autowired private SalaryRuleRepository salaryRuleRepository;
+    @Autowired private AttendanceRuleRepository attendanceRuleRepository;
     @Autowired private CustomRoleRepository customRoleRepository;
     @Autowired private CustomRolePermissionRepository customRolePermissionRepository;
     @Autowired private EmployeeCustomRoleRepository employeeCustomRoleRepository;
@@ -66,6 +68,7 @@ class CustomRoleHttpTest {
         auditLogRepository.deleteAll();
         holidayRepository.deleteAll();
         salaryRuleRepository.deleteAll();
+        attendanceRuleRepository.deleteAll();
         employeeRepository.deleteAll();
         companyRepository.deleteAll();
         platformUserRepository.deleteAll();

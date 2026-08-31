@@ -2,6 +2,7 @@ package com.accusharp.hrms.service.shift;
 
 import com.accusharp.hrms.dto.ShiftRequest;
 import com.accusharp.hrms.entity.Shift;
+import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.CompanyRepository;
@@ -142,6 +143,15 @@ public class ShiftService {
     }
 
     private Shift apply(Shift shift, ShiftRequest request) {
+        // A shift whose end is not after its start crosses midnight - that is how
+        // a night shift is declared, and it is deliberate. Equal times are not: a
+        // shift would silently become 24 hours long, every day would book sixteen
+        // hours of overtime, and nothing in the engine could tell it from a typo.
+        if (request.getStartTime().equals(request.getEndTime())) {
+            throw new BusinessRuleException("startTime and endTime must differ - a shift that starts "
+                    + "and ends at " + request.getStartTime() + " would span a full 24 hours. "
+                    + "For a night shift set an endTime earlier than the startTime, e.g. 18:00 to 08:00.");
+        }
         shift.setShiftCode(request.getShiftCode());
         shift.setShiftName(request.getShiftName());
         shift.setStartTime(request.getStartTime());

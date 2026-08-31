@@ -99,8 +99,8 @@ grants are fixed at startup by `PermissionSeeder`, not editable at runtime.
 |---|---|---|---|---|---|
 | `COMPANY_CREATE/UPDATE/DELETE` | - | - | - | - | ✓ |
 | `COMPANY_READ` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `DEPARTMENT_MANAGE`, `DESIGNATION_MANAGE`, `SHIFT_MANAGE`, `HOLIDAY_MANAGE` | ✓ | ✓ | - | - | - |
-| `DEPARTMENT_READ`, `DESIGNATION_READ`, `SHIFT_READ`, `HOLIDAY_READ` | ✓ | ✓ | ✓ | ✓ | - |
+| `DEPARTMENT_MANAGE`, `DESIGNATION_MANAGE`, `CATEGORY_MANAGE`, `SHIFT_MANAGE`, `HOLIDAY_MANAGE` | ✓ | ✓ | - | - | - |
+| `DEPARTMENT_READ`, `DESIGNATION_READ`, `CATEGORY_READ`, `SHIFT_READ`, `HOLIDAY_READ` | ✓ | ✓ | ✓ | ✓ | - |
 | `EMPLOYEE_CREATE/UPDATE/DELETE` | ✓ | ✓ | - | - | - |
 | `EMPLOYEE_READ` | ✓ | ✓ | ✓ | ✓ | - |
 | `SHIFT_SCHEDULE_MANAGE` | ✓ | ✓ | ✓ (own team, enforced in service) | - | - |
@@ -690,6 +690,95 @@ and loses it again on unassignment; a platform-only code is rejected;
 cross-company role management 404s exactly like every other cross-company
 attempt in this app; HR is forbidden from managing roles.
 
+## Bulk employee onboarding: structure override, salary revision history, credentials export (Phase 11)
+
+Three related additions to how a company brings employees into the system
+and keeps their pay current, all sharing one theme: don't silently guess or
+silently lose data when the caller already has ground truth.
+
+### Salary structure can be supplied directly, not only derived
+
+Every employee create (single or bulk CSV) previously accepted only
+`grossSalary`/`pfBasic`/`medicalAllowance`/`otherAllowance` and always
+derived `basicDA`/`hra`/`conveyanceAllowance`/`educationAllowance` from the
+company's `SalaryRule`. A company migrating employees from an existing
+payroll system already knows those four numbers precisely - re-deriving them
+from percentages risks silently disagreeing with figures that are already
+correct and already compliant. `EmployeeRequest` and `EmployeeCsvParser`
+CSV rows now accept the same four fields; supplying all four sets them
+verbatim and marks the employee `salaryStructureOverridden` (the same flag
+`PUT .../salary-structure` has always used), supplying none derives exactly
+as before, and supplying some-but-not-all is rejected - a structure that's
+part typed, part rule-derived was never really "fixed." `grossSalaryWage`
+itself remains impossible to send directly under any circumstance; it is
+always the server-computed sum, same as before this phase.
+
+**Proof:** `EmployeeSalaryStructureHttpTest.createWithFullStructureOverride`,
+`.createWithPartialStructureOverrideRejected`,
+`.createWithNoStructureOverrideDerivesAsUsual`,
+`.bulkImportWithStructureOverrideColumns` (all-override row, all-derive row,
+and a partial-override row failing independently in the same batch),
+`EmployeeCsvParserTest` (pure parsing, no HTTP).
+
+### Salary revision history
+
+A gross-salary change previously went through the ordinary `PUT
+/api/employees/{id}`, indistinguishable from any other field edit - no
+record of the old figure, when it changed, or why. `SalaryRevision`
+(table `salary_revision`) is a new append-only audit table, written by
+`POST /api/employees/{id}/salary-revision`: `previousGrossSalary`,
+`newGrossSalary`, computed `hikePercent`, `effectiveDate`, `reason`, and
+`revisedBy` (the caller's username, same actor convention `AuditLog` uses).
+Like `AuditLog`, it stores `employeeId` as a plain scalar rather than a JPA
+relation - deliberately, for the same reason: a history row is a snapshot of
+what happened, not a live view of current employee state, and a
+`@ManyToOne` here would reintroduce the exact lazy-serialization risk fixed
+on `SalaryRule`/`Holiday` (see Phase 6). `GET
+/api/employees/{id}/salary-revisions` is scoped by the same self-service
+visibility rule (`EMPLOYEE_READ` + self/supervisor/HR/ADMIN) as every other
+per-employee read in this app.
+
+One interaction worth calling out: an employee with `salaryStructureOverridden
+= true` does not have their structure move just because `grossSalary` does
+(derivation is skipped entirely while overridden - see "Salary structure"
+in [ARCHITECTURE.md](ARCHITECTURE.md)). `reviseSalary` therefore *requires*
+the four replacement structure values in the same request whenever the
+employee is currently overridden, rather than silently applying a new gross
+salary against a now-stale structure.
+
+**Proof:** `EmployeeSalaryRevisionHttpTest.hikeUpdatesGrossAndRederivesStructure`,
+`.hikeOnOverriddenEmployeeWithoutStructureRejected` (400, nothing changes),
+`.hikeOnOverriddenEmployeeWithStructureApplies`.
+
+### Bulk-import credentials export - an accepted tradeoff, not a fix
+
+`POST /api/employees/bulk-import` already returned every created employee's
+one-time `temporaryPassword` inline in its JSON response (Phase 9). That
+does not scale past a handful of rows - there is still no email/SMS delivery
+infrastructure in this app (same gap Phase 9's admin-triggered reset works
+around), so for a real batch of 50-500 people there was no practical way to
+get password *N* to person *N* without HR manually matching rows in a JSON
+array by hand.
+
+`?format=csv` on the same endpoint returns a downloadable
+`userId,employeeCode,employeeName,temporaryPassword` sheet
+(`EmployeeCredentialsCsvWriter`) built from the exact same in-memory result
+the JSON response would have used - no second lookup, nothing persisted,
+same one-time-return contract as every other password path in this app.
+
+**This is explicitly not a full fix, and the tradeoff was a deliberate,
+discussed choice, not an oversight:** the file contains raw, immediately
+usable passwords rather than one-time activation links, and there is still
+no `mustChangePassword` enforcement anywhere (Phase 9's "should change it on
+first login" remains a documented convention, not a code gate - see "Not
+yet built" below). A downloaded credentials file sitting in a Downloads
+folder is a real exposure surface. Real email/SMS delivery, activation
+links instead of raw passwords, and enforced first-login password change
+are the three natural follow-ups, in roughly that order of value, once this
+app is ready to invest in delivery infrastructure it currently has none of.
+
+**Proof:** `EmployeeSalaryStructureHttpTest.bulkImportCsvFormatReturnsCredentialsSheet`.
+
 ## Not yet built (next phases)
 
 - Platform-owner company onboarding flow beyond raw CRUD.
@@ -700,7 +789,18 @@ attempt in this app; HR is forbidden from managing roles.
 - Forgot-password **email** flow specifically - Phase 9's admin-triggered
   reset is the practical stand-in this project has instead, and remains the
   only recovery path; a self-service, no-admin-involved flow still needs
-  email delivery infrastructure this app does not have.
+  email delivery infrastructure this app does not have. Phase 11's bulk
+  credentials CSV export is a distribution workaround on top of the same
+  missing infrastructure, not a replacement for it.
+- A `mustChangePassword` enforcement gate - today an employee (single-created,
+  bulk-imported, or password-reset) can use their temporary password
+  indefinitely; "change it on first login" is a documented convention
+  (Phase 9, Phase 11), never a server-side check.
+- One-time activation links instead of raw temporary passwords - would
+  remove plaintext credentials from both the API response and the Phase 11
+  bulk credentials file entirely, at the cost of needing a delivery channel
+  (email/SMS) to actually get the link to each employee, which this app
+  does not have.
 - A UI for assigning/removing an employee's custom roles and browsing
   what a role grants (Phase 10 shipped the API only, see
   `CustomRoleController`) - and a decision on whether a custom role should

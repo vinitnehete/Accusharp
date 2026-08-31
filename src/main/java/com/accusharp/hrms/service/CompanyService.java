@@ -7,6 +7,7 @@ import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.CompanyRepository;
+import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.security.TenantContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,7 @@ import java.util.List;
 public class CompanyService {
 
     private final CompanyRepository companyRepository;
+    private final EmployeeRepository employeeRepository;
     private final TenantContext tenantContext;
     private final AuditService auditService;
 
@@ -73,9 +75,22 @@ public class CompanyService {
                 .orElseGet(companyRepository::findAll);
     }
 
+    /**
+     * Explicit in-use guard, same shape as Department/Category/Designation's
+     * (flagged missing here by the audit's database review) - without it,
+     * this either falls through to a generic FK-violation 409 with no
+     * indication of what's actually blocking it, or - if a future change
+     * ever drops the FK constraint (e.g. for bulk-delete performance) -
+     * silently orphans every employee/department/shift/etc. that still
+     * points at this company.
+     */
     @Transactional
     public void delete(Long id) {
-        companyRepository.delete(getById(id));
+        Company company = getById(id);
+        if (!employeeRepository.findByCompanyId(id).isEmpty()) {
+            throw new ConflictException("Company still has employees assigned");
+        }
+        companyRepository.delete(company);
     }
 
     private Company apply(Company company, CompanyRequest request) {

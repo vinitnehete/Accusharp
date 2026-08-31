@@ -15,11 +15,16 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
 
     Optional<Employee> findByUserId(String userId);
 
-    Optional<Employee> findByEmployeeCode(String employeeCode);
+    /** employeeCode is unique per company, not globally - see Employee's uk_employee_company_code. */
+    Optional<Employee> findByEmployeeCodeAndCompanyId(String employeeCode, Long companyId);
+
+    Optional<Employee> findByEmployeeCodeAndCompanyIsNull(String employeeCode);
 
     boolean existsByUserId(String userId);
 
-    boolean existsByEmployeeCode(String employeeCode);
+    boolean existsByEmployeeCodeAndCompanyId(String employeeCode, Long companyId);
+
+    boolean existsByEmployeeCodeAndCompanyIsNull(String employeeCode);
 
     List<Employee> findByRecordStatus(RecordStatus recordStatus);
 
@@ -32,9 +37,11 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
 
     List<Employee> findByDepartmentId(Long departmentId);
 
-    List<Employee> findByCompanyId(Long companyId);
+    List<Employee> findByDesignationId(Long designationId);
 
-    long countByRecordStatus(RecordStatus recordStatus);
+    List<Employee> findByCategoryId(Long categoryId);
+
+    List<Employee> findByCompanyId(Long companyId);
 
     @Query("""
             select e from Employee e

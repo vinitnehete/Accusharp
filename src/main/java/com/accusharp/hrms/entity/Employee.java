@@ -1,8 +1,10 @@
 package com.accusharp.hrms.entity;
 
 import com.accusharp.hrms.enums.EmployeeStatus;
+import com.accusharp.hrms.enums.Gender;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.security.EncryptedStringConverter;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -23,10 +25,30 @@ import java.time.LocalDate;
 @Entity
 @Table(name = "employee",
         uniqueConstraints = {
+                // Global, not per-company, deliberately: login (AuthService#dispatchLogin)
+                // and the biometric device feed both resolve an employee by userId alone,
+                // with no company selector in either flow - two companies sharing a userId
+                // would make login ambiguous. See docs/migrations/2026-08-08-per-company-masters.sql
+                // for the equivalent per-company move made for Department/Designation/Shift,
+                // which don't have that constraint.
                 @UniqueConstraint(name = "uk_employee_user_id", columnNames = "user_id"),
-                @UniqueConstraint(name = "uk_employee_code", columnNames = "employee_code")
+                // Per-company (unlike userId above): employeeCode is a display/reporting
+                // code, never looked up across companies, so two companies numbering their
+                // own staff "EMP001" independently is the expected case, not a collision.
+                @UniqueConstraint(name = "uk_employee_company_code", columnNames = {"company_id", "employee_code"})
         },
-        indexes = @Index(name = "idx_employee_supervisor", columnList = "supervisor_id"))
+        indexes = {
+                @Index(name = "idx_employee_supervisor", columnList = "supervisor_id"),
+                // company_id/department_id/designation_id/category_id are all hit by
+                // frequently-used repository finders (findByCompanyId, findByDepartmentId,
+                // findByCategoryId, and the delete-guard checks in DepartmentService/
+                // CategoryService) - unindexed, these degrade to full table scans as
+                // headcount grows. Flagged in the audit's database review.
+                @Index(name = "idx_employee_company", columnList = "company_id"),
+                @Index(name = "idx_employee_department", columnList = "department_id"),
+                @Index(name = "idx_employee_designation", columnList = "designation_id"),
+                @Index(name = "idx_employee_category", columnList = "category_id")
+        })
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -59,6 +81,11 @@ public class Employee {
     @JoinColumn(name = "designation_id")
     private Designation designation;
 
+    /** Employee grade/category (Worker, Supervisor, Manager, Director, ...) - optional, company-defined. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "category_id")
+    private Category category;
+
     /** Self-reference: one employee reports to at most one supervisor. */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "supervisor_id")
@@ -67,8 +94,22 @@ public class Employee {
     @Column(name = "joining_date")
     private LocalDate joiningDate;
 
+    /**
+     * Last working day, set when the employee is deactivated. Null while
+     * active. Payroll uses this (and {@link #joiningDate}) to bound how many
+     * days of a period this employee was actually employed for - see
+     * {@code PayrollService#employedDaysInPeriod}.
+     */
+    @Column(name = "relieving_date")
+    private LocalDate relievingDate;
+
     @Column(name = "date_of_birth")
     private LocalDate dateOfBirth;
+
+    /** Optional. */
+    @Enumerated(EnumType.STRING)
+    @Column(length = 10)
+    private Gender gender;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "employment_status", nullable = false, length = 20)
@@ -86,6 +127,32 @@ public class Employee {
 
     @Column(length = 20)
     private String phone;
+
+    // ---- statutory & bank details - all optional -----------------------
+    // Encrypted at rest (AES-256-GCM) - see EncryptedStringConverter. These
+    // four are the only employee fields worth anything to someone who gets a
+    // copy of the database, and none of them is ever queried or filtered
+    // (only set and mapped onto a response), which is what makes encrypting
+    // them free of functional consequence.
+    //
+    // The lengths below are CIPHERTEXT widths, not value widths: GCM plus
+    // base64 expands a 30-character account number to roughly 90.
+
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "uan_no", length = 255)
+    private String uanNo;
+
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "esic_ip_no", length = 255)
+    private String esicIpNo;
+
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "bank_account_no", length = 255)
+    private String bankAccountNo;
+
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "bank_ifsc_no", length = 255)
+    private String bankIfscNo;
 
     // ---- salary structure -------------------------------------------------
     // grossSalary, pfBasic, medicalAllowance and otherAllowance are entered;
@@ -155,4 +222,17 @@ public class Employee {
 
     @Column(name = "password_changed_at")
     private Instant passwordChangedAt;
+
+    /**
+     * Set whenever HR hands this employee a system-generated temporary
+     * password (create, reset-password) - never by anything else, so
+     * existing accounts are unaffected. Cleared once the employee actually
+     * sets their own password via {@code POST /api/auth/change-password}.
+     * Surfaced on {@code TokenResponse} so the frontend can force the
+     * change-password screen before letting a temporary password stay live
+     * indefinitely - the gap the audit's authentication review flagged.
+     */
+    @Column(name = "must_change_password", nullable = false)
+    @Builder.Default
+    private boolean mustChangePassword = false;
 }

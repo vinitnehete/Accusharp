@@ -1,41 +1,29 @@
 package com.accusharp.hrms.config;
 
-import com.accusharp.hrms.entity.Company;
-import com.accusharp.hrms.entity.Department;
-import com.accusharp.hrms.entity.Designation;
-import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.entity.Category;
 import com.accusharp.hrms.entity.PlatformUser;
 import com.accusharp.hrms.entity.Shift;
-import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.PlatformRole;
-import com.accusharp.hrms.enums.RecordStatus;
-import com.accusharp.hrms.enums.Role;
-import com.accusharp.hrms.repository.CompanyRepository;
-import com.accusharp.hrms.repository.DepartmentRepository;
-import com.accusharp.hrms.repository.DesignationRepository;
-import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.CategoryRepository;
 import com.accusharp.hrms.repository.PlatformUserRepository;
 import com.accusharp.hrms.repository.ShiftRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
-import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
-import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.LocalTime;
-import java.util.List;
 
 /**
- * Seeds the masters an empty database cannot work without - the four standard
- * shifts and the salary rule - plus a small demo org so the API is explorable
- * on first run.
+ * Seeds the masters an empty database cannot work without - the four
+ * standard shifts, the shared employee-grade categories, the default salary
+ * rule, and the platform-owner account.
  *
  * <p>Idempotent: nothing is written if the data already exists. Disable with
  * {@code hrms.seed.enabled=false}.
@@ -46,27 +34,59 @@ import java.util.List;
 @Slf4j
 public class DataSeeder {
 
-    /** Demo-only credential for every seeded account. Never used past local/demo setup. */
-    private static final String SEED_PASSWORD = "Accusharp@123";
+    // Same reasoning and same pattern as JwtService's INSECURE_DEFAULT_SECRET
+    // guard: this value is committed and public, so on an empty database this
+    // seeder would otherwise silently create a PLATFORM_OWNER account (full
+    // company create/delete + audit-purge rights) with a password anyone who
+    // has read this source file already knows. Refusing to start is the same
+    // choice made there, for the same reason.
+    private static final String INSECURE_DEFAULT_SEED_PASSWORD = "Accusharp@123";
 
-    private final CompanyRepository companyRepository;
-    private final DepartmentRepository departmentRepository;
-    private final DesignationRepository designationRepository;
+    @Value("${hrms.seed.platform-owner-password}")
+    private String seedPassword;
+
+    private final CategoryRepository categoryRepository;
     private final ShiftRepository shiftRepository;
-    private final EmployeeRepository employeeRepository;
     private final PlatformUserRepository platformUserRepository;
     private final SalaryRuleService salaryRuleService;
-    private final SalaryCalculationService salaryCalculationService;
     private final PasswordEncoder passwordEncoder;
 
     @Bean
     ApplicationRunner seedReferenceData() {
         return args -> {
+            if (INSECURE_DEFAULT_SEED_PASSWORD.equals(seedPassword)
+                    && !platformUserRepository.existsByUsername("platform_owner")) {
+                throw new IllegalStateException(
+                        "hrms.seed.enabled is true and hrms.seed.platform-owner-password is still the "
+                                + "placeholder value committed in source. On an empty database this would "
+                                + "create a PLATFORM_OWNER account (full company create/delete and audit-purge "
+                                + "rights) with a password anyone who has read this repository already knows. "
+                                + "Set HRMS_SEED_PLATFORM_OWNER_PASSWORD to a real, random value, or set "
+                                + "hrms.seed.enabled=false if this database already has its own platform owner "
+                                + "or doesn't need one seeded.");
+            }
             salaryRuleService.getActiveRule();
             seedShifts();
-            seedOrganisation();
+            seedCategories();
             seedPlatformOwner();
         };
+    }
+
+    /** Common employee grades, shared across every company; a company ADMIN/HR may add more via /api/categories. */
+    private void seedCategories() {
+        createCategory("WORKER", "Worker");
+        createCategory("STAFF", "Staff");
+        createCategory("SUPERVISOR", "Supervisor");
+        createCategory("MANAGER", "Manager");
+        createCategory("DIRECTOR", "Director");
+    }
+
+    private void createCategory(String code, String name) {
+        if (categoryRepository.existsByCategoryCodeAndCompanyIsNull(code)) {
+            return;
+        }
+        categoryRepository.save(Category.builder().categoryCode(code).categoryName(name).build());
+        log.info("seed.category code={}", code);
     }
 
     /** The four shifts from the specification; admins may add custom ones. */
@@ -95,53 +115,6 @@ public class DataSeeder {
         log.info("seed.shift code={}", code);
     }
 
-    private void seedOrganisation() {
-        if (employeeRepository.count() > 0) {
-            return;
-        }
-
-//        Company company = companyRepository.findByCompanyCode("ACC")
-//                .orElseGet(() -> companyRepository.save(Company.builder()
-//                        .companyCode("ACC")
-//                        .companyName("Accusharp Industries")
-//                        .address("Pune, Maharashtra")
-//                        .phone("020-00000000")
-//                        .email("hr@accusharp.example")
-//                        .status(RecordStatus.ACTIVE)
-//                        .build()));
-//
-//        Department production = department("PROD", "Production");
-//        Department admin = department("ADMIN", "Administration");
-//
-//        Designation operator = designation("OPR", "Machine Operator");
-//        Designation manager = designation("MGR", "Manager");
-//
-//        Employee hr = saveEmployee("HR001", "EMP-HR-001", "Meera Joshi", company, admin, manager,
-//                null, EmployeeStatus.PERMANENT, Role.HR, new BigDecimal("45000"),
-//                new BigDecimal("15000"), LocalDate.of(2019, 4, 1), false);
-//
-//        Employee supervisor = saveEmployee("SUP001", "EMP-SUP-001", "Rakesh Patil", company, production,
-//                manager, hr, EmployeeStatus.PERMANENT, Role.SUPERVISOR, new BigDecimal("38000"),
-//                new BigDecimal("13000"), LocalDate.of(2020, 6, 15), false);
-//
-//        saveEmployee("EMP001", "EMP-001", "Sunil Kadam", company, production, operator, supervisor,
-//                EmployeeStatus.PERMANENT, Role.EMPLOYEE, new BigDecimal("22000"),
-//                new BigDecimal("9000"), LocalDate.of(2022, 1, 10), true);
-//
-//        saveEmployee("EMP002", "EMP-002", "Anita Shinde", company, production, operator, supervisor,
-//                EmployeeStatus.DAY_WISE, Role.EMPLOYEE, new BigDecimal("18000"),
-//                new BigDecimal("7500"), LocalDate.of(2023, 3, 5), true);
-//
-//        log.info("seed.organisation company={} employees={}", company.getCompanyCode(),
-//                employeeRepository.count());
-//        // Never interpolate the actual password into a log line, even a demo one - see SECURITY.md
-//        // for the value. Logging credential material at INFO is the exact anti-pattern this app's
-//        // own security docs require every other code path to avoid; a fixed demo password is not
-//        // an exemption from that, only a reason the consequence of doing it anyway is low.
-//        log.info("seed.credentials note=\"every seeded employee and the platform owner share one "
-//                + "fixed demo password - see SECURITY.md, not this log\"");
-    }
-
     /** A platform-level account for company onboarding, separate from any Employee. */
     private void seedPlatformOwner() {
         if (platformUserRepository.existsByUsername("platform_owner")) {
@@ -149,57 +122,12 @@ public class DataSeeder {
         }
         platformUserRepository.save(PlatformUser.builder()
                 .username("platform_owner")
-                .passwordHash(passwordEncoder.encode(SEED_PASSWORD))
+                .passwordHash(passwordEncoder.encode(seedPassword))
                 .email("owner@accusharp.example")
                 .role(PlatformRole.PLATFORM_OWNER)
                 .enabled(true)
                 .createdAt(Instant.now())
                 .build());
         log.info("seed.platform-owner username=platform_owner");
-    }
-
-    private Department department(String code, String name) {
-        return departmentRepository.findByDepartmentCode(code)
-                .orElseGet(() -> departmentRepository.save(Department.builder()
-                        .departmentCode(code).departmentName(name).build()));
-    }
-
-    private Designation designation(String code, String name) {
-        return designationRepository.findByDesignationCode(code)
-                .orElseGet(() -> designationRepository.save(Designation.builder()
-                        .designationCode(code).designationName(name).build()));
-    }
-
-    private Employee saveEmployee(String userId, String code, String name, Company company,
-                                  Department department, Designation designation, Employee supervisor,
-                                  EmployeeStatus status, Role role, BigDecimal gross, BigDecimal pfBasic,
-                                  LocalDate joiningDate, boolean overtimeEligible) {
-
-        Employee employee = Employee.builder()
-                .userId(userId)
-                .employeeCode(code)
-                .employeeName(name)
-                .company(company)
-                .department(department)
-                .designation(designation)
-                .supervisor(supervisor)
-                .joiningDate(joiningDate)
-                .status(status)
-                .recordStatus(RecordStatus.ACTIVE)
-                .role(role)
-                .email(userId.toLowerCase() + "@accusharp.example")
-                .grossSalary(gross)
-                .pfBasic(pfBasic)
-                .medicalAllowance(new BigDecimal("1250"))
-                .otherAllowance(BigDecimal.ZERO)
-                .overtimeEligible(overtimeEligible)
-                .passwordHash(passwordEncoder.encode(SEED_PASSWORD))
-                .accountEnabled(true)
-                .accountLocked(false)
-                .failedLoginAttempts(0)
-                .build();
-
-        salaryCalculationService.applyCalculatedFields(employee, salaryRuleService.getActiveRule());
-        return employeeRepository.saveAll(List.of(employee)).getFirst();
     }
 }

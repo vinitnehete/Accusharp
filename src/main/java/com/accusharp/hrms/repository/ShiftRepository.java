@@ -8,8 +8,6 @@ import java.util.Optional;
 
 public interface ShiftRepository extends JpaRepository<Shift, Long> {
 
-    Optional<Shift> findByShiftCode(String shiftCode);
-
     boolean existsByShiftCode(String shiftCode);
 
     List<Shift> findByCompanyIdOrCompanyIsNull(Long companyId);

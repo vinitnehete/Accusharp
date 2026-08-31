@@ -16,7 +16,8 @@ import java.math.BigDecimal;
 @Entity
 @Table(name = "leave_balance",
         uniqueConstraints = @UniqueConstraint(name = "uk_leave_balance",
-                columnNames = {"user_id", "leave_year", "leave_type"}))
+                columnNames = {"user_id", "leave_year", "leave_type"}),
+        indexes = @Index(name = "idx_leave_balance_year", columnList = "leave_year"))
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -42,6 +43,17 @@ public class LeaveBalance {
 
     @Column(nullable = false, precision = 5, scale = 1)
     private BigDecimal used;
+
+    /**
+     * Optimistic lock: two concurrent leave approvals (or a retried request
+     * that actually succeeded server-side the first time) both reading the
+     * same balance and both consuming it would otherwise silently deduct
+     * twice. The second writer here gets a clean {@code
+     * ObjectOptimisticLockingFailureException} - mapped to a 409 by {@code
+     * GlobalExceptionHandler} - instead of a lost update.
+     */
+    @Version
+    private Long version;
 
     public BigDecimal available() {
         return quota.subtract(used);

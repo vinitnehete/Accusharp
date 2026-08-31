@@ -36,7 +36,17 @@ public class RefreshToken {
     @Column(name = "principal_type", nullable = false, length = 20)
     private PrincipalType principalType;
 
-    /** Employee.userId or PlatformUser.id (as a string), depending on principalType. */
+    /**
+     * Employee.userId or PlatformUser.username, depending on principalType -
+     * always the username, never the numeric id, for both realms. (Not
+     * PlatformUser.id: UserPrincipal.fromPlatformUser always carries
+     * getUsername(), and AuthService issues/revokes refresh tokens keyed off
+     * principal.getUsername() throughout, so id was never actually in play
+     * here - this was previously documented as PlatformUser.id, which would
+     * have misled a future maintainer into "fixing" this to use the numeric
+     * id and silently breaking refresh-token lookup/revocation for platform
+     * users.)
+     */
     @Column(name = "principal_id", nullable = false, length = 50)
     private String principalId;
 

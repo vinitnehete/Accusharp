@@ -73,6 +73,27 @@ public class LeaveCalculationService {
     }
 
     /**
+     * Batched form of {@link #approvedLeaveDaysBetween} for a single day
+     * across many employees at once, keyed by userId instead of date - used
+     * by {@code AttendanceService.statusesOn} (DashboardService's "who was
+     * present" aggregates), which previously called the single-employee form
+     * once per employee.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, LeaveDay> approvedLeaveDayOn(List<String> userIds, LocalDate date) {
+        List<LeaveRequest> approved = leaveRequestRepository
+                .findAllByUserIdInAndStatusInAndFromDateLessThanEqualAndToDateGreaterThanEqual(
+                        userIds, List.of(LeaveStatus.APPROVED), date, date);
+
+        Map<String, LeaveDay> byUser = new HashMap<>();
+        for (LeaveRequest request : approved) {
+            byUser.put(request.getUserId(), new LeaveDay(request.getLeaveType(),
+                    request.getDuration().getDayFraction(), request.getLeaveType().isPaid()));
+        }
+        return byUser;
+    }
+
+    /**
      * Paid leave days in the month, restricted to the days the employee was
      * actually expected to work - leave on a weekly off or holiday is not
      * consumed and must never offset LOP.

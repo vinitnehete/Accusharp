@@ -8,10 +8,6 @@ import java.util.Optional;
 
 public interface DesignationRepository extends JpaRepository<Designation, Long> {
 
-    Optional<Designation> findByDesignationCode(String designationCode);
-
-    boolean existsByDesignationCode(String designationCode);
-
     List<Designation> findByCompanyIdOrCompanyIsNull(Long companyId);
 
     Optional<Designation> findByDesignationCodeAndCompanyId(String designationCode, Long companyId);

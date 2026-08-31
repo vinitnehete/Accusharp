@@ -79,7 +79,7 @@ that admin instead of `HR001` for everything below.
 ## Step 1 — See what already exists
 
 A fresh database is pre-loaded with a company, two departments, two
-designations, four shifts and four demo employees.
+designations, five categories, four shifts and four demo employees.
 
 ```bash
 curl http://localhost:8080/api/companies -H "Authorization: Bearer $TOKEN"
@@ -93,6 +93,10 @@ curl http://localhost:8080/api/departments -H "Authorization: Bearer $TOKEN"
 curl http://localhost:8080/api/designations -H "Authorization: Bearer $TOKEN"
 ```
 
+```bash
+curl http://localhost:8080/api/categories -H "Authorization: Bearer $TOKEN"
+```
+
 What came back:
 
 ```
@@ -101,7 +105,17 @@ What came back:
  dept     id=2 ADMIN  Administration
  desig    id=1 OPR    Machine Operator
  desig    id=2 MGR    Manager
+ category id=1 WORKER     Worker
+ category id=2 STAFF      Staff
+ category id=3 SUPERVISOR Supervisor
+ category id=4 MANAGER    Manager
+ category id=5 DIRECTOR   Director
 ```
+
+`category` is the employee grade - these five are shared defaults every
+company starts with; add more via `POST /api/categories` the same way as a
+department or designation. Unlike department/designation, it's optional on
+an employee.
 
 **Write down the `id` values.** You need them when creating an employee.
 
@@ -142,8 +156,12 @@ unique *within your own company* - a second company can create its own
 ## Step 3 — Add the employee
 
 ```bash
-curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"userId":"EMP005","employeeCode":"EMP-005","employeeName":"Priya Kulkarni","companyId":1,"departmentId":1,"designationId":3,"supervisorUserId":"SUP001","joiningDate":"2024-02-12","dateOfBirth":"1996-09-20","status":"PERMANENT","role":"EMPLOYEE","email":"priya@accusharp.example","phone":"9822001122","grossSalary":26000,"pfBasic":9000,"medicalAllowance":1250,"otherAllowance":0,"overtimeEligible":true}'
+curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"userId":"EMP005","employeeCode":"EMP-005","employeeName":"Priya Kulkarni","companyId":1,"departmentId":1,"designationId":3,"categoryId":2,"supervisorUserId":"SUP001","joiningDate":"2024-02-12","dateOfBirth":"1996-09-20","gender":"FEMALE","status":"PERMANENT","role":"EMPLOYEE","email":"priya@accusharp.example","phone":"9822001122","grossSalary":26000,"pfBasic":9000,"medicalAllowance":1250,"otherAllowance":0,"overtimeEligible":true}'
 ```
+
+`categoryId` (Staff, from the seeded list above) and `gender` are both
+optional, same as `uanNo`/`esicIpNo`/`bankAccountNo`/`bankIfscNo` if we had
+them on hand - none of the six affect any calculation, they're informational.
 
 Result:
 
@@ -158,6 +176,16 @@ Result:
   "temporaryPassword": "Tp7-xxxxxxxxxxxxxxxxxxxxxx"
 }
 ```
+
+> **Onboarding a whole batch instead of just Priya?** `POST
+> /api/employees/bulk-import` takes a CSV upload - one row per employee, same
+> fields as above, same temporary-password-per-row contract. A bad row (a
+> duplicate code, a missing amount) fails only that row; the rest of the file
+> still gets created. For a real batch, add `?format=csv` to get back a
+> downloadable credentials sheet instead of hunting passwords out of a JSON
+> array one by one - there's no email/SMS infrastructure in this app to send
+> them automatically. See
+> [README.md §3.4.2](README.md#342-bulk-import-from-csv).
 
 **Capture `temporaryPassword` now.** It's returned exactly once, right here,
 and never logged anywhere - it's how Priya logs in for the first time
@@ -179,13 +207,18 @@ education  = 13000 x 10%   =  1300
 grossSalaryWage            = 22050
 ```
 
-You cannot send `basicDA` or `hra` yourself on this request - they are not on
-the create/update DTO at all. That is deliberate: it means a salary breakup
-can never be inconsistent with the configured rule *unless you explicitly say
-so*.
+`grossSalaryWage` can never be sent yourself - it is not on the create/update
+DTO at all, always the server-computed sum. `basicDA`/`hra`/
+`conveyanceAllowance`/`educationAllowance` normally work the same way, but
+*can* be sent - all four together, never some of them - if you already know
+Priya's exact breakup (say, migrating her from a previous payroll system) and
+don't want it recalculated. Sending only one or two of the four is rejected
+outright: a structure that's part typed, part rule-derived isn't really a
+fixed structure. Leave all four out, as above, and the rule keeps deriving
+them as usual.
 
-Sometimes a real payslip does need to differ from the formula. For that,
-there's a dedicated pair of endpoints:
+Sometimes a real payslip needs to differ from the formula *after* the
+employee already exists. For that, there's a dedicated pair of endpoints:
 
 ```bash
 curl -X PUT http://localhost:8080/api/employees/5/salary-structure -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"basicDA":13500,"hra":5400,"conveyanceAllowance":1350,"educationAllowance":1350}'
@@ -200,6 +233,14 @@ curl -X POST http://localhost:8080/api/employees/5/salary-structure/regenerate -
 ```
 
 See the callout after the next table for the whole-company version of this.
+
+> **Giving Priya a raise later is not a plain `PUT /api/employees/5`.** That
+> would overwrite `grossSalary` with no record of what it used to be. Use
+> `POST /api/employees/5/salary-revision` instead - it updates `grossSalary`,
+> re-derives the structure (or, if she's overridden, needs the four
+> replacement values in the same request), and logs the change with a reason
+> and effective date. `GET /api/employees/5/salary-revisions` returns the
+> full history. See [README.md §3.4.3](README.md#343-salary-revision-hike-promotion-correction).
 
 ### Three fields that decide everything downstream
 
@@ -264,6 +305,13 @@ Result:
 
 September has 30 days. One is the holiday (not scheduled), four are Sundays
 (scheduled but flagged weekly off), leaving **25 actual working days**.
+
+> **Rostering a team where not everyone is on the same shift?** The call
+> above puts every listed `userId` on the *same* `shiftCode`. `POST
+> /api/shift-schedules/bulk/varied` (or its CSV upload sibling `POST
+> /api/shift-schedules/bulk/csv`) takes one `userId`/`shiftDate`/`shiftCode`
+> per entry instead, so Priya can be on MORNING while a teammate is on NIGHT
+> in the same call. See [README.md §4](README.md#4-every-month-schedule-shifts).
 
 Check it visually:
 
@@ -530,18 +578,18 @@ You typed in only the manual amounts: advance ₹2,000, canteen ₹450, bonus
 
  EARNINGS                        DEDUCTIONS
    Basic + DA     12480.0          PF              1036.80
-   HRA             4992.0          ESIC               0.00
+   HRA             4992.0          ESIC              93.60
    Conveyance      1248.0          Prof. Tax        200.00
    Education       1248.0          TDS                0.00
    Medical         1200.0          Advance         2000.00
    Other               0.0         Loan               0.00
    Overtime          455.0         Canteen          450.00
    Bonus            1000.0         ----------------------
-   Incentive           0.0         TOTAL           3686.80
+   Incentive           0.0         TOTAL           3780.40
    ------------------------
    TOTAL           22623.0
 
- NET SALARY  18936.20
+ NET SALARY  18842.60
 ```
 
 ### Where each number came from
@@ -562,8 +610,10 @@ HRA        =  5200 x 24 / 25 =  4992
 **PF = ₹1,036.80.** Her PF basic of 9000 is prorated to 8640 (24/25), then 12%.
 PF is charged on the prorated basic, not the full one.
 
-**ESIC = ₹0.** Her earned gross of 22623 is above the 21000 ceiling, so she is
-outside the scheme.
+**ESIC = ₹93.60.** ESIC applies to earned Basic + DA, not the full earned
+gross: 12480 is well under the 21000 ceiling, so 0.75% × 12480 = 93.60. (Her
+earned gross of 22623 *is* above the ceiling, but that no longer decides it -
+only the earned Basic + DA is compared to it.)
 
 **Professional tax = ₹200.** Gross 26000 is above the 10001 slab threshold.
 
@@ -599,8 +649,8 @@ curl "http://localhost:8080/api/salary-slips/EMP005?month=9&year=2026" -H "Autho
 
 ```
  Accusharp Industries | Priya Kulkarni | September 2026 | rev 1
- net: 18936.20
- in words: Eighteen Thousand Nine Hundred and Thirty Six Rupees and Twenty Paise Only
+ net: 18842.60
+ in words: Eighteen Thousand Eight Hundred and Forty Two Rupees and Sixty Paise Only
 ```
 
 The whole month as a spreadsheet:
@@ -663,8 +713,8 @@ curl "http://localhost:8080/api/payroll/employee/EMP005/revisions?month=9&year=2
 ```
 
 ```
- rev 2  GENERATED   canteen 300.0  net 19086.20
- rev 1  SUPERSEDED  canteen 450.0  net 18936.20
+ rev 2  GENERATED   canteen 300.0  net 18992.60
+ rev 1  SUPERSEDED  canteen 450.0  net 18842.60
 ```
 
 **The old figure was not overwritten.** Revision 1 is preserved exactly as it
@@ -674,6 +724,15 @@ was, marked superseded. If Priya asks in March why September's slip said
 The same protection works the other way: every payroll row snapshots her salary
 structure and the rule percentages at generation time, so giving her a raise in
 October never changes September's payslip.
+
+> **Numbers look wrong and you can't tell why?** `GET
+> /api/payroll/debug?month=9&year=2026` returns every field the calculation
+> used - attendance breakdown, per-day rate, every earning and deduction -
+> plus a live comparison against Priya's *current* salary and the company's
+> *current* `SalaryRule`. A `ruleDrifted: true` or `masterDataDrifted: true`
+> means the rule or her salary changed after this payroll was generated -
+> exactly the "why does this month look different" case. See
+> [README.md §8](README.md#8-run-payroll).
 
 ---
 
@@ -688,7 +747,7 @@ Once set up, each month is six steps (plus logging in first - see Step 0):
 | 3 | Clear every pending leave request | `GET /api/leaves?status=PENDING` |
 | 4 | Generate the month's attendance | `POST /api/attendance/generate` |
 | 5 | Review it and fix invalid punches | `GET /api/attendance/{userId}/records` then `PUT /api/attendance/{userId}/{date}` |
-| 6 | Run payroll | `POST /api/payroll/generate-all` |
+| 6 | Run payroll | `POST /api/payroll/generate-all` (or `POST /api/payroll/bulk-generate` with a CSV for per-employee bonus/incentive/deductions) |
 | 7 | Print or export slips | `GET /api/salary-slips/export` |
 
 **Steps 3 and 5 are the ones that cost people money if skipped.** An unfixed

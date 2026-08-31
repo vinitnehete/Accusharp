@@ -118,7 +118,8 @@ class AuditLogHttpTest {
     @DisplayName("purging the audit log is platform-only - a company ADMIN is forbidden, even for their own trail")
     void purgeIsPlatformOnly() {
         String adminToken = login("ADMIN01", PASSWORD);
-        Resp purge = send("DELETE", "/api/audit-logs?beforeDate=2035-01-01", null, adminToken);
+        Resp purge = send("DELETE", "/api/audit-logs?beforeDate=2035-01-01&confirmExportedUpTo=2035-01-01",
+                null, adminToken);
         assertThat(purge.status()).isEqualTo(403);
     }
 

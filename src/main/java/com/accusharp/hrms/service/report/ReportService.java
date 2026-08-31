@@ -1,11 +1,13 @@
 package com.accusharp.hrms.service.report;
 
 import com.accusharp.hrms.dto.ReportDtos;
+import com.accusharp.hrms.entity.Department;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.LeaveBalance;
 import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.enums.LeaveType;
+import com.accusharp.hrms.repository.DepartmentRepository;
 import com.accusharp.hrms.repository.LeaveBalanceRepository;
 import com.accusharp.hrms.repository.MonthlyAttendanceSummaryRepository;
 import com.accusharp.hrms.service.EmployeeService;
@@ -39,6 +41,7 @@ public class ReportService {
     private final PayrollService payrollService;
     private final MonthlyAttendanceSummaryRepository monthlyAttendanceSummaryRepository;
     private final LeaveBalanceRepository leaveBalanceRepository;
+    private final DepartmentRepository departmentRepository;
 
     // ---- attendance --------------------------------------------------------
 
@@ -47,6 +50,7 @@ public class ReportService {
     public List<ReportDtos.MonthlyAttendanceRow> monthlyAttendanceReport(YearMonth month) {
         attendanceService.syncSummaries(month);
         Map<String, Employee> employees = activeEmployeesByUserId();
+        Map<Long, String> departmentNames = departmentNamesFor(employees.values());
 
         return monthlyAttendanceSummaryRepository.findAllByMonth(month.toString()).stream()
                 .filter(summary -> employees.containsKey(summary.getUserId()))
@@ -54,7 +58,7 @@ public class ReportService {
                 .map(summary -> {
                     Employee employee = employees.get(summary.getUserId());
                     return new ReportDtos.MonthlyAttendanceRow(
-                            summary.getUserId(), employee.getEmployeeName(), departmentName(employee),
+                            summary.getUserId(), employee.getEmployeeName(), departmentName(employee, departmentNames),
                             summary.getWorkingDays(), summary.getPresentDays(), summary.getAbsentDays(),
                             summary.getLeaveDays(), summary.getLopDays(), summary.getLateCount(),
                             summary.getEarlyExitCount(), summary.getInvalidPunches(),
@@ -120,13 +124,14 @@ public class ReportService {
     @Transactional(readOnly = true)
     public List<ReportDtos.PayrollRow> payrollReport(int month, int year) {
         Map<String, Employee> employees = activeEmployeesByUserId();
+        Map<Long, String> departmentNames = departmentNamesFor(employees.values());
         return payrollService.getPeriod(month, year).stream()
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
                 .map(payroll -> new ReportDtos.PayrollRow(
                         payroll.getEmployeeId(),
                         payroll.getEmployeeName(),
                         payroll.getDepartmentName() != null ? payroll.getDepartmentName()
-                                : departmentName(employees.get(payroll.getEmployeeId())),
+                                : departmentName(employees.get(payroll.getEmployeeId()), departmentNames),
                         payroll.getPayableDays(), payroll.getLopDays(), payroll.getTotalEarnings(),
                         payroll.getPfDeduction(), payroll.getEsic(), payroll.getProfessionalTax(),
                         payroll.getMlwf(), payroll.getTotalDeduction(), payroll.getNetSalary()))
@@ -217,11 +222,37 @@ public class ReportService {
         return byUserId;
     }
 
-    private String departmentName(Employee employee) {
+    /**
+     * One query for every distinct department touched by this batch of
+     * employees, instead of one lazy load per row - {@code
+     * employeeService.getActiveEntities()} doesn't {@code JOIN FETCH}
+     * department, so calling {@code employee.getDepartment().getDepartmentName()}
+     * directly per row triggered an extra SELECT per distinct department in
+     * the result (flagged in the audit's performance review). Calling {@code
+     * getId()} on the lazy proxy itself is safe and doesn't trigger a load -
+     * only a business-data getter like {@code getDepartmentName()} does.
+     */
+    private Map<Long, String> departmentNamesFor(java.util.Collection<Employee> employees) {
+        List<Long> departmentIds = employees.stream()
+                .map(Employee::getDepartment)
+                .filter(java.util.Objects::nonNull)
+                .map(Department::getId)
+                .distinct()
+                .toList();
+        if (departmentIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> names = new HashMap<>();
+        departmentRepository.findAllById(departmentIds)
+                .forEach(department -> names.put(department.getId(), department.getDepartmentName()));
+        return names;
+    }
+
+    private String departmentName(Employee employee, Map<Long, String> departmentNames) {
         if (employee == null || employee.getDepartment() == null) {
             return "Unassigned";
         }
-        return employee.getDepartment().getDepartmentName();
+        return departmentNames.getOrDefault(employee.getDepartment().getId(), "Unassigned");
     }
 
     private BigDecimal sum(List<Payroll> payrolls, Function<Payroll, BigDecimal> extractor) {

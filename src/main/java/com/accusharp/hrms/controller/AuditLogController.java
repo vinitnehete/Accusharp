@@ -62,8 +62,11 @@ public class AuditLogController {
      */
     @PreAuthorize("@authz.can('AUDIT_MANAGE')")
     @DeleteMapping
-    public Map<String, Long> purge(@RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate beforeDate) {
+    public Map<String, Long> purge(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate beforeDate,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate confirmExportedUpTo) {
         Instant cutoff = beforeDate.atStartOfDay(ZoneOffset.UTC).toInstant();
-        return Map.of("deleted", auditService.purgeOlderThan(cutoff));
+        Instant confirmed = confirmExportedUpTo.atStartOfDay(ZoneOffset.UTC).toInstant();
+        return Map.of("deleted", auditService.purgeOlderThan(cutoff, confirmed));
     }
 }

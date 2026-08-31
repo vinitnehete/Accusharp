@@ -204,9 +204,30 @@ public class Payroll {
     @Column(name = "rule_esic_percent", precision = 6, scale = 2)
     private BigDecimal ruleEsicPercent;
 
+    /** DAY_WISE's payable-day base and everyone's overtime-hour base at generation time. */
+    @Column(name = "rule_day_wise_days_in_month")
+    private Integer ruleDayWiseDaysInMonth;
+
+    @Column(name = "rule_standard_hours_per_day", precision = 4, scale = 1)
+    private BigDecimal ruleStandardHoursPerDay;
+
+    @Column(name = "rule_overtime_rate_multiplier", precision = 4, scale = 2)
+    private BigDecimal ruleOvertimeRateMultiplier;
+
     @Column(name = "generated_at", nullable = false)
     private Instant generatedAt;
 
     @Column(name = "generated_by", length = 50)
     private String generatedBy;
+
+    /**
+     * Optimistic lock. Two concurrent {@code regenerate()} calls both reading
+     * the same GENERATED row and both marking it SUPERSEDED - the second
+     * writer here gets a clean version-conflict failure instead of silently
+     * clobbering the first writer's status change before either has
+     * attempted the new revision's insert (which the {@code
+     * uk_payroll_period_revision} unique constraint guards separately).
+     */
+    @Version
+    private Long version;
 }

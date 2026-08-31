@@ -42,7 +42,11 @@ service/
   leave/        LeaveService, LeaveBalanceService, LeaveCalculationService
   payroll/      PayrollService, SalarySlipService
   report/       ReportService, DashboardService
-util/         AmountInWords, TemporaryPasswordGenerator
+util/         AmountInWords, TemporaryPasswordGenerator,
+              EmployeeCsvParser, ShiftAssignmentCsvParser, PayrollCsvParser (CSV -> request DTO,
+              one independently-failable row at a time - see "Bulk / CSV mutation endpoints" below),
+              EmployeeCredentialsCsvWriter (bulk-import's created employees -> a downloadable
+              userId/employeeCode/employeeName/temporaryPassword sheet, see SECURITY.md)
 ```
 
 Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
@@ -61,8 +65,8 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | Entity | Table | Notes |
 |---|---|---|
 | `Company` | `company` | The tenant. Every company-scoped entity below resolves back to one, directly or via its owning `Employee` |
-| `Department`, `Designation`, `Shift` | `department`, `designation`, `shift` | One row per company, plus rows with `company = null` - a shared, read-only-to-companies catalog (the seeded defaults). Unique on `(company_id, code)`, not code alone - see [SECURITY.md](SECURITY.md) Phase 6 |
-| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below) |
+| `Department`, `Designation`, `Category`, `Shift` | `department`, `designation`, `category`, `shift` | One row per company, plus rows with `company = null` - a shared, read-only-to-companies catalog (the seeded defaults). Unique on `(company_id, code)`, not code alone - see [SECURITY.md](SECURITY.md) Phase 6. `Category` is the employee grade (Worker, Supervisor, Manager, Director, ...) - a company may define as many as it needs via `/api/categories`, same as `Department`/`Designation` |
+| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below). `category`, `gender`, `uanNo`, `esicIpNo`, `bankAccountNo` and `bankIfscNo` are all optional |
 | `PlatformUser` | `platform_user` | The other principal type - platform-level accounts (company onboarding etc.), not tied to any company |
 | `RefreshToken` | `refresh_token` | Opaque, hashed at rest, single-use with rotation - never a JWT itself |
 | `Permission`, `RolePermission` | `permission`, `role_permission` | The data-driven grant table every `@PreAuthorize` check resolves against - see Security below |
@@ -75,13 +79,17 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | `LeaveRequest`, `LeaveBalance` | `leave_request`, `leave_balance` | Balance is always quota minus used |
 | `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Cached rollup of the stored days |
 | `SalaryRule` | `salary_rule` | One row per company holding every percentage and slab, plus one `company = null` global default a company falls back to until it customizes its own - see [SECURITY.md](SECURITY.md) |
+| `SalaryRevision` | `salary_revision` | Append-only history of one employee's gross-salary changes (hike/promotion/correction) - see "Salary revision history" below |
 | `Payroll` | `payroll` | Immutable snapshot per employee/month/year/revision |
 
 ### Salary structure
 
 Derived on every employee write from the current `SalaryRule`, so it can never
-drift from configuration. `basicDA`, `hra`, `conveyanceAllowance`,
-`educationAllowance` and `grossSalaryWage` are **not** accepted from the API.
+drift from configuration. `grossSalaryWage` is never accepted from the API -
+it is always the sum of the six components below, computed server-side.
+`basicDA`, `hra`, `conveyanceAllowance` and `educationAllowance` are the same
+way by default, but may be supplied directly on create (single or bulk CSV) -
+see "Structure override at creation" below.
 
 ```
 basicDA              = max(grossSalary x basicDaPercent, basicDaMinimumThreshold)
@@ -131,6 +139,55 @@ reads `basicDA`/`hra`/etc. straight off the `Employee` row at generate/
 regenerate time, so once the employee's structure is corrected, the next
 `POST /api/payroll/regenerate` for that period picks it up.
 
+#### Structure override at creation
+
+`PUT /api/employees/{id}/salary-structure` (above) is a two-step flow: create
+with a derived structure, then override it afterward. A company onboarding
+employees from an existing payroll system already knows the exact,
+government-compliant breakup for each person and should not have to do
+either step - `EmployeeRequest` (and `EmployeeCsvParser`'s CSV rows) accept
+the same four fields directly on create. `EmployeeService.applyStructureOverride`
+is the single choke point both the single-create and bulk-CSV-import
+endpoints share: all four fields present sets them verbatim and flips
+`salaryStructureOverridden`, all four absent leaves derivation exactly as
+before, and anything in between - a structure that is part typed, part
+rule-derived - is rejected outright, since it was never a real "fixed
+structure" the caller could have intended. For bulk CSV import this rejection
+is per-row, same as every other CSV validation failure: one bad row never
+costs the rest of the file.
+
+#### Salary revision history
+
+Nothing previously recorded *why* or *when* an employee's `grossSalary`
+changed - a plain `PUT /api/employees/{id}` just overwrote it, same as any
+other field, with no trace of the old value. `SalaryRevision` (table
+`salary_revision`) is the append-only audit trail for that, written by
+`POST /api/employees/{id}/salary-revision`: `previousGrossSalary`,
+`newGrossSalary`, a computed `hikePercent`, `effectiveDate`, `reason`
+(`ANNUAL_INCREMENT`/`PROMOTION`/`MARKET_CORRECTION`/`OTHER`) and who applied
+it. Like `AuditLog`, it stores `employeeId` as a plain scalar rather than a
+JPA relation - a history record is a snapshot of what happened, not a live
+view of current employee state (see `AuditLog`'s own Javadoc and
+[SECURITY.md](SECURITY.md)).
+
+The endpoint updates `grossSalary` and then runs the exact same
+`SalaryCalculationService.applyCalculatedFields` re-derivation as any other
+employee write - which means the same override interaction applies: an
+employee with `salaryStructureOverridden = true` will not have `basicDA`/
+`hra`/etc. move just because `grossSalary` did (derivation is skipped
+entirely while overridden, per "Manual override and regeneration" above), so
+`reviseSalary` requires the four replacement structure values in the same
+request whenever the employee is currently overridden, rather than silently
+leaving them stale. `GET /api/employees/{id}/salary-revisions` returns the
+full history, newest `effectiveDate` first - the same self-service-scoped
+visibility rule as the rest of the employee API (self, direct supervisor, or
+HR/ADMIN).
+
+This is a different gap from the "effective-dated salary rule versions" item
+in **Not implemented** below - that would be a company's `SalaryRule`
+percentages changing over time; `SalaryRevision` is one employee's actual pay
+changing over time. Both are real, unrelated gaps.
+
 ## How the calculations work
 
 ### Attendance
@@ -144,11 +201,12 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
   midnight, so its window ends on the following calendar day - but the day still
   belongs to the shift's *start* date. This is handled once, in
   `AttendanceCalculationService`, so no caller has to think about midnight.
-- **Punch window.** Asymmetric on purpose: it opens 60 minutes before the start
-  (people badge in early) and closes `overtimeWindowMinutes` after the scheduled
-  end (default 4 hours). A symmetric buffer would make a long overtime day look
-  like a missing exit punch, so the closing side is configurable per shift and
-  sized for real overtime.
+- **Punch window.** Asymmetric on purpose: it opens `entryWindowBufferMinutes`
+  before the start (people badge in early, 60 by default) and closes
+  `overtimeWindowMinutes` after the scheduled end (default 4 hours). A
+  symmetric buffer would make a long overtime day look like a missing exit
+  punch, so the closing side is configurable per shift and sized for real
+  overtime.
 - **Windows are exclusive.** A night shift's window crosses midnight and, with
   an overtime window on top, can reach into the hours the *next* scheduled day
   is already collecting for. A day's window is therefore truncated where the
@@ -158,14 +216,28 @@ working hours, break, late minutes, early exit, overtime and invalid punches.
   full overtime window survives, and consecutive night shifts never collide.
   The roster is read one day either side of the requested range, which is what
   makes the last night shift of a month hand over correctly to the next month.
-- **Break.** With four or more punches the middle pairs are real in/out cycles,
-  so the actual time outside is used. Otherwise the shift's configured unpaid
-  break applies.
-- **Day value.** 75% of the shift earns a full day, 40% earns a half day, below
-  that is absent. One lone punch is an invalid punch (a device error), not an
-  absence.
+- **Break.** Only the first and last punch of a day decide it; anything in
+  between is ignored, and the unpaid break is always the shift's configured
+  `breakMinutes`. Measuring the break from middle pairs was unsafe - the device
+  has no in/out flag, so a reader firing twice on one badge was indistinguishable
+  from a real mid-shift exit, and turned a full day into loss of pay.
+- **Day value.** `fullDayThresholdPercent` of the shift earns a full day (75%
+  by default), `halfDayThresholdPercent` earns a half day (40% by default),
+  below that is absent. One lone punch is an invalid punch (a device error),
+  not an absence.
 - **Holidays, weekly offs and approved leave** are layered on top, so *absent*
   only ever means "expected to work and did not".
+
+All three configurable numbers above - `entryWindowBufferMinutes`,
+`fullDayThresholdPercent`, `halfDayThresholdPercent` - live on
+`AttendanceRule`, resolved in `AttendanceService` and passed into
+`AttendanceCalculationService` alongside the `Shift`. It follows the exact
+per-company + global-default pattern `SalaryRule` and `Holiday` already use
+(see "Bulk / CSV mutation endpoints" below and `SalaryRuleService`'s
+Javadoc) - everything else attendance calculation used to hardcode
+identically for every company (shift timings, grace period, break minutes,
+overtime window, weekly-offs, holidays) was already per-company via `Shift`
+and `Holiday`; these three were the only genuinely global constants left.
 
 ### Attendance is generated, then reviewed
 
@@ -227,8 +299,13 @@ Two payment models:
 | | `DAY_WISE` | `PERMANENT` / `CONTRACT` / `INTERN` |
 |---|---|---|
 | Proration base | fixed payable days (26 by default) | the month's working days |
-| Payable days | present + paid leave, capped at the base | working days minus LOP |
+| Payable days | present days alone, capped at the base | working days minus LOP |
 | LOP | not applicable - attendance *is* the pay | derived as above |
+
+For `DAY_WISE`, approved paid leave earns no share of `earn<component>` -
+`payableDays` is `presentDays` capped at `dayWiseDaysInMonth`, full stop. Leave
+still earns its own overtime credit (below), just not a share of the fixed
+salary structure.
 
 ```
 earn<component>  = component x payableDays / prorationBase
@@ -239,7 +316,9 @@ netSalary        = totalEarnings - totalDeduction
 
 - **PF** is deducted on the *prorated* basic (`earnPf`), not the full one. The
   full-month `pf` figure is reported for information only.
-- **ESIC** applies only up to the configured wage ceiling.
+- **ESIC** applies only while the earned `basicDA` (not the full earned gross)
+  stays at or under the configured wage ceiling; above it, both the ceiling
+  test and the deduction percentage are zero.
 - **Professional tax** follows the two-step slab in `SalaryRule`.
 - **MLWF** (Labour Welfare Fund) is a single flat `SalaryRule.mlwfAmount`,
   deducted from the employee only in the June and December payroll runs
@@ -248,8 +327,21 @@ netSalary        = totalEarnings - totalDeduction
 - **LOP deduction** is reported on the slip for transparency but is *not* added
   to the deduction total - the earnings were already prorated down by the same
   days, so adding it would deduct twice.
-- **Overtime** is paid only to `overtimeEligible` employees, on hours the
-  attendance engine measured against each day's own shift length.
+- **Overtime** is paid only to `overtimeEligible` employees, and the hours it's
+  paid on depend on the same two payment models above: `PERMANENT`/`CONTRACT`/
+  `INTERN` use the attendance engine's daily-summed value (each day measured
+  against that day's own shift length). `DAY_WISE` has no fixed daily shift to
+  measure against, so its overtime is two parts added together:
+  `max(0, totalHours - min(presentDays, dayWiseDaysInMonth) x standardHoursPerDay)`
+  (worked hours past a present-days baseline, itself capped at one standard
+  month so a worker present every single day - no weekly off at all - isn't
+  measured against more than 26 days) **plus** `paidLeaveDays x
+  standardHoursPerDay` added on top unconditionally - approved paid leave
+  always contributes its own overtime hours, never silently absorbed by the
+  present-days cap. Both payment models feed the same
+  `otAllowance = overtimeHours x perHour x overtimeRateMultiplier`. See
+  `PayrollService.monthlyOvertimeHours` and
+  [`DayWisePayrollOvertimeTest`](src/test/java/com/accusharp/hrms/DayWisePayrollOvertimeTest.java).
 
 ### Immutable payroll history
 
@@ -258,6 +350,68 @@ Regenerating a period does not overwrite. The existing row is marked
 always be reproduced. Every payroll row snapshots the employee's salary
 structure, the salary rule percentages and the attendance figures, so later
 edits to any of them never change an already-generated month.
+
+### Debugging a period: snapshot vs. live
+
+`GET /api/payroll/debug?month=&year=` exists because the immutability above
+cuts both ways: a payroll row is a faithful snapshot of what it was computed
+from, which means it silently stops matching the employee master or the
+`SalaryRule` the moment either changes afterward. Rather than re-deriving the
+calculation by hand to find that out, `PayrollService.getPeriodDebugForCaller`
+re-reads both live (the employee's current `grossSalary`/`pfBasic`, the
+company's current rule percentages, plus `dayWiseDaysInMonth`/
+`standardHoursPerDay`/`overtimeRateMultiplier` - the rule inputs the overtime
+calculation above depends on) and lays them next to what `Payroll` actually
+stored, with `masterDataDrifted`/`ruleDrifted` booleans flagging a mismatch. It changes nothing and triggers no recalculation - purely a read
+juxtaposing snapshot against current state, gated behind the same
+`PAYROLL_READ` permission and self-or-manages scoping as every other payroll
+read.
+
+### Bulk / CSV mutation endpoints
+
+Four endpoints share one shape for driving a mutation from a frontend CSV
+upload or a large JSON list, rather than one HTTP call per row:
+`POST /api/employees/bulk-import`, `POST /api/shift-schedules/bulk/varied`
+(+ its CSV sibling `/bulk/csv`), `POST /api/payroll/bulk-generate`, and
+`POST /api/leaves/bulk-import`. Each parses independently-failable rows
+(`EmployeeCsvParser`, `ShiftAssignmentCsvParser`, `PayrollCsvParser`,
+`LeaveCsvParser` in `com.accusharp.hrms.util`), then runs every row through
+the *same* single-row service call a non-bulk request would make -
+`EmployeeService.create`, `ShiftSchedulingService.assign`,
+`PayrollService.generate`/`regenerate`, `LeaveService.hrDirectCreate` - inside
+its own try/catch, so a bad row never aborts the batch and never bypasses a
+guard (admin-escalation, tenant scoping, supervisor-owns-team) a single call
+would enforce. The uniform result, `BulkImportResult<T>` (`{totalRows,
+successCount, failureCount, succeeded, errors}`), is what every one of them
+returns.
+
+`POST /api/employees/bulk-import` alone also accepts `?format=csv`, which
+skips the JSON envelope and returns `EmployeeCredentialsCsvWriter`'s
+downloadable credentials sheet for the rows that succeeded instead - see
+[SECURITY.md](SECURITY.md) for why that exists (no email/SMS delivery
+infrastructure to hand 50-500 temporary passwords out automatically).
+
+`EmployeeCsvParser` and `PayrollCsvParser`'s numeric columns strip Excel-style
+formatting (thousands separators, `₹`/`$`, stray whitespace) before parsing,
+rather than surfacing commons-csv's raw `NumberFormatException` for a value
+that's actually correct - `"41,000.00"` is exactly as valid an input as
+`"41000.00"`.
+
+`CsvRowParser` doesn't assume the header row is line 1 either: the
+downloadable Excel templates (`employeeTemplate.js` on the frontend) put a
+title, instructions and a legend above the real header row for readability,
+and Excel's "Save As CSV" carries those decorative rows straight into the
+file unchanged. Each of the four parsers instead passes a column name it
+knows must appear in its own header (`employeeCode`, `employeeId`,
+`shiftCode`, `leaveType`) and `CsvRowParser` scans for the first row
+containing it, treating everything above as decoration to skip - the same
+pass strips the trailing `" *"` the templates append to required-column
+headers, since that marker isn't part of the column name the row mappers
+look up.
+
+Existing `POST /api/shift-schedules/bulk` (one shift, many employees, a date
+range) is unrelated to this family - it stays a single validated operation
+that 409s on the first conflict, by design (see `ShiftSchedulingService.assignBulk`).
 
 ## Leave workflow
 
@@ -270,6 +424,18 @@ restored on cancellation. A rejection never touches it. Overlapping open or
 approved requests are refused, half days are only valid on a single-day request,
 and the balance is checked at application time so the approver never hits an
 empty quota.
+
+`LeaveService.hrDirectCreate` is a second entry point into the same terminal
+state, not a second workflow: HR/ADMIN (`LEAVE_APPROVE`) skips application and
+endorsement entirely for backfilling a day that already happened, but runs
+the identical date/overlap/balance validations `apply` does - a direct entry
+hard-blocks on insufficient balance rather than being allowed to silently
+overdraw it - then consumes balance immediately, same as `approve`. `POST
+/api/leaves/bulk-import` (`LeaveCsvParser`) is its CSV variant, same
+independently-failable-row shape as the other bulk/CSV endpoints below.
+`LeaveRequest.origin` (`SELF_SERVICE`/`HR_DIRECT`) is what distinguishes the
+two once both sit at `APPROVED` - the leave-side analog of `DailyAttendance`'s
+`GENERATED`/`MANUAL` `recordStatus`.
 
 ## Security &amp; multi-tenancy
 

@@ -6,11 +6,13 @@ import com.accusharp.hrms.entity.LeaveRequest;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveDuration;
+import com.accusharp.hrms.enums.LeaveOrigin;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.repository.AttendanceRuleRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.LeaveBalanceRepository;
@@ -57,6 +59,7 @@ class SelfServiceScopingHttpTest {
     @Autowired private LeaveRequestRepository leaveRequestRepository;
     @Autowired private LeaveBalanceRepository leaveBalanceRepository;
     @Autowired private PayrollRepository payrollRepository;
+    @Autowired private AttendanceRuleRepository attendanceRuleRepository;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private SalaryRuleService salaryRuleService;
     @Autowired private SalaryCalculationService salaryCalculationService;
@@ -76,6 +79,7 @@ class SelfServiceScopingHttpTest {
         leaveRequestRepository.deleteAll();
         leaveBalanceRepository.deleteAll();
         payrollRepository.deleteAll();
+        attendanceRuleRepository.deleteAll();
         employeeRepository.deleteAll();
         companyRepository.deleteAll();
 
@@ -173,7 +177,7 @@ class SelfServiceScopingHttpTest {
                 .userId("SSB001").leaveType(LeaveType.CASUAL_LEAVE)
                 .fromDate(LocalDate.of(2031, 3, 1)).toDate(LocalDate.of(2031, 3, 1))
                 .duration(LeaveDuration.FULL_DAY).totalDays(new BigDecimal("1.0"))
-                .status(LeaveStatus.PENDING).appliedAt(java.time.Instant.now())
+                .status(LeaveStatus.PENDING).origin(LeaveOrigin.SELF_SERVICE).appliedAt(java.time.Instant.now())
                 .build());
 
         assertThat(send("GET", "/api/leaves/" + othersLeave.getId(), null, empAToken).status()).isEqualTo(404);

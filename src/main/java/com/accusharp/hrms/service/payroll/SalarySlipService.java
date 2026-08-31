@@ -3,6 +3,7 @@ package com.accusharp.hrms.service.payroll;
 import com.accusharp.hrms.dto.SalarySlipResponse;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.util.AmountInWords;
+import com.accusharp.hrms.util.CsvSanitizer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,11 +34,6 @@ public class SalarySlipService {
     @Transactional(readOnly = true)
     public SalarySlipResponse getSlip(String employeeId, int month, int year) {
         return toSlip(payrollService.getCurrent(employeeId, month, year));
-    }
-
-    @Transactional(readOnly = true)
-    public SalarySlipResponse getSlipById(Long payrollId) {
-        return toSlip(payrollService.getById(payrollId));
     }
 
     @Transactional(readOnly = true)
@@ -213,7 +209,7 @@ public class SalarySlipService {
         if (value == null) {
             return "";
         }
-        String cleaned = value.replace("\"", "\"\"");
+        String cleaned = CsvSanitizer.neutralizeFormula(value).replace("\"", "\"\"");
         return cleaned.contains(",") ? "\"" + cleaned + "\"" : cleaned;
     }
 

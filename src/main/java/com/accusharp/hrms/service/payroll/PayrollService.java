@@ -1,15 +1,18 @@
 package com.accusharp.hrms.service.payroll;
 
+import com.accusharp.hrms.dto.PayrollDebugRow;
 import com.accusharp.hrms.dto.PayrollRequest;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
 import com.accusharp.hrms.entity.Payroll;
+import com.accusharp.hrms.entity.SalaryRevision;
 import com.accusharp.hrms.entity.SalaryRule;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.PayrollRepository;
+import com.accusharp.hrms.repository.SalaryRevisionRepository;
 import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.SalaryRuleService;
@@ -19,15 +22,22 @@ import com.accusharp.hrms.service.calculation.LopCalculationService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.YearMonth;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -43,8 +53,10 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li><b>DAY_WISE</b> - paid against attended days over a fixed payable-day
  *       base (26 by default), with overtime on hours beyond the standard day.</li>
- *   <li><b>everyone else</b> - paid against the month's working days, reduced
- *       only by loss of pay.</li>
+ *   <li><b>everyone else</b> - salaried against the full calendar month
+ *       (week-offs included, unlike DAY_WISE), reduced only by whatever LOP
+ *       the generated attendance found. Overtime is still computed and shown
+ *       as its own line, never part of this proration.</li>
  * </ul>
  */
 @Service
@@ -55,6 +67,7 @@ public class PayrollService {
     private static final int SCALE = SalaryCalculationService.SCALE;
 
     private final PayrollRepository payrollRepository;
+    private final SalaryRevisionRepository salaryRevisionRepository;
     private final EmployeeService employeeService;
     private final SalaryRuleService salaryRuleService;
     private final AttendanceService attendanceService;
@@ -112,21 +125,33 @@ public class PayrollService {
         return build(request, current.getRevision() + 1);
     }
 
-    /** Runs payroll for every active employee, skipping periods already done. */
-    @Transactional
-    public List<Payroll> generateForAll(int month, int year, String generatedBy) {
-        return employeeService.getActiveEntities().stream()
-                .filter(employee -> payrollRepository.findByEmployeeIdAndMonthAndYearAndStatus(
-                        employee.getUserId(), month, year, PayrollStatus.GENERATED).isEmpty())
-                .map(employee -> {
-                    PayrollRequest request = new PayrollRequest();
-                    request.setEmployeeId(employee.getUserId());
-                    request.setMonth(month);
-                    request.setYear(year);
-                    request.setGeneratedBy(generatedBy);
-                    return build(request, 1);
-                })
-                .toList();
+    /**
+     * Employee ids in the caller's active roster that don't yet have a
+     * {@link PayrollStatus#GENERATED} row for this period - what the
+     * whole-company batch loops over.
+     *
+     * <p>Deliberately just a list, not the generation itself: generating each
+     * employee has to happen as its own top-level call through {@link
+     * #generate}, each in its own transaction, so that one employee's failure
+     * (a roster gap, missing attendance) can't roll back everyone else's
+     * already-committed payroll for the same run. A single {@code
+     * @Transactional} method looping over the whole batch could not do that
+     * - see {@code PayrollController#generateForAll}, which is where that
+     * per-employee isolation actually lives, the same pattern {@code
+     * PayrollController#bulkGenerate} already used for the CSV path.
+     */
+    @Transactional(readOnly = true)
+    public List<String> pendingGenerationEmployeeIds(int month, int year) {
+        List<Employee> employees = employeeService.getActiveEntities();
+
+        // One IN-clause query for "who's already generated this period" instead
+        // of one findBy... per employee.
+        List<String> employeeIds = employees.stream().map(Employee::getUserId).toList();
+        Set<String> alreadyGenerated = payrollRepository
+                .findAllByEmployeeIdInAndMonthAndYearAndStatus(employeeIds, month, year, PayrollStatus.GENERATED)
+                .stream().map(Payroll::getEmployeeId).collect(Collectors.toSet());
+
+        return employeeIds.stream().filter(id -> !alreadyGenerated.contains(id)).toList();
     }
 
     /**
@@ -204,6 +229,87 @@ public class PayrollService {
                 .toList();
     }
 
+    /**
+     * Same scope as {@link #getPeriodForCaller}, but every field the
+     * calculation consumed and produced, plus a live re-read of the
+     * employee's master salary data and the company's current {@code
+     * SalaryRule} - so a wrong number can be traced to its cause (bad
+     * attendance input, a stale rule the payroll predates, a rule or salary
+     * edited after generation) without recomputing anything by hand. See
+     * {@link PayrollDebugRow}.
+     */
+    @Transactional(readOnly = true)
+    public List<PayrollDebugRow> getPeriodDebugForCaller(int month, int year) {
+        List<Payroll> period = getPeriodForCaller(month, year);
+        Map<String, Employee> employeesByUserId = employeeService.getAllEntities().stream()
+                .collect(Collectors.toMap(Employee::getUserId, Function.identity(), (a, b) -> a));
+
+        return period.stream()
+                .sorted(Comparator.comparing(Payroll::getEmployeeId))
+                .map(payroll -> toDebugRow(payroll, employeesByUserId.get(payroll.getEmployeeId())))
+                .toList();
+    }
+
+    private PayrollDebugRow toDebugRow(Payroll p, Employee employee) {
+        BigDecimal liveGrossSalary = employee == null ? null : employee.getGrossSalary();
+        BigDecimal livePfBasic = employee == null ? null : employee.getPfBasic();
+        SalaryRule liveRule = employee == null ? null
+                : salaryRuleService.getActiveRuleForCompany(employee.getCompany());
+
+        boolean masterDataDrifted = employee != null
+                && (differs(p.getGrossSalary(), liveGrossSalary) || differs(p.getPfBasic(), livePfBasic));
+        boolean ruleDrifted = liveRule != null
+                && (differs(p.getRuleBasicDaPercent(), liveRule.getBasicDaPercent())
+                    || differs(p.getRulePfPercent(), liveRule.getPfPercent())
+                    || differs(p.getRuleEsicPercent(), liveRule.getEsicPercent())
+                    || differsInt(p.getRuleDayWiseDaysInMonth(), liveRule.getDayWiseDaysInMonth())
+                    || differs(p.getRuleStandardHoursPerDay(), liveRule.getStandardHoursPerDay())
+                    || differs(p.getRuleOvertimeRateMultiplier(), liveRule.getOvertimeRateMultiplier()));
+
+        return new PayrollDebugRow(
+                p.getId(), p.getEmployeeId(), p.getEmployeeName(), p.getEmployeeCode(), p.getCompanyName(),
+                p.getDepartmentName(), p.getDesignationName(),
+                p.getEmploymentStatus() == null ? null : p.getEmploymentStatus().name(),
+                p.getRevision(), p.getStatus() == null ? null : p.getStatus().name(),
+                p.getGeneratedAt() == null ? null : p.getGeneratedAt().toString(), p.getGeneratedBy(),
+
+                p.getDaysInMonth(), p.getWorkingDays(), p.getPresentDays(), p.getPaidLeaveDays(), p.getLopDays(),
+                p.getPayableDays(), p.getTotalHours(), p.getOvertimeHours(), p.getPerDay(), p.getPerHour(),
+
+                p.getEarnBasicDA(), p.getEarnHra(), p.getEarnConveyance(), p.getEarnEducation(), p.getEarnMedical(),
+                p.getEarnOther(), p.getBonus(), p.getIncentive(), p.getOtAllowance(), p.getEarnGrossSalary(),
+                p.getTotalEarnings(),
+
+                p.getPf(), p.getEarnPf(), p.getPfDeduction(), p.getEsic(), p.getProfessionalTax(), p.getMlwf(),
+                p.getTds(), p.getAdvanceDeduction(), p.getLoanDeduction(), p.getCanteen(), p.getLopDeduction(),
+                p.getTotalDeduction(), p.getNetSalary(),
+
+                p.getGrossSalary(), liveGrossSalary, p.getPfBasic(), livePfBasic,
+
+                p.getRuleBasicDaPercent(), liveRule == null ? null : liveRule.getBasicDaPercent(),
+                p.getRulePfPercent(), liveRule == null ? null : liveRule.getPfPercent(),
+                p.getRuleEsicPercent(), liveRule == null ? null : liveRule.getEsicPercent(),
+                p.getRuleDayWiseDaysInMonth(), liveRule == null ? null : liveRule.getDayWiseDaysInMonth(),
+                p.getRuleStandardHoursPerDay(), liveRule == null ? null : liveRule.getStandardHoursPerDay(),
+                p.getRuleOvertimeRateMultiplier(), liveRule == null ? null : liveRule.getOvertimeRateMultiplier(),
+
+                masterDataDrifted, ruleDrifted);
+    }
+
+    private static boolean differs(BigDecimal stored, BigDecimal live) {
+        if (stored == null || live == null) {
+            return false;
+        }
+        return stored.compareTo(live) != 0;
+    }
+
+    private static boolean differsInt(Integer stored, Integer live) {
+        if (stored == null || live == null) {
+            return false;
+        }
+        return !stored.equals(live);
+    }
+
     // ---- the calculation ---------------------------------------------------
 
     private Payroll build(PayrollRequest request, int revision) {
@@ -216,7 +322,18 @@ public class PayrollService {
         // fresh recompute, which would discard their corrections. Refuses
         // outright if the period was never generated.
         MonthlyAttendanceSummary attendance =
-                attendanceService.getGeneratedSummary(employee.getUserId(), period);
+                attendanceService.getGeneratedSummary(employee, period);
+
+        // Locked immediately after reading it, not after the calculation below -
+        // otherwise a correction landing in that window commits successfully
+        // (nothing locked yet) while this payroll is computed from what's now
+        // stale data, and only gets locked afterward, hiding that it happened.
+        // Safe to do this early: if anything below throws (including the
+        // duplicate-insert race generate()/regenerate() already guard against),
+        // this whole method's transaction rolls back and takes this lock write
+        // with it - a failed generation never leaves a month locked with no
+        // payroll to show for it.
+        attendanceService.lockMonth(employee, period);
 
         Payroll payroll = new Payroll();
         payroll.setEmployeeId(employee.getUserId());
@@ -231,41 +348,84 @@ public class PayrollService {
         boolean dayWise = employee.getStatus().isPaidPerAttendedDay();
 
         // Base of the proration: the denominator every earning is divided by.
+        // DAY_WISE is paid per attended day against a fixed payable-day base;
+        // everyone else is salaried against the full calendar month - week-offs
+        // included, reduced only by whatever LOP the generated attendance found.
         BigDecimal totalDays = dayWise
                 ? BigDecimal.valueOf(rule.getDayWiseDaysInMonth())
-                : BigDecimal.valueOf(Math.max(attendance.getWorkingDays(), 1));
+                : BigDecimal.valueOf(period.lengthOfMonth());
 
         BigDecimal presentDays = attendance.getPresentDays();
         BigDecimal paidLeaveDays = paidLeaveDays(attendance);
 
+        EmployedWindow window = employedWindow(employee, period);
         BigDecimal lopDays;
         BigDecimal payableDays;
         if (dayWise) {
             // Attendance is the pay: no LOP concept, you are paid what you worked.
+            // Paid leave does not add to payableDays - a day-wise worker earns
+            // basicDA/hra/conveyance/education/medical/other only for days
+            // actually present (capped at dayWiseDaysInMonth), not for approved
+            // leave on top of that. Leave still earns its own overtime credit -
+            // see monthlyOvertimeHours - just not a share of the fixed structure.
             lopDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
-            payableDays = presentDays.add(paidLeaveDays).min(totalDays);
+            payableDays = presentDays.min(totalDays);
         } else {
-            lopDays = lopCalculationService.calculateLopDays(
-                    BigDecimal.valueOf(attendance.getWorkingDays()), presentDays, paidLeaveDays);
-            payableDays = lopCalculationService.calculatePayableDays(totalDays, lopDays);
+            lopDays = attendance.getLopDays();
+            // Capped by how many days of this period the employee was actually
+            // employed - joiningDate/relievingDate may fall inside the period,
+            // and attendance/roster data simply doesn't exist for days before
+            // joining or after relieving, so lopDays alone never reflects that
+            // gap. Without this, a mid-month joiner or leaver was paid for the
+            // full calendar month instead of the days they were on the books.
+            // A min(), not a further subtraction: if stray roster/attendance
+            // rows exist past the employment window (e.g. relievingDate set
+            // after a roster was already generated further out) they already
+            // show up as LOP once, via calculatePayableDays below - subtracting
+            // the employment-window gap again on top would double-penalize the
+            // same days.
+            payableDays = lopCalculationService.calculatePayableDays(totalDays, lopDays).min(window.days());
         }
 
         payroll.setDaysInMonth(period.lengthOfMonth());
         payroll.setWorkingDays((int) attendance.getWorkingDays());
-        payroll.setPresentDays(presentDays);
+        // DAY_WISE presentDays is capped at dayWiseDaysInMonth (26 by default)
+        // to match payableDays, which is already capped the same way - a
+        // day-wise worker present more days than the standard month (no
+        // weekly off at all) is only ever paid for 26 of them, so the stored
+        // figure shouldn't imply otherwise. Everyone else keeps the raw
+        // attendance figure; they have no such cap.
+        payroll.setPresentDays(dayWise ? presentDays.min(totalDays).setScale(1, RoundingMode.HALF_UP) : presentDays);
         payroll.setPaidLeaveDays(paidLeaveDays);
         payroll.setLopDays(lopDays);
         payroll.setPayableDays(payableDays);
         payroll.setTotalHours(attendance.getTotalHours());
-        payroll.setOvertimeHours(attendance.getOvertimeHours());
+        // DAY_WISE has no fixed daily shift to measure each day's overtime
+        // against - only a monthly expectation the month's total hours are
+        // compared to. Everyone else keeps the attendance engine's
+        // daily-summed value (each day measured against that day's own
+        // shift length).
+        BigDecimal overtimeHours = dayWise
+                ? monthlyOvertimeHours(attendance.getTotalHours(), presentDays, paidLeaveDays, rule)
+                : attendance.getOvertimeHours();
+        payroll.setOvertimeHours(overtimeHours);
 
         // ---- earnings ------------------------------------------------------
-        payroll.setEarnBasicDA(salaryCalculationService.prorate(employee.getBasicDA(), totalDays, payableDays));
-        payroll.setEarnHra(salaryCalculationService.prorate(employee.getHra(), totalDays, payableDays));
-        payroll.setEarnConveyance(salaryCalculationService.prorate(
-                employee.getConveyanceAllowance(), totalDays, payableDays));
-        payroll.setEarnEducation(salaryCalculationService.prorate(
-                employee.getEducationAllowance(), totalDays, payableDays));
+        // Gross-derived lines (basicDA/hra/conveyance/education) are split across
+        // any salary revision that took effect mid-period - see
+        // resolveGrossSalarySegments's Javadoc for why overridden employees and
+        // dayWise (no calendar-month proration to begin with) skip this and keep
+        // the single current-structure calculation used everywhere else.
+        if (!dayWise && !employee.isSalaryStructureOverridden()) {
+            setSegmentedGrossEarnings(payroll, employee, rule, window, totalDays, payableDays);
+        } else {
+            payroll.setEarnBasicDA(salaryCalculationService.prorate(employee.getBasicDA(), totalDays, payableDays));
+            payroll.setEarnHra(salaryCalculationService.prorate(employee.getHra(), totalDays, payableDays));
+            payroll.setEarnConveyance(salaryCalculationService.prorate(
+                    employee.getConveyanceAllowance(), totalDays, payableDays));
+            payroll.setEarnEducation(salaryCalculationService.prorate(
+                    employee.getEducationAllowance(), totalDays, payableDays));
+        }
         payroll.setEarnMedical(salaryCalculationService.prorate(
                 employee.getMedicalAllowance(), totalDays, payableDays));
         payroll.setEarnOther(salaryCalculationService.prorate(
@@ -280,7 +440,7 @@ public class PayrollService {
         BigDecimal perHour = salaryCalculationService.divide(perDay, rule.getStandardHoursPerDay());
         payroll.setPerDay(perDay);
         payroll.setPerHour(perHour);
-        payroll.setOtAllowance(overtimeAllowance(employee, attendance, perHour, rule));
+        payroll.setOtAllowance(overtimeAllowance(employee, overtimeHours, perHour, rule));
 
         payroll.setBonus(salaryCalculationService.scaled(request.getBonus()));
         payroll.setIncentive(salaryCalculationService.scaled(request.getIncentive()));
@@ -295,7 +455,9 @@ public class PayrollService {
         payroll.setPf(deductionCalculationService.calculatePf(employee.getPfBasic(), rule));
         payroll.setEarnPf(earnPf);
         payroll.setPfDeduction(deductionCalculationService.calculatePfDeduction(earnPf, rule));
-        payroll.setEsic(deductionCalculationService.calculateEsic(earnGross, rule));
+        // Ceiling and percentage both apply to earnBasicDA (this period's earned
+        // basicDA, attendance-prorated), not the full earnGross.
+        payroll.setEsic(deductionCalculationService.calculateEsic(payroll.getEarnBasicDA(), rule));
         payroll.setProfessionalTax(
                 deductionCalculationService.calculateProfessionalTax(employee.getGrossSalary(), rule));
         payroll.setMlwf(deductionCalculationService.calculateMlwf(request.getMonth(), rule));
@@ -323,30 +485,208 @@ public class PayrollService {
                 payroll.getEmployeeId(), payroll.getMonth(), payroll.getYear(), revision,
                 payableDays, payroll.getNetSalary());
 
-        Payroll saved = payrollRepository.save(payroll);
+        // Two concurrent generate()/regenerate() calls for the same employee/
+        // period/revision can both pass the upfront existence check before
+        // either commits; uk_payroll_period_revision then rejects the second
+        // INSERT. Translate that race into the same friendly ConflictException
+        // generate()'s own check throws, instead of the generic "Request
+        // violates a database constraint" a raw DataIntegrityViolationException
+        // would otherwise surface as.
+        Payroll saved;
+        try {
+            saved = payrollRepository.save(payroll);
+        } catch (DataIntegrityViolationException duplicate) {
+            throw new ConflictException("Payroll already generated for " + employee.getUserId()
+                    + " for " + payroll.getMonth() + "/" + payroll.getYear()
+                    + " - use the regenerate endpoint");
+        }
         auditService.record("PAYROLL_GENERATE", "Payroll", employee.getUserId(), AuditOutcome.SUCCESS,
                 "period=" + payroll.getMonth() + "/" + payroll.getYear() + " revision=" + revision);
-
-        // Freeze the attendance this payroll was computed from, so the slip
-        // stays reproducible. Correcting it later means unlock, fix, regenerate.
-        attendanceService.lockMonth(employee.getUserId(), period);
 
         return saved;
     }
 
     /**
-     * Overtime is paid only to eligible employees, on hours the attendance
-     * engine already measured against each day's own shift length.
+     * Overtime is paid only to eligible employees, on whichever
+     * {@code overtimeHours} figure this employee's status uses - the
+     * attendance engine's daily-summed value for everyone salaried, or
+     * {@link #monthlyOvertimeHours} for DAY_WISE (see {@link #build}).
      */
-    private BigDecimal overtimeAllowance(Employee employee, MonthlyAttendanceSummary attendance,
+    private BigDecimal overtimeAllowance(Employee employee, BigDecimal overtimeHours,
                                          BigDecimal perHour, SalaryRule rule) {
-        if (!employee.isOvertimeEligible() || attendance.getOvertimeHours() == null) {
+        if (!employee.isOvertimeEligible() || overtimeHours == null) {
             return BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP);
         }
-        return attendance.getOvertimeHours()
+        return overtimeHours
                 .multiply(perHour)
                 .multiply(rule.getOvertimeRateMultiplier())
                 .setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Sets the four gross-derived earning lines, splitting them across a
+     * mid-period salary revision when one applies (see {@link
+     * #resolveGrossSalarySegments}). When there's no such revision this
+     * resolves to the exact same single calculation used before this existed
+     * - the segment list is just the one segment at the employee's current
+     * gross, so the {@code employee.getXxx()} fields (already derived from
+     * that same gross by {@code SalaryCalculationService.applyCalculatedFields})
+     * and a freshly re-derived structure agree to the cent.
+     */
+    private void setSegmentedGrossEarnings(Payroll payroll, Employee employee, SalaryRule rule,
+                                            EmployedWindow window, BigDecimal totalDays, BigDecimal payableDays) {
+        List<SalarySegment> segments = resolveGrossSalarySegments(employee, window);
+
+        BigDecimal earnBasicDA = BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal earnHra = BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal earnConveyance = BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal earnEducation = BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP);
+
+        long totalWindowDays = Math.max(ChronoUnit.DAYS.between(window.from(), window.to()) + 1, 1);
+        BigDecimal remainingPayableDays = payableDays;
+
+        for (int i = 0; i < segments.size(); i++) {
+            SalarySegment segment = segments.get(i);
+            boolean lastSegment = i == segments.size() - 1;
+            // The last segment absorbs whatever payableDays remains, so the
+            // segments' payable days always sum to exactly payableDays despite
+            // each share being individually rounded.
+            BigDecimal segmentPayableDays = lastSegment
+                    ? remainingPayableDays
+                    : payableDays.multiply(BigDecimal.valueOf(segment.calendarDays()))
+                            .divide(BigDecimal.valueOf(totalWindowDays), 1, RoundingMode.HALF_UP);
+            if (!lastSegment) {
+                remainingPayableDays = remainingPayableDays.subtract(segmentPayableDays);
+            }
+
+            SalaryCalculationService.DerivedStructure structure =
+                    salaryCalculationService.deriveStructure(segment.grossSalary(), rule);
+            earnBasicDA = earnBasicDA.add(
+                    salaryCalculationService.prorate(structure.basicDA(), totalDays, segmentPayableDays));
+            earnHra = earnHra.add(
+                    salaryCalculationService.prorate(structure.hra(), totalDays, segmentPayableDays));
+            earnConveyance = earnConveyance.add(
+                    salaryCalculationService.prorate(structure.conveyanceAllowance(), totalDays, segmentPayableDays));
+            earnEducation = earnEducation.add(
+                    salaryCalculationService.prorate(structure.educationAllowance(), totalDays, segmentPayableDays));
+        }
+
+        payroll.setEarnBasicDA(earnBasicDA);
+        payroll.setEarnHra(earnHra);
+        payroll.setEarnConveyance(earnConveyance);
+        payroll.setEarnEducation(earnEducation);
+    }
+
+    /**
+     * DAY_WISE overtime against how many days this employee was actually on
+     * the books for, not the sum of each day's own shift overtime - a
+     * day-wise worker has no fixed daily shift to measure against.
+     *
+     * <p>Two parts, kept separate on purpose:
+     * <ul>
+     *   <li>Worked-hours OT: {@code totalHours - (min(presentDays, dayWiseDaysInMonth)
+     *       * standardHoursPerDay)}. Present days alone are capped at {@code
+     *       dayWiseDaysInMonth} (26 by default) so a month worked without a day
+     *       off doesn't inflate the baseline past one standard month's hours.</li>
+     *   <li>Paid-leave OT: {@code paidLeaveDays * standardHoursPerDay}, added on
+     *       top unconditionally.</li>
+     * </ul>
+     * Approved paid leave must always add its own hours, not just fill
+     * whatever headroom is left under the 26-day cap - capping {@code
+     * presentDays + paidLeaveDays} together (the first version of this
+     * method) let leave get silently absorbed by the cap for any employee
+     * already present close to 26 days, which is the common case, so it
+     * almost never actually counted. Uncapped and additive is the only form
+     * that reliably behaves like "if you have approved leave, it goes into
+     * the OT hours" for every attendance mix, not just the sparse ones.
+     */
+    private BigDecimal monthlyOvertimeHours(BigDecimal totalHours, BigDecimal presentDays,
+                                            BigDecimal paidLeaveDays, SalaryRule rule) {
+        BigDecimal baseHours = presentDays.min(BigDecimal.valueOf(rule.getDayWiseDaysInMonth()))
+                .multiply(rule.getStandardHoursPerDay());
+        BigDecimal workedOvertime = totalHours.subtract(baseHours).max(BigDecimal.ZERO);
+        BigDecimal leaveOvertime = paidLeaveDays.multiply(rule.getStandardHoursPerDay());
+        return workedOvertime.add(leaveOvertime).setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * How many days of this calendar period the employee was actually on the
+     * books - the intersection of the period with [{@code joiningDate},
+     * {@code relievingDate}]. A joiner/leaver never has attendance/roster
+     * data for the days outside that window (see {@code DefaultRosterService}),
+     * so this is what keeps proration from treating those invisible days as
+     * fully worked. An employee with no {@code joiningDate} on record (legacy
+     * data predating the field) is treated as employed for the whole period,
+     * matching the previous behaviour for that case.
+     */
+    private EmployedWindow employedWindow(Employee employee, YearMonth period) {
+        LocalDate periodStart = period.atDay(1);
+        LocalDate periodEnd = period.atEndOfMonth();
+
+        LocalDate employedFrom = employee.getJoiningDate() == null || employee.getJoiningDate().isBefore(periodStart)
+                ? periodStart
+                : employee.getJoiningDate();
+        LocalDate employedTo = employee.getRelievingDate() == null || employee.getRelievingDate().isAfter(periodEnd)
+                ? periodEnd
+                : employee.getRelievingDate();
+
+        long days = Math.max(ChronoUnit.DAYS.between(employedFrom, employedTo) + 1, 0);
+        return new EmployedWindow(employedFrom, employedTo, BigDecimal.valueOf(days).setScale(1, RoundingMode.HALF_UP));
+    }
+
+    private record EmployedWindow(LocalDate from, LocalDate to, BigDecimal days) {
+    }
+
+    /** One stretch of this employed window paid at one gross salary. */
+    private record SalarySegment(LocalDate from, LocalDate to, BigDecimal grossSalary) {
+        long calendarDays() {
+            return ChronoUnit.DAYS.between(from, to) + 1;
+        }
+    }
+
+    /**
+     * Splits the employed window at every {@link SalaryRevision#getEffectiveDate()}
+     * that falls inside it, so a raise given mid-period is earned only from its
+     * effective date on - not for the whole period, and not retroactively for
+     * days before it either. Also corrects the opposite direction: if the most
+     * recent revision on record is not yet effective within this window (a
+     * future-dated raise entered today for next month), {@link Employee#getGrossSalary()}
+     * has already moved on to that new value, so this resolves the value that
+     * was actually in force for each day from {@link SalaryRevision#getPreviousGrossSalary()}/
+     * {@link SalaryRevision#getNewGrossSalary()} instead of trusting the live field.
+     *
+     * <p>Only the gross-derived structure (basicDA/hra/conveyance/education) can
+     * be reconstructed this way - medical/other allowances are fixed amounts
+     * untouched by a revision, and an <em>overridden</em> employee's structure
+     * isn't gross-derived at all and has no historical snapshot to reconstruct,
+     * so {@link #build} only asks for segments when neither applies.
+     */
+    private List<SalarySegment> resolveGrossSalarySegments(Employee employee, EmployedWindow window) {
+        List<SalaryRevision> revisions =
+                salaryRevisionRepository.findByEmployeeIdOrderByEffectiveDateAsc(employee.getUserId());
+
+        List<SalaryRevision> splitsInWindow = revisions.stream()
+                .filter(r -> r.getEffectiveDate().isAfter(window.from()) && !r.getEffectiveDate().isAfter(window.to()))
+                .toList();
+
+        BigDecimal openingGross = revisions.stream()
+                .filter(r -> !r.getEffectiveDate().isAfter(window.from()))
+                .max(Comparator.comparing(SalaryRevision::getEffectiveDate))
+                .map(SalaryRevision::getNewGrossSalary)
+                .orElseGet(() -> revisions.isEmpty()
+                        ? employee.getGrossSalary()
+                        : revisions.get(0).getPreviousGrossSalary());
+
+        List<SalarySegment> segments = new ArrayList<>();
+        LocalDate segmentStart = window.from();
+        BigDecimal currentGross = openingGross;
+        for (SalaryRevision revision : splitsInWindow) {
+            segments.add(new SalarySegment(segmentStart, revision.getEffectiveDate().minusDays(1), currentGross));
+            segmentStart = revision.getEffectiveDate();
+            currentGross = revision.getNewGrossSalary();
+        }
+        segments.add(new SalarySegment(segmentStart, window.to(), currentGross));
+        return segments;
     }
 
     /**
@@ -380,5 +720,8 @@ public class PayrollService {
         payroll.setRuleBasicDaPercent(rule.getBasicDaPercent());
         payroll.setRulePfPercent(rule.getPfPercent());
         payroll.setRuleEsicPercent(rule.getEsicPercent());
+        payroll.setRuleDayWiseDaysInMonth(rule.getDayWiseDaysInMonth());
+        payroll.setRuleStandardHoursPerDay(rule.getStandardHoursPerDay());
+        payroll.setRuleOvertimeRateMultiplier(rule.getOvertimeRateMultiplier());
     }
 }

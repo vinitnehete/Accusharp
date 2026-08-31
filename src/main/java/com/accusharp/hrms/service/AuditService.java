@@ -6,12 +6,15 @@ import com.accusharp.hrms.enums.PrincipalType;
 import com.accusharp.hrms.repository.AuditLogRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
+import com.accusharp.hrms.exception.BusinessRuleException;
+import com.accusharp.hrms.util.CsvSanitizer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -33,6 +36,9 @@ public class AuditService {
 
     private final AuditLogRepository auditLogRepository;
     private final TenantContext tenantContext;
+
+    @org.springframework.beans.factory.annotation.Value("${app.audit.minimum-retention-days:365}")
+    private long minimumRetentionDays;
 
     /** For events with no authenticated actor yet (login) or where the outcome overrides who "did" it. */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -101,8 +107,41 @@ public class AuditService {
      * REQUIRES_NEW} transaction, same as everything else here - so deleting
      * old rows never erases the fact that a deletion happened.
      */
+    /**
+     * Permanently deletes audit history older than {@code cutoff}.
+     *
+     * <p>Two guards, because this is the one operation in the application that
+     * destroys the record of every other operation:
+     *
+     * <ul>
+     *   <li><b>A recency floor.</b> Refuses to purge anything inside the
+     *       retention window ({@code app.audit.minimum-retention-days},
+     *       default 365). Without it, a single mistyped date - or an actor who
+     *       wants their own tracks gone - erases the trail that would show
+     *       what just happened. Deleting yesterday's audit log is never
+     *       routine maintenance.</li>
+     *   <li><b>Export before delete.</b> The caller must pass the cutoff twice,
+     *       once as {@code beforeDate} and once as {@code confirmExportedUpTo},
+     *       to acknowledge the range has been exported via
+     *       {@code GET /api/audit-logs/export}. A single-parameter irreversible
+     *       delete is too easy to issue by accident.</li>
+     * </ul>
+     */
     @Transactional
-    public long purgeOlderThan(Instant cutoff) {
+    public long purgeOlderThan(Instant cutoff, Instant confirmExportedUpTo) {
+        if (confirmExportedUpTo == null || !confirmExportedUpTo.equals(cutoff)) {
+            throw new BusinessRuleException(
+                    "Audit purge is irreversible. Export the range first via "
+                            + "GET /api/audit-logs/export, then repeat the same date as "
+                            + "confirmExportedUpTo to confirm.");
+        }
+        Instant floor = Instant.now().minus(Duration.ofDays(minimumRetentionDays));
+        if (cutoff.isAfter(floor)) {
+            throw new BusinessRuleException(
+                    "Refusing to purge audit history newer than " + minimumRetentionDays
+                            + " days (cutoff must be on or before " + floor + "). Raise "
+                            + "app.audit.minimum-retention-days deliberately if this is really intended.");
+        }
         long deleted = auditLogRepository.deleteByTimestampBefore(cutoff);
         record("AUDIT_LOG_PURGE", "AuditLog", null, AuditOutcome.SUCCESS,
                 "cutoff=" + cutoff + " deleted=" + deleted);
@@ -132,7 +171,7 @@ public class AuditService {
         if (value == null) {
             return "";
         }
-        String cleaned = value.replace("\"", "\"\"");
+        String cleaned = CsvSanitizer.neutralizeFormula(value).replace("\"", "\"\"");
         return cleaned.contains(",") ? "\"" + cleaned + "\"" : cleaned;
     }
 }

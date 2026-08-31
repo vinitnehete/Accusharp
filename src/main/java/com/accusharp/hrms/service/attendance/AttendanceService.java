@@ -6,6 +6,7 @@ import com.accusharp.hrms.dto.AttendanceGenerationResponse;
 import com.accusharp.hrms.dto.AttendanceRecordResponse;
 import com.accusharp.hrms.dto.DailyAttendanceResponse;
 import com.accusharp.hrms.dto.MonthlyAttendanceResponse;
+import com.accusharp.hrms.entity.AttendanceRule;
 import com.accusharp.hrms.entity.DailyAttendance;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Employee;
@@ -22,10 +23,12 @@ import com.accusharp.hrms.repository.DailyAttendanceRepository;
 import com.accusharp.hrms.repository.DeviceLogRepository;
 import com.accusharp.hrms.repository.MonthlyAttendanceSummaryRepository;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
+import com.accusharp.hrms.service.AttendanceRuleService;
 import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.HolidayService;
 import com.accusharp.hrms.service.calculation.AttendanceCalculationService;
+import com.accusharp.hrms.service.calculation.AttendanceWindowResolver;
 import com.accusharp.hrms.service.calculation.LopCalculationService;
 import com.accusharp.hrms.service.leave.LeaveCalculationService;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +43,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -83,11 +87,13 @@ public class AttendanceService {
     private final ShiftScheduleRepository shiftScheduleRepository;
     private final MonthlyAttendanceSummaryRepository monthlyAttendanceSummaryRepository;
     private final AttendanceCalculationService attendanceCalculationService;
+    private final AttendanceWindowResolver windowResolver;
     private final LeaveCalculationService leaveCalculationService;
     private final LopCalculationService lopCalculationService;
     private final HolidayService holidayService;
     private final EmployeeService employeeService;
     private final AuditService auditService;
+    private final AttendanceRuleService attendanceRuleService;
 
     // ---- generation --------------------------------------------------------
 
@@ -102,65 +108,111 @@ public class AttendanceService {
 
         YearMonth month = request.getMonth();
         List<Employee> employees = resolveEmployees(request.getUserIds());
+        LocalDate first = month.atDay(1);
+        LocalDate last = month.atEndOfMonth();
 
         int generated = 0;
         int manualPreserved = 0;
         int lockedSkipped = 0;
         List<String> withoutRoster = new ArrayList<>();
+        List<AttendanceGenerationResponse.DayChange> changes = new ArrayList<>();
+
+        // The rule and holiday calendar only vary by company, not by employee -
+        // resolved once per distinct company in this batch (in practice exactly
+        // one, the caller's own) instead of once per employee.
+        Map<Long, CompanyGenerationContext> contextsByCompany = new HashMap<>();
 
         for (Employee employee : employees) {
-            GenerationTally tally = generateFor(employee, month,
-                    request.getGeneratedBy(), request.isOverwriteManual());
+            Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+            CompanyGenerationContext context = contextsByCompany.computeIfAbsent(companyId,
+                    id -> resolveCompanyContext(id, first, last));
+
+            GenerationTally tally = generateFor(employee, month, request.getGeneratedBy(),
+                    request.isOverwriteManual(), request.isDryRun(), context.rule(), context.holidays());
 
             generated += tally.generated();
             manualPreserved += tally.manualPreserved();
             lockedSkipped += tally.lockedSkipped();
+            changes.addAll(tally.changes());
             if (tally.rosterDays() == 0) {
                 withoutRoster.add(employee.getUserId());
             }
         }
 
-        log.info("attendance.generate month={} employees={} generated={} manualPreserved={} lockedSkipped={}",
-                month, employees.size(), generated, manualPreserved, lockedSkipped);
+        log.info("attendance.generate month={} employees={} generated={} manualPreserved={} lockedSkipped={} dryRun={}",
+                month, employees.size(), generated, manualPreserved, lockedSkipped, request.isDryRun());
 
         return new AttendanceGenerationResponse(month, employees.size(), generated,
-                manualPreserved, lockedSkipped, withoutRoster);
+                manualPreserved, lockedSkipped, withoutRoster, request.isDryRun(), changes);
+    }
+
+    private CompanyGenerationContext resolveCompanyContext(Long companyId, LocalDate first, LocalDate last) {
+        AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
+        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, first, last);
+        return new CompanyGenerationContext(rule, holidays);
     }
 
     private GenerationTally generateFor(Employee employee, YearMonth month, String generatedBy,
-                                        boolean overwriteManual) {
+                                        boolean overwriteManual, boolean dryRun,
+                                        AttendanceRule rule, Set<LocalDate> holidays) {
         String userId = employee.getUserId();
-        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
         LocalDate first = month.atDay(1);
         LocalDate last = month.atEndOfMonth();
 
-        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, first, last);
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
-                leaveCalculationService.approvedLeaveDaysBetween(userId, first, last);
-        List<WindowedSchedule> roster = windowed(userId, first, last);
+                leaveCalculationService.approvedLeaveDaysBetween(userId, first.minusDays(1), last);
+
+        // Resolved from the day before the period, not the first of it. The last
+        // night shift of the previous month reaches into this one, and if that
+        // day was generated before this month's roster existed it claimed
+        // punches this month's first day now legitimately owns. Recomputing it
+        // here is what stops the same punch being counted by two stored days -
+        // the failure only appears when a month is generated before the next
+        // period is rostered, so nothing about generating in order reveals it.
+        LocalDate previousDay = first.minusDays(1);
+        ResolvedRange resolved = resolve(userId, previousDay, last, rule);
+
         Map<LocalDate, DailyAttendance> existing = indexByDate(dailyAttendanceRepository
-                .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, first, last));
+                .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, previousDay, last));
 
         List<DailyAttendance> toSave = new ArrayList<>();
+        int rosterDays = 0;
         int generated = 0;
         int manualPreserved = 0;
         int lockedSkipped = 0;
+        boolean previousMonthTouched = false;
 
-        for (WindowedSchedule windowedSchedule : roster) {
-            ShiftSchedule schedule = windowedSchedule.schedule();
+        for (AttendanceWindowResolver.DayWindow window : resolved.days()) {
+            ShiftSchedule schedule = window.schedule();
             LocalDate date = schedule.getShiftDate();
             DailyAttendance current = existing.get(date);
+            boolean isNeighbour = date.isBefore(first);
+
+            // The trailing day of the previous month is refreshed, never created:
+            // generating June must not quietly bring 31 May into existence, and a
+            // day nobody has generated yet has nothing that needs correcting.
+            if (isNeighbour && current == null) {
+                continue;
+            }
+            if (!isNeighbour) {
+                rosterDays++;
+            }
 
             if (current != null && current.isLocked()) {
-                lockedSkipped++;
+                if (!isNeighbour) {
+                    lockedSkipped++;
+                }
                 continue;
             }
             if (current != null && current.getRecordStatus().survivesRegeneration() && !overwriteManual) {
-                manualPreserved++;
+                if (!isNeighbour) {
+                    manualPreserved++;
+                }
                 continue;
             }
 
-            DailyAttendanceResponse computed = computeFromPunches(userId, windowedSchedule, holidays, leaveDays);
+            DailyAttendanceResponse computed = computeDay(userId, window, resolved.punchesOn(date),
+                    holidays, leaveDays, rule);
             DailyAttendance record = current != null ? current : new DailyAttendance();
             applyComputed(record, userId, schedule, computed, holidays.contains(date));
 
@@ -172,13 +224,52 @@ public class AttendanceService {
             record.setGeneratedBy(generatedBy);
 
             toSave.add(record);
-            generated++;
+            if (isNeighbour) {
+                previousMonthTouched = true;
+            } else {
+                generated++;
+            }
         }
 
-        dailyAttendanceRepository.saveAll(toSave);
-        rebuildSummary(userId, month);
+        if (!dryRun) {
+            dailyAttendanceRepository.saveAll(toSave);
+            rebuildSummary(employee, month);
+            if (previousMonthTouched) {
+                rebuildSummary(employee, month.minusMonths(1));
+            }
+        }
 
-        return new GenerationTally(roster.size(), generated, manualPreserved, lockedSkipped);
+        return new GenerationTally(rosterDays, generated, manualPreserved, lockedSkipped,
+                describeChanges(toSave, existing, dryRun));
+    }
+
+    /**
+     * What a run changed, per day, for the dry-run report. Built only when a
+     * dry run asked for it - a real run reports counts, and the stored rows
+     * themselves are the record.
+     */
+    private List<AttendanceGenerationResponse.DayChange> describeChanges(
+            List<DailyAttendance> toSave, Map<LocalDate, DailyAttendance> existingBefore, boolean dryRun) {
+        if (!dryRun) {
+            return List.of();
+        }
+        List<AttendanceGenerationResponse.DayChange> changes = new ArrayList<>();
+        for (DailyAttendance record : toSave) {
+            DailyAttendance before = existingBefore.get(record.getAttendanceDate());
+            AttendanceStatus previousStatus = before == null ? null : before.getStatus();
+            if (previousStatus == record.getStatus()
+                    && before != null
+                    && Objects.equals(before.getFirstIn(), record.getFirstIn())
+                    && Objects.equals(before.getLastOut(), record.getLastOut())) {
+                continue;
+            }
+            changes.add(new AttendanceGenerationResponse.DayChange(
+                    record.getUserId(), record.getAttendanceDate(), record.getShiftCode(),
+                    previousStatus, record.getStatus(),
+                    before == null ? null : before.getFirstIn(), record.getFirstIn(),
+                    before == null ? null : before.getLastOut(), record.getLastOut()));
+        }
+        return changes;
     }
 
     // ---- correction --------------------------------------------------------
@@ -225,6 +316,7 @@ public class AttendanceService {
             Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, date, date);
             Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                     leaveCalculationService.approvedLeaveDaysBetween(userId, date, date);
+            AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
 
             List<DeviceLog> corrected = List.of(
                     DeviceLog.builder().userId(userId).logDate(request.getFirstIn()).build(),
@@ -232,7 +324,7 @@ public class AttendanceService {
 
             DailyAttendanceResponse computed = attendanceCalculationService.calculateDay(
                     userId, date, schedule.getShift(), corrected, schedule.isWeekOff(),
-                    holidays.contains(date), leaveDays.containsKey(date));
+                    holidays.contains(date), leaveDays.containsKey(date), rule);
 
             applyComputed(record, userId, schedule, computed, holidays.contains(date));
 
@@ -252,7 +344,7 @@ public class AttendanceService {
         record.setUpdatedAt(Instant.now());
 
         DailyAttendance saved = dailyAttendanceRepository.save(record);
-        rebuildSummary(userId, YearMonth.from(date));
+        rebuildSummary(employee, YearMonth.from(date));
 
         log.info("attendance.correct userId={} date={} status={} by={}",
                 userId, date, saved.getStatus(), request.getUpdatedBy());
@@ -290,8 +382,19 @@ public class AttendanceService {
     /** Freezes the month so an already-paid period stays reproducible. */
     @Transactional
     public int lockMonth(String userId, YearMonth month) {
-        employeeService.getEntityByUserId(userId); // tenant check; see unlockMonth's Javadoc
-        return setLocked(userId, month, true);
+        Employee employee = employeeService.getEntityByUserId(userId); // tenant check; see unlockMonth's Javadoc
+        return lockMonth(employee, month);
+    }
+
+    /**
+     * Same as {@link #lockMonth(String, YearMonth)}, for a caller (e.g.
+     * {@code PayrollService.build}) that already resolved and tenant-checked
+     * the target {@link Employee} in the same transaction - skips the
+     * otherwise-redundant repeat lookup.
+     */
+    @Transactional
+    public int lockMonth(Employee employee, YearMonth month) {
+        return setLocked(employee.getUserId(), month, true);
     }
 
     /**
@@ -346,18 +449,29 @@ public class AttendanceService {
                 .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, fromDate, toDate));
 
         Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
         Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, fromDate, toDate);
         // Read across the whole window, not just the first month of it.
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(userId, fromDate, toDate);
 
-        return windowed(userId, fromDate, toDate).stream()
-                .map(windowedSchedule -> {
-                    DailyAttendance record = stored.get(windowedSchedule.schedule().getShiftDate());
-                    return record != null
-                            ? toDailyResponse(record)
-                            : computeFromPunches(userId, windowedSchedule, holidays, leaveDays);
-                })
+        ResolvedRange resolved = resolve(userId, fromDate, toDate, rule);
+
+        Map<LocalDate, DailyAttendanceResponse> byDate = new HashMap<>();
+        for (AttendanceWindowResolver.DayWindow window : resolved.days()) {
+            LocalDate date = window.date();
+            DailyAttendance record = stored.get(date);
+            byDate.put(date, record != null
+                    ? toDailyResponse(record)
+                    : computeDay(userId, window, resolved.punchesOn(date), holidays, leaveDays, rule));
+        }
+        // A stored day whose roster row was deleted afterwards still exists, still
+        // counts towards the month, and must not vanish from the day-by-day read
+        // just because the roster no longer explains it.
+        stored.forEach((date, record) -> byDate.putIfAbsent(date, toDailyResponse(record)));
+
+        return byDate.values().stream()
+                .sorted(Comparator.comparing(DailyAttendanceResponse::attendanceDate))
                 .toList();
     }
 
@@ -390,11 +504,23 @@ public class AttendanceService {
      */
     @Transactional
     public MonthlyAttendanceSummary getGeneratedSummary(String userId, YearMonth month) {
+        return getGeneratedSummary(employeeService.getEntityByUserId(userId), month);
+    }
+
+    /**
+     * Same as {@link #getGeneratedSummary(String, YearMonth)}, for a caller
+     * (e.g. {@code PayrollService.build}) that already resolved and
+     * tenant-checked the target {@link Employee} in the same transaction -
+     * skips the otherwise-redundant repeat lookup.
+     */
+    @Transactional
+    public MonthlyAttendanceSummary getGeneratedSummary(Employee employee, YearMonth month) {
+        String userId = employee.getUserId();
         if (storedDays(userId, month).isEmpty()) {
             throw new BusinessRuleException("Attendance has not been generated for " + userId
                     + " for " + month + " - generate and review it before running payroll");
         }
-        return rebuildSummary(userId, month);
+        return rebuildSummary(employee, month);
     }
 
     /**
@@ -405,73 +531,212 @@ public class AttendanceService {
     public List<MonthlyAttendanceSummary> syncSummaries(YearMonth month) {
         return employeeService.getActiveEntities().stream()
                 .filter(employee -> !storedDays(employee.getUserId(), month).isEmpty())
-                .map(employee -> rebuildSummary(employee.getUserId(), month))
+                .map(employee -> rebuildSummary(employee, month))
                 .toList();
+    }
+
+    /**
+     * Batched form of {@link #getDailyAttendance} for a single day across
+     * many employees at once - reuses the identical per-employee
+     * windowing/punch computation ({@link #windowedFrom},
+     * {@link #computeFromPunches}) this class already uses for a
+     * single-employee read, so the status for any one employee is
+     * unchanged; only how the underlying data is fetched differs - a
+     * handful of {@code IN}-clause queries for the whole batch instead of
+     * the same half-dozen queries repeated once per employee. Built for
+     * {@code DashboardService}'s "who was present" aggregates, previously
+     * the single biggest source of redundant queries in the app (one
+     * {@link #getDailyAttendance} call per employee per day).
+     *
+     * <p>Deliberately skips the per-target {@code assertSelfOrManages} check
+     * {@link #getDailyAttendance} performs on every call - the caller is
+     * expected to authorize the whole batch itself, once, up front (see
+     * {@code DashboardService}, and SECURITY.md's note that Dashboard/Report
+     * stay company-wide for SUPERVISOR/HR/ADMIN rather than self-service
+     * scoped per record).
+     */
+    @Transactional(readOnly = true)
+    public Map<String, AttendanceStatus> statusesOn(List<Employee> employees, LocalDate date) {
+        if (employees.isEmpty()) {
+            return Map.of();
+        }
+        List<String> userIds = employees.stream().map(Employee::getUserId).toList();
+
+        Map<String, AttendanceStatus> result = new HashMap<>();
+        Map<String, DailyAttendance> storedByUser = dailyAttendanceRepository
+                .findAllByUserIdInAndAttendanceDate(userIds, date).stream()
+                .collect(Collectors.toMap(DailyAttendance::getUserId, Function.identity()));
+        storedByUser.forEach((userId, record) -> result.put(userId, record.getStatus()));
+
+        List<Employee> needPreview = employees.stream()
+                .filter(employee -> !storedByUser.containsKey(employee.getUserId()))
+                .toList();
+        if (needPreview.isEmpty()) {
+            return result;
+        }
+        List<String> previewUserIds = needPreview.stream().map(Employee::getUserId).toList();
+
+        Map<Long, CompanyGenerationContext> contextsByCompany = new HashMap<>();
+        Map<String, List<ShiftSchedule>> rosterByUser = shiftScheduleRepository
+                .findAllByUserIdInAndShiftDateBetween(previewUserIds, date.minusDays(1), date.plusDays(1))
+                .stream()
+                .collect(Collectors.groupingBy(ShiftSchedule::getUserId));
+        rosterByUser.values().forEach(list -> list.sort(Comparator.comparing(ShiftSchedule::getShiftDate)));
+
+        Map<String, LeaveCalculationService.LeaveDay> leaveByUser =
+                leaveCalculationService.approvedLeaveDayOn(previewUserIds, date);
+
+        // Each employee's own windows for this day and its neighbours, built by
+        // the identical resolver the single-employee path uses - just fed a
+        // pre-fetched, per-employee roster slice instead of querying one at a
+        // time. The punch partition needs the neighbouring days present or the
+        // previous night's shift would not be competing for its own exit punch.
+        Map<String, List<AttendanceWindowResolver.DayWindow>> windowsByUser = new HashMap<>();
+        for (Employee employee : needPreview) {
+            String userId = employee.getUserId();
+            Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+            CompanyGenerationContext context = contextsByCompany.computeIfAbsent(companyId,
+                    id -> resolveCompanyContext(id, date, date));
+            List<AttendanceWindowResolver.DayWindow> windows = windowResolver
+                    .windowsFor(rosterByUser.getOrDefault(userId, List.of()), context.rule());
+            if (windows.stream().anyMatch(w -> w.date().equals(date))) {
+                windowsByUser.put(userId, windows);
+            }
+            // No window on this date means not scheduled - left out of `result`
+            // below exactly as an empty roster would leave isPresentOn false.
+        }
+        if (windowsByUser.isEmpty()) {
+            return result;
+        }
+
+        // One punch fetch spanning every scheduled employee's own span for this
+        // date, then partitioned per employee by the same resolver - the exact
+        // ownership rule the per-employee path applies itself.
+        LocalDateTime broadStart = windowsByUser.values().stream()
+                .map(windowResolver::fetchFrom).min(LocalDateTime::compareTo).orElseThrow();
+        LocalDateTime broadEnd = windowsByUser.values().stream()
+                .map(windowResolver::fetchTo).max(LocalDateTime::compareTo).orElseThrow();
+        Map<String, List<DeviceLog>> punchesByUser = deviceLogRepository
+                .findAllByUserIdInAndLogDateBetweenOrderByLogDateAsc(
+                        List.copyOf(windowsByUser.keySet()), broadStart, broadEnd)
+                .stream()
+                .collect(Collectors.groupingBy(DeviceLog::getUserId));
+
+        for (Employee employee : needPreview) {
+            String userId = employee.getUserId();
+            List<AttendanceWindowResolver.DayWindow> windows = windowsByUser.get(userId);
+            if (windows == null) {
+                continue;
+            }
+            Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+            CompanyGenerationContext context = contextsByCompany.get(companyId);
+
+            List<DeviceLog> punches = windowResolver.dedupe(
+                    punchesByUser.getOrDefault(userId, List.of()).stream()
+                            .sorted(Comparator.comparing(DeviceLog::getLogDate))
+                            .toList());
+            AttendanceWindowResolver.Resolution resolution = windowResolver.assign(windows, punches);
+
+            AttendanceWindowResolver.DayWindow window = windows.stream()
+                    .filter(w -> w.date().equals(date)).findFirst().orElseThrow();
+            Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDaysForEmployee =
+                    leaveByUser.containsKey(userId) ? Map.of(date, leaveByUser.get(userId)) : Map.of();
+
+            DailyAttendanceResponse computed = computeDay(userId, window, resolution.punchesOn(date),
+                    context.holidays(), leaveDaysForEmployee, context.rule());
+            result.put(userId, computed.status());
+        }
+
+        return result;
     }
 
     // ---- internals ---------------------------------------------------------
 
-    /** One day of attendance derived from the raw punches in the shift window. */
-    private DailyAttendanceResponse computeFromPunches(String userId, WindowedSchedule windowedSchedule,
-                                                       Set<LocalDate> holidays,
-                                                       Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays) {
-        ShiftSchedule schedule = windowedSchedule.schedule();
-        LocalDate date = schedule.getShiftDate();
+    /**
+     * One employee's roster and punches for a range, already partitioned.
+     *
+     * <p>The roster is read one day either side of the requested range so a
+     * night shift on the last day of a month competes properly with the first
+     * day of the next - and so the first day of the range knows whether the
+     * previous night is still running. Only days inside the range are returned
+     * in {@link ResolvedRange#days()}; the neighbours exist purely so the
+     * partition is decided against the real roster rather than a truncated one.
+     */
+    private record ResolvedRange(List<AttendanceWindowResolver.DayWindow> days,
+                                 AttendanceWindowResolver.Resolution resolution) {
 
-        List<DeviceLog> punches = deviceLogRepository
-                .findAllByUserIdAndLogDateGreaterThanEqualAndLogDateLessThanOrderByLogDateAsc(
-                        userId, windowedSchedule.windowStart(), windowedSchedule.windowEnd());
-
-        return attendanceCalculationService.calculateDay(userId, date, schedule.getShift(), punches,
-                schedule.isWeekOff(), holidays.contains(date), leaveDays.containsKey(date));
+        List<DeviceLog> punchesOn(LocalDate date) {
+            return resolution.punchesOn(date);
+        }
     }
 
-    /**
-     * The roster for a window, each day carrying the punch window it actually
-     * owns.
-     *
-     * <p>A night shift's raw window runs past midnight and, with an overtime
-     * window on top, can reach into the hours the <em>next</em> scheduled shift
-     * is already collecting punches for. Left alone, a single punch is then
-     * claimed by two different days - the night shift swallows the next
-     * morning's entry as its own exit, and both days count it.
-     *
-     * <p>So a day's window is truncated at the point the next scheduled day's
-     * window opens. It only ever shrinks: where the shifts do not overlap, the
-     * full overtime window survives untouched, and two consecutive night shifts
-     * never collide in the first place.
-     *
-     * <p>The roster is read one day either side of the range so the boundary is
-     * known at both ends - which is what makes a night shift on the last day of
-     * the month hand over correctly to the first day of the next.
-     */
-    private List<WindowedSchedule> windowed(String userId, LocalDate fromDate, LocalDate toDate) {
+    /** Resolves one employee's range: roster, punches, and who owns what. */
+    private ResolvedRange resolve(String userId, LocalDate fromDate, LocalDate toDate, AttendanceRule rule) {
         List<ShiftSchedule> roster = shiftScheduleRepository
                 .findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
                         userId, fromDate.minusDays(1), toDate.plusDays(1));
+        return resolveFrom(roster, userId, fromDate, toDate, rule);
+    }
 
-        List<WindowedSchedule> windows = new ArrayList<>(roster.size());
-        for (int i = 0; i < roster.size(); i++) {
-            ShiftSchedule schedule = roster.get(i);
-            LocalDate date = schedule.getShiftDate();
-            if (date.isBefore(fromDate) || date.isAfter(toDate)) {
-                continue;
-            }
-
-            LocalDateTime start = attendanceCalculationService.windowStart(date, schedule.getShift());
-            LocalDateTime end = attendanceCalculationService.windowEnd(date, schedule.getShift());
-
-            if (i + 1 < roster.size()) {
-                ShiftSchedule next = roster.get(i + 1);
-                LocalDateTime nextStart = attendanceCalculationService
-                        .windowStart(next.getShiftDate(), next.getShift());
-                if (nextStart.isBefore(end)) {
-                    end = nextStart;
-                }
-            }
-            windows.add(new WindowedSchedule(schedule, start, end.isBefore(start) ? start : end));
+    /**
+     * Same as {@link #resolve}, given the roster already fetched - lets a
+     * batched caller ({@link #statusesOn}) supply one IN-clause roster fetch
+     * across many employees instead of one query per employee. {@code roster}
+     * must be ordered ascending by {@code shiftDate}.
+     *
+     * <p>Punches are fetched <b>once</b> for the whole range and partitioned in
+     * memory. The previous design issued one range query per rostered day -
+     * around thirty per employee per month - and decided ownership by whether
+     * those ranges happened to overlap. Partitioning makes "a punch belongs to
+     * at most one day" true by construction, and collapses the query count to
+     * one per employee.
+     */
+    private ResolvedRange resolveFrom(List<ShiftSchedule> roster, String userId,
+                                      LocalDate fromDate, LocalDate toDate, AttendanceRule rule) {
+        List<AttendanceWindowResolver.DayWindow> windows = windowResolver.windowsFor(roster, rule);
+        if (windows.isEmpty()) {
+            return new ResolvedRange(List.of(),
+                    new AttendanceWindowResolver.Resolution(Map.of(), Set.of(), List.of()));
         }
-        return windows;
+
+        List<DeviceLog> punches = windowResolver.dedupe(deviceLogRepository
+                .findAllByUserIdAndLogDateBetweenOrderByLogDateAsc(
+                        userId, windowResolver.fetchFrom(windows), windowResolver.fetchTo(windows)));
+
+        return finishResolve(windows, punches, fromDate, toDate);
+    }
+
+    /** Shared tail of both resolve paths: partition, then keep only the days in range. */
+    private ResolvedRange finishResolve(List<AttendanceWindowResolver.DayWindow> windows,
+                                        List<DeviceLog> punches, LocalDate fromDate, LocalDate toDate) {
+        AttendanceWindowResolver.Resolution resolution = windowResolver.assign(windows, punches);
+
+        List<AttendanceWindowResolver.DayWindow> inRange = windows.stream()
+                .filter(w -> !w.date().isBefore(fromDate) && !w.date().isAfter(toDate))
+                .toList();
+
+        if (!resolution.conflictDates().isEmpty()) {
+            log.warn("attendance.roster-conflict dates={} - consecutive shifts overlap, so nobody "
+                    + "could have worked both. Punches were assigned to the earlier shift date.",
+                    resolution.conflictDates());
+        }
+        if (!resolution.unassigned().isEmpty()) {
+            log.info("attendance.unassigned-punches count={} - punches inside no rostered day's window",
+                    resolution.unassigned().size());
+        }
+        return new ResolvedRange(inRange, resolution);
+    }
+
+    /** One day of attendance derived from the punches that day owns. */
+    private DailyAttendanceResponse computeDay(String userId, AttendanceWindowResolver.DayWindow window,
+                                               List<DeviceLog> punches, Set<LocalDate> holidays,
+                                               Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays,
+                                               AttendanceRule rule) {
+        ShiftSchedule schedule = window.schedule();
+        LocalDate date = schedule.getShiftDate();
+
+        return attendanceCalculationService.calculateDay(userId, date, schedule.getShift(), punches,
+                schedule.isWeekOff(), holidays.contains(date), leaveDays.containsKey(date), rule);
     }
 
     private void applyComputed(DailyAttendance record, String userId, ShiftSchedule schedule,
@@ -497,24 +762,26 @@ public class AttendanceService {
         LocalDate last = month.atEndOfMonth();
 
         Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
         Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, first, last);
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(employee.getUserId(), first, last);
 
-        List<WindowedSchedule> roster = windowed(employee.getUserId(), first, last);
+        ResolvedRange resolved = resolve(employee.getUserId(), first, last, rule);
+        List<AttendanceWindowResolver.DayWindow> roster = resolved.days();
 
         List<DailyAttendanceResponse> days = new ArrayList<>(roster.size());
         Set<LocalDate> workingDates = new HashSet<>();
-        for (WindowedSchedule windowedSchedule : roster) {
-            ShiftSchedule schedule = windowedSchedule.schedule();
-            days.add(computeFromPunches(employee.getUserId(), windowedSchedule, holidays, leaveDays));
-            if (!schedule.isWeekOff() && !holidays.contains(schedule.getShiftDate())) {
-                workingDates.add(schedule.getShiftDate());
+        for (AttendanceWindowResolver.DayWindow window : roster) {
+            LocalDate date = window.date();
+            days.add(computeDay(employee.getUserId(), window, resolved.punchesOn(date),
+                    holidays, leaveDays, rule));
+            if (!window.schedule().isWeekOff() && !holidays.contains(date)) {
+                workingDates.add(date);
             }
         }
 
-        long holidayDays = roster.stream()
-                .filter(w -> holidays.contains(w.schedule().getShiftDate())).count();
+        long holidayDays = roster.stream().filter(w -> holidays.contains(w.date())).count();
         long weekOffDays = roster.stream().filter(w -> w.schedule().isWeekOff()).count();
 
         return aggregate(employee, month, days, workingDates, leaveDays, holidayDays, weekOffDays);
@@ -536,8 +803,8 @@ public class AttendanceService {
     }
 
     /** Rolls the stored days up and writes the cached summary. */
-    private MonthlyAttendanceSummary rebuildSummary(String userId, YearMonth month) {
-        Employee employee = employeeService.getEntityByUserId(userId);
+    private MonthlyAttendanceSummary rebuildSummary(Employee employee, YearMonth month) {
+        String userId = employee.getUserId();
         MonthlyAttendanceResponse rolled = aggregateStored(employee, month, storedDays(userId, month));
 
         String monthKey = month.toString();
@@ -661,10 +928,11 @@ public class AttendanceService {
     }
 
     /** A rostered day and the punch window it exclusively owns. */
-    private record WindowedSchedule(ShiftSchedule schedule, LocalDateTime windowStart,
-                                    LocalDateTime windowEnd) {
+    private record GenerationTally(int rosterDays, int generated, int manualPreserved, int lockedSkipped,
+                                   List<AttendanceGenerationResponse.DayChange> changes) {
     }
 
-    private record GenerationTally(int rosterDays, int generated, int manualPreserved, int lockedSkipped) {
+    /** The attendance rule and holiday calendar for one company, resolved once per {@link #generate}. */
+    private record CompanyGenerationContext(AttendanceRule rule, Set<LocalDate> holidays) {
     }
 }

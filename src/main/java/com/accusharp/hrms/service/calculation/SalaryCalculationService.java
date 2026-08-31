@@ -29,16 +29,11 @@ public class SalaryCalculationService {
      */
     public void applyCalculatedFields(Employee employee, SalaryRule rule) {
         if (!employee.isSalaryStructureOverridden()) {
-            BigDecimal basicDA = percentOf(employee.getGrossSalary(), rule.getBasicDaPercent());
-            BigDecimal threshold = rule.getBasicDaMinimumThreshold();
-            if (threshold != null && basicDA.compareTo(threshold) < 0) {
-                basicDA = threshold.setScale(SCALE, RoundingMode.HALF_UP);
-            }
-
-            employee.setBasicDA(basicDA);
-            employee.setHra(percentOf(basicDA, rule.getHraPercent()));
-            employee.setConveyanceAllowance(percentOf(basicDA, rule.getConveyancePercent()));
-            employee.setEducationAllowance(percentOf(basicDA, rule.getEducationPercent()));
+            DerivedStructure structure = deriveStructure(employee.getGrossSalary(), rule);
+            employee.setBasicDA(structure.basicDA());
+            employee.setHra(structure.hra());
+            employee.setConveyanceAllowance(structure.conveyanceAllowance());
+            employee.setEducationAllowance(structure.educationAllowance());
         }
 
         employee.setGrossSalaryWage(nullSafe(employee.getBasicDA())
@@ -47,6 +42,26 @@ public class SalaryCalculationService {
                 .add(nullSafe(employee.getEducationAllowance()))
                 .add(nullSafe(employee.getMedicalAllowance()))
                 .add(nullSafe(employee.getOtherAllowance())));
+    }
+
+    /** basicDA/hra/conveyance/education for a given gross salary under a given rule - the same
+     *  formula {@link #applyCalculatedFields} uses, exposed so payroll can re-derive the structure
+     *  that applied to a gross salary from <em>before</em> a mid-period salary revision, without
+     *  needing a full historical snapshot of every derived field. */
+    public DerivedStructure deriveStructure(BigDecimal grossSalary, SalaryRule rule) {
+        BigDecimal basicDA = percentOf(grossSalary, rule.getBasicDaPercent());
+        BigDecimal threshold = rule.getBasicDaMinimumThreshold();
+        if (threshold != null && basicDA.compareTo(threshold) < 0) {
+            basicDA = threshold.setScale(SCALE, RoundingMode.HALF_UP);
+        }
+        return new DerivedStructure(basicDA,
+                percentOf(basicDA, rule.getHraPercent()),
+                percentOf(basicDA, rule.getConveyancePercent()),
+                percentOf(basicDA, rule.getEducationPercent()));
+    }
+
+    public record DerivedStructure(BigDecimal basicDA, BigDecimal hra,
+                                    BigDecimal conveyanceAllowance, BigDecimal educationAllowance) {
     }
 
     /**

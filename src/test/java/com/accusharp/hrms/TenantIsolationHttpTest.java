@@ -5,13 +5,17 @@ import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.Holiday;
 import com.accusharp.hrms.entity.LeaveRequest;
 import com.accusharp.hrms.entity.Payroll;
+import com.accusharp.hrms.entity.Shift;
+import com.accusharp.hrms.entity.ShiftSchedule;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveDuration;
+import com.accusharp.hrms.enums.LeaveOrigin;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.repository.AttendanceRuleRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.DepartmentRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
@@ -21,6 +25,7 @@ import com.accusharp.hrms.repository.LeaveRequestRepository;
 import com.accusharp.hrms.repository.PayrollRepository;
 import com.accusharp.hrms.repository.SalaryRuleRepository;
 import com.accusharp.hrms.repository.ShiftRepository;
+import com.accusharp.hrms.repository.ShiftScheduleRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,8 +65,10 @@ class TenantIsolationHttpTest {
     @Autowired private EmployeeRepository employeeRepository;
     @Autowired private HolidayRepository holidayRepository;
     @Autowired private SalaryRuleRepository salaryRuleRepository;
+    @Autowired private AttendanceRuleRepository attendanceRuleRepository;
     @Autowired private DepartmentRepository departmentRepository;
     @Autowired private ShiftRepository shiftRepository;
+    @Autowired private ShiftScheduleRepository shiftScheduleRepository;
     @Autowired private PayrollRepository payrollRepository;
     @Autowired private LeaveRequestRepository leaveRequestRepository;
     @Autowired private LeaveBalanceRepository leaveBalanceRepository;
@@ -82,7 +89,9 @@ class TenantIsolationHttpTest {
     void setUp() {
         holidayRepository.deleteAll();
         salaryRuleRepository.deleteAll();
+        attendanceRuleRepository.deleteAll();
         departmentRepository.deleteAll();
+        shiftScheduleRepository.deleteAll();
         shiftRepository.deleteAll();
         payrollRepository.deleteAll();
         leaveRequestRepository.deleteAll();
@@ -173,6 +182,33 @@ class TenantIsolationHttpTest {
     void payrollCrossTenantReadIsRejected() {
         Resp history = send("GET", "/api/payroll/employee/EMPB001", null, hrAToken);
         assertThat(history.status()).isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("two companies can independently use the same employeeCode - it's unique per company, not globally")
+    void employeeCodeIsUniquePerCompanyNotGlobally() {
+        // hrA already exists as employeeCode "EMP-HRA001" (see saveEmployee). Company B
+        // using that exact same code for one of its own employees must succeed.
+        String body = """
+                {
+                  "userId": "EMPB002", "employeeCode": "EMP-HRA001", "employeeName": "Same Code, Other Company",
+                  "status": "PERMANENT", "role": "EMPLOYEE",
+                  "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0
+                }
+                """;
+        Resp created = send("POST", "/api/employees", body, hrBToken);
+        assertThat(created.status()).isEqualTo(201);
+
+        // But a second employee inside the SAME company reusing an existing code is still rejected.
+        String duplicateWithinCompany = """
+                {
+                  "userId": "EMPB003", "employeeCode": "EMP-HRA001", "employeeName": "Duplicate In Same Company",
+                  "status": "PERMANENT", "role": "EMPLOYEE",
+                  "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0
+                }
+                """;
+        Resp rejected = send("POST", "/api/employees", duplicateWithinCompany, hrBToken);
+        assertThat(rejected.status()).isEqualTo(409);
     }
 
     @Test
@@ -312,6 +348,32 @@ class TenantIsolationHttpTest {
     }
 
     @Test
+    @DisplayName("Company A's HR cannot swap shifts with Company B's employee - "
+            + "closing the one gap the audit found in ShiftSchedulingService.swap")
+    void shiftScheduleSwapCrossTenantIsRejected() {
+        Shift shift = shiftRepository.save(Shift.builder()
+                .shiftCode("TENANT-SWAP-SHIFT").shiftName("Tenant Swap Shift")
+                .startTime(java.time.LocalTime.of(9, 0)).endTime(java.time.LocalTime.of(17, 0))
+                .workingHours(8).breakMinutes(30).graceMinutes(10).overtimeWindowMinutes(240)
+                .build());
+        LocalDate date = LocalDate.of(2026, 6, 15);
+        shiftScheduleRepository.save(ShiftSchedule.builder()
+                .userId("HRA001").shiftDate(date).shift(shift).weekOff(false).assignedBy("HRA001").build());
+        ShiftSchedule targetSchedule = shiftScheduleRepository.save(ShiftSchedule.builder()
+                .userId("EMPB001").shiftDate(date).shift(shift).weekOff(false).assignedBy("HRB001").build());
+
+        Resp swap = send("POST", "/api/shift-schedules/swap", """
+                {"firstUserId": "HRA001", "secondUserId": "EMPB001", "shiftDate": "2026-06-15",
+                 "assignedBy": "HRA001"}""", hrAToken);
+        assertThat(swap.status()).isEqualTo(404);
+
+        // Untouched: Company B's schedule still points at the original shift.
+        ShiftSchedule stillOriginal = shiftScheduleRepository.findById(targetSchedule.getId()).orElseThrow();
+        assertThat(stillOriginal.getShift().getId()).isEqualTo(shift.getId());
+        assertThat(stillOriginal.getUserId()).isEqualTo("EMPB001");
+    }
+
+    @Test
     @DisplayName("Company A's HR cannot overwrite Company B's employee's leave quota")
     void leaveBalanceSetQuotaCrossTenantIsRejected() {
         Resp setQuota = send("PUT",
@@ -330,7 +392,7 @@ class TenantIsolationHttpTest {
                 .userId("EMPB001").leaveType(LeaveType.CASUAL_LEAVE)
                 .fromDate(LocalDate.of(2026, 6, 1)).toDate(LocalDate.of(2026, 6, 1))
                 .duration(LeaveDuration.FULL_DAY).totalDays(new BigDecimal("1.0"))
-                .status(LeaveStatus.PENDING).appliedAt(java.time.Instant.now())
+                .status(LeaveStatus.PENDING).origin(LeaveOrigin.SELF_SERVICE).appliedAt(java.time.Instant.now())
                 .build());
 
         // approverId is required by validation even though the controller always

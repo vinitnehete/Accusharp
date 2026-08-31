@@ -7,6 +7,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
@@ -28,7 +31,7 @@ public class LeaveBalanceController {
     @PreAuthorize("@authz.can('LEAVE_BALANCE_MANAGE')")
     @PutMapping("/{userId}")
     public LeaveBalanceResponse setQuota(@PathVariable String userId,
-                                         @RequestParam int year,
+                                         @RequestParam @Min(2000) @Max(2100) int year,
                                          @RequestParam LeaveType leaveType,
                                          @RequestParam BigDecimal quota) {
         return leaveBalanceService.setQuota(userId, year, leaveType, quota);

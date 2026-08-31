@@ -24,7 +24,15 @@ import java.math.BigDecimal;
  * ever required.
  */
 @Entity
-@Table(name = "salary_rule")
+// Enforces "one row per company" at the database layer, not just in
+// SalaryRuleService's check-then-act - without this, two concurrent requests
+// that both miss the check can each insert a row for the same company,
+// leaving payroll to nondeterministically pick whichever findByCompanyId
+// happens to return first. MySQL treats multiple NULLs as distinct under a
+// UNIQUE index, so this doesn't also cap the shared company=null default row
+// at one - that row is created once at bootstrap, not under concurrent load,
+// so it wasn't the risk this closes.
+@Table(name = "salary_rule", uniqueConstraints = @UniqueConstraint(columnNames = "company_id"))
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

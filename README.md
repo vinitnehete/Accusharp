@@ -72,7 +72,8 @@ On an **empty** database the app creates:
 
 | | |
 |---|---|
-| Shifts | `MORNING` 06:00-15:00, `GENERAL` 09:00-18:00, `EVENING` 14:00-23:00, `NIGHT` 18:00-08:00 |
+| Shifts | `MORNING` 06:00-19:00, `GENERAL` 09:00-19:00, `EVENING` 14:00-23:00, `NIGHT` 18:00-08:00 - all with `workingHours` 8, `breakMinutes` 0, `graceMinutes` 120, `overtimeWindowMinutes` 240 |
+| Categories | `WORKER`, `STAFF`, `SUPERVISOR`, `MANAGER`, `DIRECTOR` - shared defaults; add more via `/api/categories` |
 | Salary rule | Basic 50%, HRA 40%, Conveyance 10%, Education 10%, PF 12%, ESIC 0.75% |
 | Demo org | Company `ACC`, departments `PROD`/`ADMIN`, and 4 employees |
 
@@ -138,7 +139,7 @@ curl -X PUT http://localhost:8080/api/salary-rules -H 'Content-Type: application
 curl -X POST http://localhost:8080/api/companies -H 'Content-Type: application/json' -d '{"companyCode":"ACC","companyName":"Accusharp Industries","address":"Pune, Maharashtra","phone":"020-00000000","email":"hr@accusharp.example","status":"ACTIVE"}'
 ```
 
-### 3.3 Departments and designations
+### 3.3 Departments, designations and categories
 
 ```bash
 curl -X POST http://localhost:8080/api/departments -H 'Content-Type: application/json' -d '{"departmentCode":"PROD","departmentName":"Production","description":"Shop floor"}'
@@ -148,7 +149,17 @@ curl -X POST http://localhost:8080/api/departments -H 'Content-Type: application
 curl -X POST http://localhost:8080/api/designations -H 'Content-Type: application/json' -d '{"designationCode":"OPR","designationName":"Machine Operator"}'
 ```
 
-Note the `id` each returns - you need them for employees.
+`Category` is the employee grade - Worker, Supervisor, Manager, Director, or
+whatever else a company needs. Five common ones (`WORKER`, `STAFF`,
+`SUPERVISOR`, `MANAGER`, `DIRECTOR`) are seeded as shared defaults; add more
+the same way as a department or designation:
+
+```bash
+curl -X POST http://localhost:8080/api/categories -H 'Content-Type: application/json' -d '{"categoryCode":"TEAM_LEAD","categoryName":"Team Lead"}'
+```
+
+Note the `id` each returns - you need them for employees. `categoryId` on an
+employee is optional, unlike `departmentId`/`designationId`.
 
 ### 3.4 Employees
 
@@ -161,6 +172,10 @@ curl -X POST http://localhost:8080/api/employees -H 'Content-Type: application/j
 **`userId` must equal the biometric device's user id.** That single field is what
 joins the device, attendance, leave and payroll together. Get it wrong and the
 employee will show zero attendance forever.
+
+**`categoryId`, `gender`, `uanNo`, `esicIpNo`, `bankAccountNo` and
+`bankIfscNo` are all optional** and may be left out entirely - unlike
+`departmentId`/`designationId`, nothing else derives from them.
 
 **The response is `{"employee": {...}, "temporaryPassword": "..."}`, not a bare
 employee** - `temporaryPassword` is generated server-side and returned exactly
@@ -177,7 +192,17 @@ You send only these money fields:
 |---|---|
 | `grossSalary`, `pfBasic`, `medicalAllowance`, `otherAllowance` | `basicDA`, `hra`, `conveyanceAllowance`, `educationAllowance`, `grossSalaryWage` |
 
-Sending a derived field is rejected - it is not on the request DTO at all.
+`grossSalaryWage` is never accepted from the API - it is always the sum of
+the six components, computed server-side. `basicDA`/`hra`/
+`conveyanceAllowance`/`educationAllowance` normally derive the same way, but
+you may supply all four of them directly in the same create request instead
+- useful when onboarding employees whose exact breakup is already known from
+an existing payroll system, so the numbers you already trust are not
+recalculated. Supplying all four marks the employee overridden, exactly like
+[§3.4.1](#341-manual-salary-structure-override-and-regeneration)'s `PUT
+.../salary-structure`; supplying only some of them is rejected - a structure
+that is part typed, part rule-derived is not a fixed structure. Leave all
+four blank (as above) to keep letting the rule derive them.
 
 **`status`** decides how the person is paid:
 
@@ -244,6 +269,118 @@ if that's really what you want. Neither call touches payroll history; run
 `/api/payroll/regenerate` for any already-generated period afterwards to
 pick up the corrected structure.
 
+#### 3.4.2 Bulk import from CSV
+
+Onboarding more than a handful of people through the frontend's CSV upload
+screen goes through one call instead of one `POST /api/employees` per row:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/bulk-import -H "Authorization: Bearer $TOKEN" -F "file=@employees.csv;type=text/csv"
+```
+
+CSV header (case-insensitive, any column order):
+
+```
+userId,employeeCode,employeeName,companyId,departmentId,designationId,categoryId,supervisorUserId,joiningDate,dateOfBirth,gender,status,recordStatus,role,email,phone,uanNo,esicIpNo,bankAccountNo,bankIfscNo,grossSalary,pfBasic,medicalAllowance,otherAllowance,overtimeEligible,basicDA,hra,conveyanceAllowance,educationAllowance
+```
+
+Only `userId`, `employeeCode`, `employeeName`, `status`, `grossSalary`,
+`pfBasic`, `medicalAllowance` and `otherAllowance` are required; everything
+else may be left blank - including `categoryId`, `gender`, `uanNo`,
+`esicIpNo`, `bankAccountNo` and `bankIfscNo`. `companyId` is ignored for a company-scoped caller -
+same as a single create, the caller's own company always wins. Dates are
+`yyyy-MM-dd`. The last four columns are the same optional structure-override
+fields described above - fill in all four on a row to use those exact
+values instead of deriving them, leave all four blank to derive as usual,
+or filling in only some of them fails that row (see §3.4).
+
+Numeric columns (`grossSalary`, `pfBasic`, `medicalAllowance`,
+`otherAllowance`, `basicDA`, `hra`, `conveyanceAllowance`,
+`educationAllowance`, plus the `Long` columns `companyId`/`departmentId`/
+`designationId`) tolerate Excel-style formatting - thousands separators,
+`₹`/`$` symbols, and stray whitespace are stripped before parsing, so
+`"41,000.00"` and `"₹ 41,000.00"` both parse fine. Only genuinely
+non-numeric text fails.
+
+The frontend's downloadable template (a formatted `.xlsx`, not a plain CSV)
+puts a title, instructions and a legend above the real header row for
+readability, with a trailing `" *"` marked on every required column header.
+Since Excel's *Save As → CSV* carries those decorative rows into the file
+unchanged, the parser doesn't assume the header is line 1: it scans for the
+row containing a known column name and strips the `" *"` marker, so the
+template can be filled in and uploaded as-is without deleting anything by
+hand first.
+
+Every row is attempted independently through the exact same path as a single
+`POST /api/employees` - same admin-escalation guard, same one-time temporary
+password per row. **One bad row (a duplicate code, a typo'd number) fails
+only that row**; the response tells you exactly which:
+
+```json
+{
+  "totalRows": 4,
+  "successCount": 2,
+  "failureCount": 2,
+  "succeeded": [ { "employee": { "userId": "EMP101", ... }, "temporaryPassword": "..." }, ... ],
+  "errors": [
+    { "rowNumber": 3, "identifier": "EMP103", "message": "Employee already exists with code EMP-103" },
+    { "rowNumber": 4, "identifier": null, "message": "grossSalary must be a number, got 'notanumber'" }
+  ]
+}
+```
+
+Capture every `temporaryPassword` in `succeeded` now, same as a single
+create - it is never shown again.
+
+**For a real batch (tens to hundreds of rows), reading passwords out of that
+JSON one by one does not scale** - there is no email/SMS infrastructure in
+this app to deliver them automatically (see [SECURITY.md](SECURITY.md)).
+Add `?format=csv` to get a downloadable credentials sheet instead, built
+from the exact same run:
+
+```bash
+curl -X POST "http://localhost:8080/api/employees/bulk-import?format=csv" -H "Authorization: Bearer $TOKEN" -F "file=@employees.csv;type=text/csv" -o credentials.csv
+```
+
+Returns `text/csv` (`userId,employeeCode,employeeName,temporaryPassword`,
+one row per employee actually created - failed rows are not in it) instead
+of the JSON body above. Same one-time-return contract: nothing here is
+persisted or retrievable a second time, so download it now.
+
+#### 3.4.3 Salary revision (hike, promotion, correction)
+
+A gross-salary change is not a plain `PUT /api/employees/{id}` - that would
+silently overwrite the old figure with no record of what it was, when it
+changed, or why. Use the dedicated endpoint instead:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/3/salary-revision -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"newGrossSalary":28000,"effectiveDate":"2026-09-01","reason":"ANNUAL_INCREMENT","remarks":"Yearly appraisal"}'
+```
+
+`reason` is one of `ANNUAL_INCREMENT`, `PROMOTION`, `MARKET_CORRECTION`,
+`OTHER`. This updates `grossSalary` and re-derives `basicDA`/`hra`/
+`conveyanceAllowance`/`educationAllowance` from the company's current
+`SalaryRule`, same as a normal create. **If the employee is currently
+overridden** (§3.4.1), re-deriving is not possible - a frozen structure
+never follows `grossSalary` on its own - so the same request must also
+carry the four replacement values:
+
+```bash
+curl -X POST http://localhost:8080/api/employees/3/salary-revision -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"newGrossSalary":28000,"effectiveDate":"2026-09-01","reason":"PROMOTION","basicDA":13500,"hra":5800,"conveyanceAllowance":1100,"educationAllowance":1100}'
+```
+
+Every revision is recorded, not just applied - `previousGrossSalary`,
+`newGrossSalary`, the computed `hikePercent`, `effectiveDate`, `reason` and
+who applied it. Pull the full history for an employee:
+
+```bash
+curl http://localhost:8080/api/employees/3/salary-revisions -H "Authorization: Bearer $TOKEN"
+```
+
+Newest `effectiveDate` first. This is the audit trail for "what was this
+person paid before, and when did it change" - something a plain salary
+update alone can never answer after the fact.
+
 ### 3.5 Holidays
 
 Load the year's calendar up front. A mandatory holiday is removed from working
@@ -291,6 +428,27 @@ curl -X POST http://localhost:8080/api/shift-schedules/bulk -H 'Content-Type: ap
 | `skipHolidays` | Mandatory holidays are not scheduled at all |
 | `overwriteExisting` | `false` returns 409 on any day already scheduled |
 | `assignedBy` | If a supervisor, they may only schedule their own team |
+
+### Bulk assignment (different shift per employee)
+
+The call above puts every listed employee on the *same* shift. When the team
+needs different employees on different shifts (or different days) in one
+roster upload, each entry carries its own `userId`/`shiftDate`/`shiftCode`:
+
+```bash
+curl -X POST http://localhost:8080/api/shift-schedules/bulk/varied -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"assignments":[{"userId":"EMP001","shiftDate":"2026-09-01","shiftCode":"MORNING","weekOff":false},{"userId":"EMP003","shiftDate":"2026-09-01","shiftCode":"NIGHT","weekOff":false}]}'
+```
+
+Or the same thing from the frontend's CSV upload
+(`userId,shiftDate,shiftCode,weekOff`):
+
+```bash
+curl -X POST http://localhost:8080/api/shift-schedules/bulk/csv -H "Authorization: Bearer $TOKEN" -F "file=@roster.csv;type=text/csv"
+```
+
+Both return the same `{totalRows, successCount, failureCount, succeeded,
+errors}` shape as the employee CSV import above - an unknown employee or an
+unknown shift code fails only that one entry.
 
 ### Auto-rotation
 
@@ -354,17 +512,35 @@ mysql -uroot -proot alsama -e "INSERT INTO device_logs (device_log_id, device_id
 
 ### How punches are read
 
-- Punches are matched to the scheduled shift's window: **60 minutes before** the
-  start (people badge in early) and up to `overtimeWindowMinutes` **after** the
-  scheduled end (people stay late). The window is deliberately not symmetric -
-  a late exit is overtime, not a missing punch.
+- Punches are matched to the scheduled shift's window: `entryWindowBufferMinutes`
+  **before** the start (people badge in early, 60 by default) and up to
+  `overtimeWindowMinutes` **after** the scheduled end (people stay late). The
+  window is deliberately not symmetric - a late exit is overtime, not a missing
+  punch.
 - **First punch = in, last punch = out.**
 - With 4+ punches, the gaps in the middle are treated as the real break.
   Otherwise the shift's configured `breakMinutes` is used.
 - Worked time = span between first and last punch, minus break.
-- 75% of the shift = full day, 40% = half day, below that = absent.
+- `fullDayThresholdPercent` of the shift = full day (75% by default),
+  `halfDayThresholdPercent` = half day (40% by default), below that = absent.
 - **One lone punch** is flagged `INVALID_PUNCH` - a device or user error, not an
   absence. These need fixing before payroll.
+
+The three configurable numbers above (`entryWindowBufferMinutes`,
+`fullDayThresholdPercent`, `halfDayThresholdPercent`) live on `AttendanceRule`,
+company-scoped exactly like `SalaryRule` (§3.1) - a company without its own
+customized rule falls back to the global default, which is what every company
+used before this was configurable:
+
+```bash
+curl http://localhost:8080/api/attendance-rules
+curl -X PUT http://localhost:8080/api/attendance-rules -H 'Content-Type: application/json' \
+  -d '{"entryWindowBufferMinutes":60,"fullDayThresholdPercent":75,"halfDayThresholdPercent":40}'
+```
+
+`halfDayThresholdPercent` must be less than `fullDayThresholdPercent`. A
+change only affects attendance generated or regenerated afterward - see
+"Generate the attendance payroll will be paid from" below.
 
 ---
 
@@ -490,6 +666,44 @@ approved):
 curl -X POST http://localhost:8080/api/leaves/1/cancel -H 'Content-Type: application/json' -d '{"approverId":"HR001","comments":"Withdrawn by employee"}'
 ```
 
+### HR entering an already-approved leave directly
+
+For backfilling a day that already happened - an employee took time off
+informally and HR wants attendance/payroll to reflect it - not for a
+forward-looking request. Skips apply and supervisor-endorsement entirely:
+the leave is created `APPROVED` immediately and consumes balance the same
+moment, same hard-block on insufficient balance as the normal flow:
+
+```bash
+curl -X POST http://localhost:8080/api/leaves/hr-create -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"userId":"EMP001","leaveType":"CASUAL_LEAVE","fromDate":"2026-09-24","toDate":"2026-09-24","duration":"FULL_DAY","reason":"Backfilling an informal day off"}'
+```
+
+Requires `LEAVE_APPROVE` - the same trust bar as final approval, since this
+*is* an approval, just without a preceding request to approve. The response
+carries `"origin":"HR_DIRECT"` (`"origin":"SELF_SERVICE"` for a leave that
+went through the normal chain) so reports and history can tell the two
+apart even once both sit at `APPROVED`.
+
+**Bulk CSV variant**, for backfilling several employees/periods at once -
+same independently-failable-row contract as `/api/employees/bulk-import`:
+
+```bash
+curl -X POST http://localhost:8080/api/leaves/bulk-import -H "Authorization: Bearer $TOKEN" -F "file=@leaves.csv;type=text/csv"
+```
+
+CSV header (case-insensitive, any column order):
+
+```
+userId,leaveType,fromDate,toDate,duration,reason
+```
+
+Only `userId`, `leaveType`, `fromDate` and `toDate` are required; `duration`
+defaults to `FULL_DAY` when blank, `reason` is optional. A row that fails
+(bad date, unknown leave type, overlapping leave, insufficient balance) is
+reported in `errors` and never blocks the rest of the file - identical
+`{totalRows, successCount, failureCount, succeeded, errors}` shape as every
+other bulk/CSV endpoint.
+
 ### Queues and calendar
 
 ```bash
@@ -541,17 +755,44 @@ curl -X POST "http://localhost:8080/api/payroll/generate-all?month=9&year=2026&g
 Note this uses zero for all manual deductions. If someone has an advance or
 canteen amount, generate them individually.
 
+### Bulk generate from CSV, with per-employee amounts
+
+`/generate-all` above is all-or-nothing on the manual amounts (always zero).
+When bonus/incentive/advance/canteen differ per employee for the month, upload
+a CSV instead - one row per employee, `month`/`year` apply to the whole file:
+
+```bash
+curl -X POST "http://localhost:8080/api/payroll/bulk-generate?month=9&year=2026" -H "Authorization: Bearer $TOKEN" -F "file=@payroll.csv;type=text/csv"
+```
+
+CSV header (only `employeeId` is required, every amount defaults to `0`):
+
+```
+employeeId,bonus,incentive,tds,advanceDeduction,loanDeduction,canteen
+```
+
+Same per-row behavior as the other bulk/CSV endpoints: an employee with no
+attendance generated for the period, or one already paid this month, fails
+only that row (`{"totalRows":..., "succeeded":[...], "errors":[...]}`).
+Add `&regenerate=true` to recompute rows that are already generated as a new
+revision instead of erroring them - the same choice `/regenerate` gives a
+single employee. The amount columns tolerate Excel-style formatting the same
+way the employee import does (§3.4.2) - thousands separators, `₹`/`$`, and
+stray whitespace are stripped before parsing.
+
 ### Reading the result
 
 | Field | Meaning |
 |---|---|
-| `workingDays` / `presentDays` / `paidLeaveDays` | Attendance the pay is based on |
-| `lopDays` | `workingDays - presentDays - paidLeaveDays` |
-| `payableDays` | Days actually paid |
+| `workingDays` / `presentDays` / `paidLeaveDays` | Attendance the pay is based on. `presentDays` is capped at `dayWiseDaysInMonth` for `DAY_WISE` (matching `payableDays` below), even if attendance recorded more - a worker with no weekly off at all can be present more days than one standard month |
+| `lopDays` | `workingDays - presentDays - paidLeaveDays` (not applicable to `DAY_WISE` - attendance *is* the pay there) |
+| `payableDays` | Days actually paid. `DAY_WISE`: `presentDays` alone, capped at `dayWiseDaysInMonth` - paid leave earns no share of the fixed structure (only its own overtime credit, see `overtimeHours` below). Everyone else: working days minus LOP |
 | `earnBasicDA`, `earnHra`, ... | Each component prorated by payable days |
-| `otAllowance` | Overtime hours x per-hour rate x multiplier |
+| `overtimeHours` | `PERMANENT`/`CONTRACT`/`INTERN`: sum of each day's own excess over its shift. `DAY_WISE`: `max(0, totalHours - min(presentDays, dayWiseDaysInMonth) x standardHoursPerDay)` **plus** `paidLeaveDays x standardHoursPerDay` added on top - approved paid leave always contributes its own overtime hours, never absorbed by the present-days cap |
+| `otAllowance` | `overtimeHours` x per-hour rate x multiplier |
 | `totalEarnings` | Earnings + bonus + incentive + overtime |
 | `pf` vs `pfDeduction` | Full-month PF (informational) vs what is actually deducted |
+| `esic` | 0.75% (configurable) of earned `basicDA` - **not** the full earned gross - while it stays at or under `esicWageCeiling`; zero above it |
 | `lopDeduction` | **Shown for transparency, not added to the total** |
 | `mlwf` | Labour Welfare Fund - non-zero only in the June and December payroll run |
 | `totalDeduction` | PF + ESIC + PT + MLWF + TDS + advance + loan + canteen |
@@ -589,6 +830,29 @@ curl "http://localhost:8080/api/payroll?month=9&year=2026"
 ```bash
 curl http://localhost:8080/api/payroll/employee/EMP001
 ```
+
+### Debugging a wrong number
+
+`GET /api/payroll?month=&year=` returns the stored `Payroll` rows as-is - the
+full snapshot, but only what was true at generation time. When a net salary
+looks wrong and you need to see *why* without recomputing by hand:
+
+```bash
+curl "http://localhost:8080/api/payroll/debug?month=9&year=2026" -H "Authorization: Bearer $TOKEN"
+```
+
+Same scope as the call above, but every row also carries a live re-read of
+the employee's current `grossSalary`/`pfBasic` and the company's current
+`SalaryRule` percentages next to what was actually stored, plus two flags:
+
+| Field | True means |
+|---|---|
+| `masterDataDrifted` | The employee's salary/PF-basic changed *after* this payroll was generated |
+| `ruleDrifted` | The company's `SalaryRule` percentages changed *after* this payroll was generated |
+
+A `true` on either explains "why does this month look different" better than
+re-deriving the calculation - the payroll was correct for the data it was
+computed from, that data has since moved.
 
 ---
 
@@ -665,15 +929,17 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Companies | `/api/companies` (`POST /onboard` creates the company plus its first admin - see [SECURITY.md](SECURITY.md)) |
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
-| Employees | `/api/employees` |
+| Categories | `/api/categories` (employee grade - Worker, Supervisor, Manager, Director, ...; company-defined, same pattern as departments/designations) |
+| Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding, `?format=csv` for a downloadable credentials sheet; `POST /{id}/salary-revision`, `GET /{id}/salary-revisions` - hike/promotion history) |
 | Shift master | `/api/shifts` |
-| Shift scheduling | `/api/shift-schedules` |
+| Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all) |
 | Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |
+| Attendance rules | `/api/attendance-rules` |
 | Holidays | `/api/holidays` |
-| Leave | `/api/leaves` |
+| Leave | `/api/leaves` (`POST /hr-create` - HR-direct already-approved entry; `POST /bulk-import` - its CSV bulk variant) |
 | Leave balances | `/api/leave-balances` |
 | Salary rules | `/api/salary-rules` |
-| Payroll | `/api/payroll` |
+| Payroll | `/api/payroll` (`POST /bulk-generate` - CSV bulk run; `GET /debug` - full per-employee breakdown with live drift flags) |
 | Salary slips | `/api/salary-slips` |
 | Reports | `/api/reports` |
 | Dashboard | `/api/dashboard` |

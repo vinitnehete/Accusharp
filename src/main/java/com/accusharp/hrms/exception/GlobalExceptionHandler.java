@@ -4,13 +4,16 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -34,6 +37,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConflictException.class)
     public ResponseEntity<ApiError> handleConflict(ConflictException ex, HttpServletRequest request) {
         return build(HttpStatus.CONFLICT, ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(TooManyRequestsException.class)
+    public ResponseEntity<ApiError> handleTooManyRequests(TooManyRequestsException ex, HttpServletRequest request) {
+        return build(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage(), request);
     }
 
     @ExceptionHandler(AuthenticationFailedException.class)
@@ -68,11 +76,65 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, "Malformed or missing JSON request body", request);
     }
 
+    /**
+     * A constraint on a handler parameter itself - {@code @RequestParam @Min(1)
+     * @Max(12) int month} and friends - rather than on a {@code @RequestBody}
+     * object, which is {@link MethodArgumentNotValidException} above.
+     *
+     * <p>Spring MVC raises this from its own built-in method validation, and
+     * would map it to a 400 itself via {@code DefaultHandlerExceptionResolver}
+     * - but {@code @ExceptionHandler} resolution runs first, so without this
+     * method the catch-all below would claim it and report an ordinary client
+     * mistake as a 500. That is the same reasoning as
+     * {@link #handleMissingParameter}.
+     */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiError> handleParameterValidation(HandlerMethodValidationException ex,
+                                                              HttpServletRequest request) {
+        String message = ex.getParameterValidationResults().stream()
+                .flatMap(result -> {
+                    String name = result.getMethodParameter().getParameterName();
+                    return result.getResolvableErrors().stream()
+                            .map(error -> (name == null ? "parameter" : name)
+                                    + " " + error.getDefaultMessage());
+                })
+                .collect(Collectors.joining("; "));
+        return build(HttpStatus.BAD_REQUEST,
+                message.isBlank() ? "One or more request parameters are invalid" : message, request);
+    }
+
+    /**
+     * A required query parameter that was not supplied. Without this the
+     * catch-all below turns an ordinary client mistake into a 500, which reads
+     * as a server fault and hides the actual problem from the caller.
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiError> handleMissingParameter(MissingServletRequestParameterException ex,
+                                                           HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST,
+                "Required parameter '" + ex.getParameterName() + "' is missing", request);
+    }
+
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ApiError> handleTypeMismatch(MethodArgumentTypeMismatchException ex,
                                                        HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST,
                 "Parameter '" + ex.getName() + "' has invalid value '" + ex.getValue() + "'", request);
+    }
+
+    /**
+     * A concurrent writer got there first - the row this request read (and
+     * was about to update) has since moved on to a newer version. Distinct
+     * from {@link DataIntegrityViolationException} below: this is two valid
+     * requests racing each other, not a constraint violation, but the client
+     * response is the same shape - a 409 asking them to retry with fresh data.
+     */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ResponseEntity<ApiError> handleOptimisticLock(OptimisticLockingFailureException ex,
+                                                          HttpServletRequest request) {
+        log.warn("Optimistic lock conflict on {} {}", request.getMethod(), request.getRequestURI());
+        return build(HttpStatus.CONFLICT,
+                "This record was changed by someone else just now - please refresh and try again", request);
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

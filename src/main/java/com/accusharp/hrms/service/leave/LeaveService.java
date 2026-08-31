@@ -1,13 +1,16 @@
 package com.accusharp.hrms.service.leave;
 
 import com.accusharp.hrms.dto.LeaveDecisionRequest;
+import com.accusharp.hrms.dto.LeaveHrDirectRequest;
 import com.accusharp.hrms.dto.LeaveRequestPayload;
 import com.accusharp.hrms.dto.LeaveResponse;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.LeaveRequest;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.LeaveDuration;
+import com.accusharp.hrms.enums.LeaveOrigin;
 import com.accusharp.hrms.enums.LeaveStatus;
+import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.NotFoundException;
@@ -69,7 +72,7 @@ public class LeaveService {
                 payload.getFromDate(), payload.getToDate(), payload.getDuration());
 
         // Fail early rather than letting the approver hit an empty balance.
-        assertBalanceAvailable(payload, totalDays);
+        assertBalanceAvailable(payload.getUserId(), payload.getLeaveType(), payload.getFromDate().getYear(), totalDays);
 
         LeaveRequest request = LeaveRequest.builder()
                 .userId(payload.getUserId())
@@ -80,6 +83,7 @@ public class LeaveService {
                 .totalDays(totalDays)
                 .reason(payload.getReason())
                 .status(LeaveStatus.PENDING)
+                .origin(LeaveOrigin.SELF_SERVICE)
                 .supervisorId(employee.getSupervisor() == null ? null : employee.getSupervisor().getUserId())
                 .appliedAt(Instant.now())
                 .build();
@@ -87,6 +91,69 @@ public class LeaveService {
         log.info("leave.apply userId={} type={} from={} to={} days={}", payload.getUserId(),
                 payload.getLeaveType(), payload.getFromDate(), payload.getToDate(), totalDays);
         return toResponse(leaveRequestRepository.save(request));
+    }
+
+    /**
+     * HR/ADMIN enters an already-approved leave directly, skipping apply and
+     * endorsement entirely - for backfilling a day that already happened
+     * (an employee took an informal day off and HR wants attendance/payroll
+     * to reflect it correctly), not a forward-looking request.
+     *
+     * <p>Runs the exact same date/overlap/balance validations {@link #apply}
+     * does - a manual entry hard-blocks on insufficient balance the same way
+     * a self-service one does, rather than being allowed to silently
+     * overdraw it - then goes straight to {@code APPROVED} and consumes
+     * balance immediately, same as {@link #approve} does. {@link
+     * LeaveRequest#getOrigin()} is what distinguishes this from a normally
+     * self-service-approved leave once both sit at {@code APPROVED}.
+     */
+    @Transactional
+    public LeaveResponse hrDirectCreate(LeaveHrDirectRequest request) {
+        employeeService.getEntityByUserId(request.getUserId()); // tenant check, same as assertTargetAccessible
+        assertHrOrAdmin(request.getApproverId());
+
+        if (request.getFromDate().isAfter(request.getToDate())) {
+            throw new BusinessRuleException("fromDate must be on or before toDate");
+        }
+        if (request.getDuration() != LeaveDuration.FULL_DAY
+                && !request.getFromDate().equals(request.getToDate())) {
+            throw new BusinessRuleException("A half day leave must start and end on the same date");
+        }
+        if (request.getFromDate().getYear() != request.getToDate().getYear()) {
+            throw new BusinessRuleException("A leave request cannot span two calendar years - split it");
+        }
+        assertNoOverlap(request.getUserId(), request.getFromDate(), request.getToDate());
+
+        BigDecimal totalDays = leaveCalculationService.countDays(
+                request.getFromDate(), request.getToDate(), request.getDuration());
+        assertBalanceAvailable(request.getUserId(), request.getLeaveType(), request.getFromDate().getYear(), totalDays);
+
+        leaveBalanceService.consume(request.getUserId(), request.getFromDate().getYear(),
+                request.getLeaveType(), totalDays);
+
+        LeaveRequest entity = LeaveRequest.builder()
+                .userId(request.getUserId())
+                .leaveType(request.getLeaveType())
+                .fromDate(request.getFromDate())
+                .toDate(request.getToDate())
+                .duration(request.getDuration())
+                .totalDays(totalDays)
+                .reason(request.getReason())
+                .status(LeaveStatus.APPROVED)
+                .origin(LeaveOrigin.HR_DIRECT)
+                .approverId(request.getApproverId())
+                .approvalComments(request.getComments())
+                .appliedAt(Instant.now())
+                .decidedAt(Instant.now())
+                .build();
+
+        log.info("leave.hrDirectCreate userId={} type={} from={} to={} days={} by={}",
+                request.getUserId(), request.getLeaveType(), request.getFromDate(), request.getToDate(),
+                totalDays, request.getApproverId());
+        LeaveRequest saved = leaveRequestRepository.save(entity);
+        auditService.record("LEAVE_HR_DIRECT_CREATE", "LeaveRequest", String.valueOf(saved.getId()),
+                AuditOutcome.SUCCESS, "userId=" + request.getUserId() + " days=" + totalDays);
+        return toResponse(saved);
     }
 
     /** Step one: the employee's own supervisor endorses the request. */
@@ -241,15 +308,13 @@ public class LeaveService {
         }
     }
 
-    private void assertBalanceAvailable(LeaveRequestPayload payload, BigDecimal totalDays) {
-        if (!payload.getLeaveType().isPaid()) {
+    private void assertBalanceAvailable(String userId, LeaveType leaveType, int year, BigDecimal totalDays) {
+        if (!leaveType.isPaid()) {
             return;
         }
-        BigDecimal available = leaveBalanceService
-                .getOrCreate(payload.getUserId(), payload.getFromDate().getYear(), payload.getLeaveType())
-                .available();
+        BigDecimal available = leaveBalanceService.getOrCreate(userId, year, leaveType).available();
         if (available.compareTo(totalDays) < 0) {
-            throw new BusinessRuleException("Insufficient " + payload.getLeaveType() + " balance: available "
+            throw new BusinessRuleException("Insufficient " + leaveType + " balance: available "
                     + available + ", requested " + totalDays);
         }
     }
@@ -280,8 +345,8 @@ public class LeaveService {
         employeeService.assertSelfOrManages(request.getUserId());
         return new LeaveResponse(request.getId(), request.getUserId(), employeeName, request.getLeaveType(),
                 request.getFromDate(), request.getToDate(), request.getDuration(), request.getTotalDays(),
-                request.getReason(), request.getStatus(), request.getSupervisorId(), request.getApproverId(),
-                request.getApprovalComments(), request.getAppliedAt(), request.getDecidedAt());
+                request.getReason(), request.getStatus(), request.getOrigin(), request.getSupervisorId(),
+                request.getApproverId(), request.getApprovalComments(), request.getAppliedAt(), request.getDecidedAt());
     }
 
     /**

@@ -16,7 +16,12 @@ import java.time.LocalDate;
 @Table(name = "emp_attendance_shift",
         uniqueConstraints = @UniqueConstraint(name = "uk_shift_schedule_user_date",
                 columnNames = {"user_id", "shift_date"}),
-        indexes = @Index(name = "idx_shift_schedule_date", columnList = "shift_date"))
+        indexes = {
+                @Index(name = "idx_shift_schedule_date", columnList = "shift_date"),
+                // ShiftService#delete's in-use guard (countByShiftId) was a full table
+                // scan without this - flagged in the audit's database review.
+                @Index(name = "idx_shift_schedule_shift", columnList = "shift_id")
+        })
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

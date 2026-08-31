@@ -1,21 +1,28 @@
 package com.accusharp.hrms.controller;
 
+import com.accusharp.hrms.dto.BulkImportResult;
 import com.accusharp.hrms.dto.LeaveDecisionRequest;
+import com.accusharp.hrms.dto.LeaveHrDirectRequest;
 import com.accusharp.hrms.dto.LeaveRequestPayload;
 import com.accusharp.hrms.dto.LeaveResponse;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.leave.LeaveService;
+import com.accusharp.hrms.util.LeaveCsvParser;
+import com.accusharp.hrms.util.ParsedCsvRow;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -37,6 +44,47 @@ public class LeaveController {
     @PostMapping
     public ResponseEntity<LeaveResponse> apply(@Valid @RequestBody LeaveRequestPayload payload) {
         return ResponseEntity.status(HttpStatus.CREATED).body(leaveService.apply(payload));
+    }
+
+    /** HR/ADMIN entering an already-approved leave directly - skips apply/endorse. Gated by LEAVE_APPROVE, same trust bar as final approval. */
+    @PreAuthorize("@authz.can('LEAVE_APPROVE')")
+    @PostMapping("/hr-create")
+    public ResponseEntity<LeaveResponse> hrDirectCreate(@AuthenticationPrincipal UserPrincipal principal,
+                                                        @Valid @RequestBody LeaveHrDirectRequest request) {
+        request.setApproverId(principal.getUsername());
+        return ResponseEntity.status(HttpStatus.CREATED).body(leaveService.hrDirectCreate(request));
+    }
+
+    /**
+     * CSV variant of {@link #hrDirectCreate} for backfilling a batch of
+     * already-approved leaves at once - see {@link LeaveCsvParser} for the
+     * expected header. A row that fails to parse (bad date, unknown leave
+     * type) is reported the same way a row that fails to apply (insufficient
+     * balance, overlapping leave) is: as an entry in {@code errors}, never as
+     * a thrown exception that discards the rest of the file.
+     */
+    @PreAuthorize("@authz.can('LEAVE_APPROVE')")
+    @PostMapping(value = "/bulk-import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public BulkImportResult<LeaveResponse> hrDirectCreateBulkCsv(@AuthenticationPrincipal UserPrincipal principal,
+                                                                  @RequestParam("file") MultipartFile file) {
+        List<ParsedCsvRow<LeaveHrDirectRequest>> rows = LeaveCsvParser.parse(file);
+        List<LeaveResponse> succeeded = new ArrayList<>();
+        List<BulkImportResult.RowError> errors = new ArrayList<>();
+
+        for (ParsedCsvRow<LeaveHrDirectRequest> row : rows) {
+            if (!row.isOk()) {
+                errors.add(new BulkImportResult.RowError(row.rowNumber(), null, row.error()));
+                continue;
+            }
+            LeaveHrDirectRequest entry = row.value();
+            entry.setApproverId(principal.getUsername());
+            try {
+                succeeded.add(leaveService.hrDirectCreate(entry));
+            } catch (RuntimeException e) {
+                errors.add(new BulkImportResult.RowError(row.rowNumber(), entry.getUserId(), e.getMessage()));
+            }
+        }
+        return BulkImportResult.of(rows.size(), succeeded, errors);
     }
 
     @PreAuthorize("@authz.can('LEAVE_SUPERVISOR_APPROVE')")
