@@ -67,6 +67,7 @@ public class EmployeeService {
     private final DepartmentService departmentService;
     private final DesignationService designationService;
     private final CategoryService categoryService;
+    private final EmploymentTypeService employmentTypeService;
     private final SalaryRuleService salaryRuleService;
     private final SalaryCalculationService salaryCalculationService;
     private final EmployeeMapper employeeMapper;
@@ -825,6 +826,12 @@ public class EmployeeService {
                 : designationService.getById(request.getDesignationId()));
         employee.setCategory(request.getCategoryId() == null ? null
                 : categoryService.getById(request.getCategoryId()));
+        // Resolved through EmploymentTypeService.getById, so it inherits the
+        // tenant check for free and an employee can never be put on another
+        // company's private type - the same choke-point inheritance
+        // department/designation/category already rely on (SECURITY.md Phase 6).
+        employee.setEmploymentType(request.getEmploymentTypeId() == null ? null
+                : employmentTypeService.getById(request.getEmploymentTypeId()));
 
         Employee supervisor = request.getSupervisorUserId() == null ? null
                 : getEntityByUserId(request.getSupervisorUserId());

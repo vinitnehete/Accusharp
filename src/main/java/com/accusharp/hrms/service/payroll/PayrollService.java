@@ -74,6 +74,7 @@ public class PayrollService {
     private final SalaryCalculationService salaryCalculationService;
     private final DeductionCalculationService deductionCalculationService;
     private final LopCalculationService lopCalculationService;
+    private final PayBehaviourResolver payBehaviourResolver;
     private final AuditService auditService;
 
     /**
@@ -342,17 +343,24 @@ public class PayrollService {
         payroll.setRevision(revision);
         payroll.setStatus(PayrollStatus.GENERATED);
 
+        // How this employee is paid, from their employment type if they have one
+        // and otherwise from the legacy EmployeeStatus semantics - see
+        // PayBehaviourResolver. Every `dayWise` branch below used to read
+        // `employee.getStatus().isPaidPerAttendedDay()` directly; each is now a
+        // named field, so a company can change one without changing the others.
+        PayBehaviour behaviour = payBehaviourResolver.resolve(employee, rule);
+        boolean dayWise = behaviour.isPaidPerAttendedDay();
+
         snapshotEmployee(payroll, employee);
         snapshotRule(payroll, rule);
-
-        boolean dayWise = employee.getStatus().isPaidPerAttendedDay();
+        snapshotBehaviour(payroll, behaviour);
 
         // Base of the proration: the denominator every earning is divided by.
-        // DAY_WISE is paid per attended day against a fixed payable-day base;
-        // everyone else is salaried against the full calendar month - week-offs
+        // A per-attended-day type is paid against a fixed payable-day base;
+        // a calendar-day type is salaried against the full month - week-offs
         // included, reduced only by whatever LOP the generated attendance found.
         BigDecimal totalDays = dayWise
-                ? BigDecimal.valueOf(rule.getDayWiseDaysInMonth())
+                ? BigDecimal.valueOf(behaviour.payableDaysCap())
                 : BigDecimal.valueOf(period.lengthOfMonth());
 
         BigDecimal presentDays = attendance.getPresentDays();
@@ -361,15 +369,15 @@ public class PayrollService {
         EmployedWindow window = employedWindow(employee, period);
         BigDecimal lopDays;
         BigDecimal payableDays;
-        if (dayWise) {
+        if (!behaviour.lopApplies()) {
             // Attendance is the pay: no LOP concept, you are paid what you worked.
-            // Paid leave does not add to payableDays - a day-wise worker earns
-            // basicDA/hra/conveyance/education/medical/other only for days
-            // actually present (capped at dayWiseDaysInMonth), not for approved
-            // leave on top of that. Leave still earns its own overtime credit -
-            // see monthlyOvertimeHours - just not a share of the fixed structure.
+            // Whether paid leave also earns a share of the fixed structure is now
+            // its own flag rather than being implied by the same boolean - a
+            // company can have a per-attended-day type that does pay for leave.
             lopDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
-            payableDays = presentDays.min(totalDays);
+            payableDays = behaviour.paidLeaveAddsPayableDays()
+                    ? presentDays.add(paidLeaveDays).min(totalDays)
+                    : presentDays.min(totalDays);
         } else {
             lopDays = attendance.getLopDays();
             // Capped by how many days of this period the employee was actually
@@ -400,13 +408,14 @@ public class PayrollService {
         payroll.setLopDays(lopDays);
         payroll.setPayableDays(payableDays);
         payroll.setTotalHours(attendance.getTotalHours());
-        // DAY_WISE has no fixed daily shift to measure each day's overtime
-        // against - only a monthly expectation the month's total hours are
-        // compared to. Everyone else keeps the attendance engine's
-        // daily-summed value (each day measured against that day's own
-        // shift length).
-        BigDecimal overtimeHours = dayWise
-                ? monthlyOvertimeHours(attendance.getTotalHours(), presentDays, paidLeaveDays, rule)
+        // A per-attended-day type has no fixed daily shift to measure each day's
+        // overtime against - only a monthly expectation the month's total hours
+        // are compared to. A calendar-day type keeps the attendance engine's
+        // daily-summed value (each day measured against that day's own shift
+        // length, and now against that day's own OVERTIME policy rule).
+        BigDecimal overtimeHours = behaviour.usesMonthlyOvertime()
+                ? monthlyOvertimeHours(attendance.getTotalHours(), presentDays, paidLeaveDays,
+                        rule, behaviour)
                 : attendance.getOvertimeHours();
         payroll.setOvertimeHours(overtimeHours);
 
@@ -416,7 +425,7 @@ public class PayrollService {
         // resolveGrossSalarySegments's Javadoc for why overridden employees and
         // dayWise (no calendar-month proration to begin with) skip this and keep
         // the single current-structure calculation used everywhere else.
-        if (!dayWise && !employee.isSalaryStructureOverridden()) {
+        if (behaviour.segmentedRevisionEarnings() && !employee.isSalaryStructureOverridden()) {
             setSegmentedGrossEarnings(payroll, employee, rule, window, totalDays, payableDays);
         } else {
             payroll.setEarnBasicDA(salaryCalculationService.prorate(employee.getBasicDA(), totalDays, payableDays));
@@ -601,11 +610,17 @@ public class PayrollService {
      * the OT hours" for every attendance mix, not just the sparse ones.
      */
     private BigDecimal monthlyOvertimeHours(BigDecimal totalHours, BigDecimal presentDays,
-                                            BigDecimal paidLeaveDays, SalaryRule rule) {
-        BigDecimal baseHours = presentDays.min(BigDecimal.valueOf(rule.getDayWiseDaysInMonth()))
-                .multiply(rule.getStandardHoursPerDay());
+                                            BigDecimal paidLeaveDays, SalaryRule rule,
+                                            PayBehaviour behaviour) {
+        BigDecimal cap = BigDecimal.valueOf(behaviour.payableDaysCap() != null
+                ? behaviour.payableDaysCap() : rule.getDayWiseDaysInMonth());
+        BigDecimal baseHours = presentDays.min(cap).multiply(rule.getStandardHoursPerDay());
         BigDecimal workedOvertime = totalHours.subtract(baseHours).max(BigDecimal.ZERO);
-        BigDecimal leaveOvertime = paidLeaveDays.multiply(rule.getStandardHoursPerDay());
+        // Whether leave earns its own hours is now a property of the employment
+        // type rather than something every per-attended-day type must do.
+        BigDecimal leaveOvertime = behaviour.paidLeaveEarnsOvertime()
+                ? paidLeaveDays.multiply(rule.getStandardHoursPerDay())
+                : BigDecimal.ZERO;
         return workedOvertime.add(leaveOvertime).setScale(SCALE, RoundingMode.HALF_UP);
     }
 
@@ -700,6 +715,18 @@ public class PayrollService {
                 .subtract(attendance.getLopDays())
                 .max(BigDecimal.ZERO);
         return implied.min(attendance.getLeaveDays()).setScale(1, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Freezes how this period was paid, not just who it was paid to. See
+     * {@link Payroll#getPayBasis()} - an employment type is an editable row now,
+     * so the reports must read what was true when the payroll ran rather than
+     * what is true today.
+     */
+    private void snapshotBehaviour(Payroll payroll, PayBehaviour behaviour) {
+        payroll.setEmploymentTypeCode(behaviour.typeCode());
+        payroll.setPayBasis(behaviour.payBasis());
+        payroll.setPayableDaysCap(behaviour.payableDaysCap());
     }
 
     private void snapshotEmployee(Payroll payroll, Employee employee) {

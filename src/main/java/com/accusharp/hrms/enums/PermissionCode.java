@@ -23,6 +23,23 @@ public enum PermissionCode {
     CATEGORY_MANAGE,
     CATEGORY_READ,
 
+    /**
+     * Employment types and the payroll behaviour attached to them.
+     *
+     * <p>Separate from {@code SALARY_RULE_MANAGE} because this decides the
+     * <em>shape</em> of a pay calculation, not its percentages - a different and
+     * larger decision.
+     *
+     * <p>Granted to HR and ADMIN only, deliberately not to SUPERVISOR or
+     * EMPLOYEE the way {@code CATEGORY_READ} and {@code DEPARTMENT_READ} are.
+     * Those are labels; this is the rule that decides whether somebody is paid
+     * per attended day or per calendar day, which belongs with
+     * {@code SALARY_RULE_READ} rather than with the master-data reads it sits
+     * next to.
+     */
+    EMPLOYMENT_TYPE_READ,
+    EMPLOYMENT_TYPE_MANAGE,
+
     EMPLOYEE_CREATE,
     EMPLOYEE_READ,
     EMPLOYEE_UPDATE,
@@ -41,6 +58,16 @@ public enum PermissionCode {
 
     ATTENDANCE_RULE_READ,
     ATTENDANCE_RULE_MANAGE,
+
+    /**
+     * The per-population attendance policy engine. Deliberately separate from
+     * {@code ATTENDANCE_RULE_*}: those three thresholds apply company-wide and
+     * are visible in one screen, whereas a policy rule can dock a named
+     * category half a day and is a strictly larger blast radius. Granting one
+     * should not silently grant the other.
+     */
+    ATTENDANCE_POLICY_READ,
+    ATTENDANCE_POLICY_MANAGE,
 
     HOLIDAY_MANAGE,
     HOLIDAY_READ,

@@ -5,6 +5,9 @@ import com.accusharp.hrms.entity.AttendanceRule;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.enums.AttendanceStatus;
+import com.accusharp.hrms.service.policy.AttendancePolicyParamsCodec;
+import com.accusharp.hrms.service.policy.DayPolicyEvaluator;
+import jakarta.validation.Validation;
 import com.accusharp.hrms.service.calculation.AttendanceCalculationService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -19,7 +22,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class AttendanceCalculationServiceTest {
 
-    private final AttendanceCalculationService service = new AttendanceCalculationService();
+    // The eight-argument calculateDay this class exercises passes
+    // ResolvedPolicy.NONE, so the evaluator short-circuits and every assertion
+    // below still measures the unpolicied calculation exactly as before.
+    private final AttendanceCalculationService service = new AttendanceCalculationService(
+            new DayPolicyEvaluator(new AttendancePolicyParamsCodec(
+                    Validation.buildDefaultValidatorFactory().getValidator())));
     private final AttendanceRule rule = AttendanceRule.defaultRule();
 
     private static final LocalDate DAY = LocalDate.of(2026, 8, 3);

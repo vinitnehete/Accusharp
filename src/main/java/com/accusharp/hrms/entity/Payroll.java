@@ -1,6 +1,7 @@
 package com.accusharp.hrms.entity;
 
 import com.accusharp.hrms.enums.EmployeeStatus;
+import com.accusharp.hrms.enums.PayBasis;
 import com.accusharp.hrms.enums.PayrollStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -73,6 +74,53 @@ public class Payroll {
     @Enumerated(EnumType.STRING)
     @Column(name = "employment_status", length = 20)
     private EmployeeStatus employmentStatus;
+
+    /**
+     * The employment type's code, and the two behaviours the reports need,
+     * snapshotted the way {@code rulePfPercent} and the other {@code rule*}
+     * columns already are.
+     *
+     * <p>Snapshotted rather than re-derived because an employment type is now an
+     * editable row. Without these, a company that changes a type's pay basis
+     * would silently change how every historical payslip is <em>formatted and
+     * reconciled</em> - the day-wise register lays a period out completely
+     * differently from a calendar-day one - even though the money on those
+     * payslips never moved. ARCHITECTURE.md's "immutable payroll history"
+     * guarantee is only true if the shape of the history is snapshotted too.
+     *
+     * <p>Null on every payroll generated before employment types existed. The
+     * reports fall back to {@link #employmentStatus} in that case, which is
+     * exactly what they read before, so historical rows keep rendering as they
+     * always did.
+     */
+    @Column(name = "employment_type_code", length = 30)
+    private String employmentTypeCode;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pay_basis", length = 30)
+    private PayBasis payBasis;
+
+    /** The fixed monthly base this period was prorated against, for a per-attended-day type. */
+    @Column(name = "payable_days_cap")
+    private Integer payableDaysCap;
+
+    /**
+     * Whether this period was paid per attended day - the one question the
+     * registers and the audit report ask.
+     *
+     * <p>Reads the snapshotted {@link #payBasis} where there is one, and falls
+     * back to the legacy enum for payrolls generated before employment types
+     * existed. Callers must use this rather than
+     * {@code employmentStatus.isPaidPerAttendedDay()}: the two disagree for any
+     * employee whose configured type differs from their legacy status, and the
+     * snapshot is the one that says how this period was actually computed.
+     */
+    public boolean wasPaidPerAttendedDay() {
+        if (payBasis != null) {
+            return payBasis.isPaidPerAttendedDay();
+        }
+        return employmentStatus != null && employmentStatus.isPaidPerAttendedDay();
+    }
 
     @Column(name = "gross_salary", precision = 15, scale = 2)
     private BigDecimal grossSalary;

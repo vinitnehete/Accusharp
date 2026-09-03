@@ -163,8 +163,10 @@ public class PayrollAuditService {
      * re-decides.
      */
     private BigDecimal prorationBase(Payroll payroll) {
-        boolean dayWise = payroll.getEmploymentStatus() != null
-                && payroll.getEmploymentStatus().isPaidPerAttendedDay();
+        // The SNAPSHOT, not the live employment type - see Payroll.wasPaidPerAttendedDay().
+        // A company editing a type's pay basis must not change how an
+        // already-paid period is laid out and reconciled.
+        boolean dayWise = payroll.wasPaidPerAttendedDay();
         if (dayWise && payroll.getRuleDayWiseDaysInMonth() != null) {
             return BigDecimal.valueOf(payroll.getRuleDayWiseDaysInMonth()).setScale(DAY_SCALE, RoundingMode.HALF_UP);
         }
@@ -212,8 +214,7 @@ public class PayrollAuditService {
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysInMonth(employeeId, period);
 
-        boolean dayWise = payroll.getEmploymentStatus() != null
-                && payroll.getEmploymentStatus().isPaidPerAttendedDay();
+        boolean dayWise = payroll.wasPaidPerAttendedDay();
         BigDecimal perDay = money(payroll.getPerDay(), MONEY_SCALE);
         BigDecimal perHour = money(payroll.getPerHour(), MONEY_SCALE);
         BigDecimal multiplier = payroll.getRuleOvertimeRateMultiplier() == null

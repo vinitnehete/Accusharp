@@ -180,7 +180,7 @@ public class AttendanceLeaveReportService {
                     Payroll payroll = payrolls.get(record.getUserId());
                     boolean pricedPerDay = payroll != null
                             && (payroll.getEmploymentStatus() == null
-                                || !payroll.getEmploymentStatus().isPaidPerAttendedDay());
+                                || !payroll.wasPaidPerAttendedDay());
 
                     BigDecimal perHour = pricedPerDay ? payroll.getPerHour() : null;
                     BigDecimal multiplier = pricedPerDay ? payroll.getRuleOvertimeRateMultiplier() : null;

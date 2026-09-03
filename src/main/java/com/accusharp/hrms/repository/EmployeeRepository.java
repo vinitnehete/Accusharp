@@ -62,4 +62,7 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
             """)
     List<Employee> findWorkAnniversariesInMonth(@Param("month") int month,
                                                @Param("monthStart") LocalDate monthStart);
+
+    /** How many employees are on an employment type - the delete guard. */
+    long countByEmploymentTypeId(Long employmentTypeId);
 }

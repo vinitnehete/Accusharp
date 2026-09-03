@@ -570,6 +570,9 @@ until someone read the numbers. Generate a month and look at it before paying it
 | Night day reads morning punches | The shift does not actually cross midnight | `GET /api/shifts` — is `crossesMidnight` true? |
 | Correction vanished | Regenerated with `overwriteManual: true` | `recordStatus` will read `GENERATED` |
 | Payroll returns 400 | Attendance not generated for the period | `POST /api/attendance/generate` |
+| One category is half-days everywhere | A `LATE_ARRIVAL` rule with too small a grace | `GET /api/attendance-policy/effective?userId=&date=` |
+| A policy rule seems to do nothing | Its scope reference matches no employee, or a more specific rule is disabled | Same endpoint - it names the rule that won and the ones it beat |
+| LOP moved with no absence | A month-scoped penalty | `policy_lop_days` on the summary, and `attendance_policy_outcome` |
 | Correction returns 400 "locked" | Payroll already ran | Unlock, correct, regenerate |
 
 Start with `GET /api/attendance/{userId}/records?month=yyyy-MM`. It shows every
@@ -578,7 +581,204 @@ which is almost always enough to see what happened.
 
 ---
 
-## 11. Invariants
+## 11. The attendance policy engine
+
+Sections 2 to 4 describe one policy for everybody: grace on the shift, the
+day/half-day cutoffs on `attendance_rule`, and late minutes recorded and then
+ignored. Most companies do not work that way. Workers and managers are held to
+different standards, and the second company to use this system asks for rules
+the first has never needed.
+
+So policy is configurable per **population**, on top of everything above.
+
+### The model in one line
+
+```
+a typed rule + who it applies to + when it took effect  ->  resolved per employee per day
+```
+
+Two ideas carry it, and both are borrowed from designs already in this repo:
+
+1. **The catalog is closed.** A rule is an enum constant plus a small typed,
+   validated parameter set - never a formula in a database column. Attendance
+   policy decides salary; an eval-able string cannot be tested, cannot be
+   migrated, and cannot be explained to an employee disputing a deduction.
+   Adding a rule *type* is a code change. Adding a *rule* is a form.
+2. **A version is never edited, only succeeded.** Rules are append-only and
+   resolved **as of the attendance date**, the same way `salary_revision`
+   records how a wage got where it is. An August day is priced by the rule that
+   was in force in August, whatever HR does in September.
+
+### The rules
+
+| Type | Scope | Decides |
+|---|---|---|
+| `MISSING_PUNCH` | day | A lone punch that looks like an entry becomes a half day instead of `INVALID_PUNCH` |
+| `SHORT_HOURS` | day | The full/half-day cutoffs, as percentages **or absolute minutes**, per population |
+| `LATE_ARRIVAL` | day | Grace, and what a late arrival costs |
+| `DAY_OFF_WORK` | day | Whether working a weekly off earns overtime or a comp-off credit |
+| `OVERTIME` | day | Who earns overtime, after how long, rounded to what block |
+| `EARLY_EXIT_BUDGET` | **month** | A monthly budget of early-exit minutes, then a penalty per occurrence |
+| `LATE_MARK_ACCUMULATION` | **month** | Nth late mark in a month costs a fraction of a day |
+
+Five effects exist and no others: override the status, adjust overtime, credit
+comp-off, add LOP days, or nothing.
+
+### Who a rule applies to
+
+```
+EMPLOYEE > DESIGNATION > CATEGORY > DEPARTMENT > EMPLOYMENT TYPE > COMPANY > GLOBAL
+```
+
+**Most specific wins outright.** Scopes are never merged: a `CATEGORY` rule
+replaces the `COMPANY` rule whole rather than inheriting its unset fields,
+because a policy assembled from three rows is one nobody actually wrote.
+
+A rule with `enabled = false` is an **answer, not an absence**. "Managers are
+not tracked for lateness" is a disabled `LATE_ARRIVAL` at `CATEGORY=MANAGER`:
+resolution picks it, finds it disabled, and applies nothing - the company rule
+does *not* then take over. That is the only opt-out, deliberately.
+
+### Day scope and month scope are not the same thing
+
+This is the crux, and getting it wrong corrupts salaries quietly.
+
+**Day rules** are pure functions of one day. They run inside
+`AttendanceCalculationService.calculateDay` - the same method a hand-corrected
+day goes through, so a correction cannot obey different rules from a device
+reading. Regenerating one day alone gives the same answer as regenerating the
+month.
+
+**Month rules are stateful and order-dependent.** A budget spent day by day
+cannot be evaluated during generation: regenerating day 12 alone would spend
+minutes the rest of the month has already spent, and the same month would score
+differently depending on which days had been touched since. So they are not
+evaluated during generation at all. They are a **replay** over the month's
+stored days in date order, from a zero accumulator, at summary-rebuild time -
+recomputed from scratch every time, never incremented.
+
+That is also why a `MANUAL` or locked day **counts toward a budget** while being
+untouchable by day rules. A day HR corrected with an eighteen-minute early exit
+is still an eighteen-minute early exit. It is safe because a month rule's only
+output is a summary figure - it cannot write to a day even in principle.
+
+### Where the numbers land
+
+`emp_monthly_attendance_summary` gains `policy_lop_days` beside `lop_days`.
+`lop_days` keeps its meaning - the total payroll reads - and the new column says
+how much of it somebody chose. It is clamped: policy can never push LOP past the
+days the employee was expected to work.
+
+Every applied rule leaves a trace. `attendance_policy_application` holds one row
+per day per rule that changed something; `attendance_policy_outcome` holds the
+month-level ones. Both carry the rule, its version, its scope, the before and
+after, and a rendered sentence:
+
+```
+HALF_DAY: in 09:16, 1 min beyond a 15 min grace on a 09:00 shift,
+rule LATE_ARRIVAL v1 scoped CATEGORY=STAFF
+```
+
+The sentence is stored, not derived on read - the same reason `payroll`
+snapshots `rule_pf_percent` instead of joining to `salary_rule`. Six months
+later the rule has been superseded four times and the answer still has to work.
+
+### Worked example: three late minutes, two different bills
+
+`SE10012`, category `STAFF`, September 2026, GENERAL 09:00-18:00.
+
+```
+POST /api/attendance-policy/rules
+{"scope":"CATEGORY","scopeRef":"STAFF","ruleType":"LATE_ARRIVAL",
+ "effectiveFrom":"2026-09-01","enabled":true,
+ "params":{"graceMinutes":15,"penaltyStatus":"HALF_DAY"}}
+```
+
+| Date | In | Out | Late | Status |
+|---|---|---|---|---|
+| 1 Sep | 09:14 | 18:05 | 0 | `PRESENT` |
+| 2 Sep | 09:15 | 18:05 | **0** | `PRESENT` |
+| 3 Sep | 09:16 | 18:30 | **1** | **`HALF_DAY`** |
+| 4 Sep | 09:22 | 18:30 | 7 | `HALF_DAY` |
+
+2 September is the boundary. `lateMinutes = max(0, firstIn - (start + grace))`,
+so arriving at exactly 09:15 on a 15-minute grace is **not** late - the grace is
+inclusive, matching the formula section 3 already uses rather than
+reinterpreting it. One minute later costs half a day.
+
+```
+workingDays 4 | presentDays 3.0 | lopDays 1.0 | policyLopDays 0.0
+```
+
+Now add the monthly accumulation rule:
+
+```
+{"ruleType":"LATE_MARK_ACCUMULATION",
+ "params":{"minimumLateMinutes":1,"occurrencesPerPenalty":3,"penaltyLopDays":0.5}}
+```
+
+Days 1 and 2 are late against the *shift's* own zero grace, so they are marks.
+Days 3 and 4 were **already docked** by `LATE_ARRIVAL` and are excluded - nobody
+is charged twice for one late arrival. Two marks is short of three, so:
+
+```
+policyLopDays 0.0 | lopDays 1.0     (unchanged)
+```
+
+Without that exclusion the same four days would have cost 1.5 days instead of
+1.0, and the extra half day would have been for lateness already paid for.
+
+### The single most damaging misconfiguration
+
+Section 2's is `overtime_window_minutes = 0`. This engine's is worse, for one
+specific reason:
+
+> **`LATE_ARRIVAL` with `penaltyStatus: ABSENT` and a small grace, at `COMPANY`
+> scope.** A five-minute grace and an absent penalty turns everybody who arrives
+> at 09:06 into a full unpaid day - on a day they worked in full. One bad
+> morning of traffic is a company-wide day of loss of pay.
+>
+> It is worse than the overtime-window bug because that one produced
+> `INVALID_PUNCH`, which is visibly wrong and shows up as `invalidPunches` in
+> the summary. This produces `ABSENT`, which is exactly what a genuinely absent
+> day looks like. Nothing in the month's figures says anything went wrong. The
+> only signal is that `presentDays` fell - and that is the number people expect
+> a policy to move.
+
+`grace_minutes` on the shift does **not** protect you: once a `LATE_ARRIVAL`
+rule resolves, it measures lateness against its own grace, not the shift's.
+
+### Check it before you save it
+
+```
+POST /api/attendance-policy/preview
+{"month":"2026-09","rules":[ ...the rules you are about to save... ]}
+```
+
+Re-evaluates a real past month under a proposed rule set and returns the diff -
+days changed with reasons, LOP delta and overtime delta per employee, and a
+company-wide total - **without writing a single row**. It also warns about the
+`ABSENT` penalty above, about a rule set that changes nothing (usually a typo'd
+scope reference), and about a LOP delta large enough to want a second opinion.
+
+Section 9's lesson was that both failures were configuration, not code, and both
+were invisible until someone read the numbers. This is how to read them before
+they are numbers anybody has been paid.
+
+### Nothing is on by default
+
+`attendance_policy_rule` ships **empty**, and the `GLOBAL` scope is seeded with
+nothing - deliberately unlike `attendance_rule`, which seeds the values every
+company was already using. A company that configures no rules produces
+byte-identical attendance and payroll to what it produced before this engine
+existed: resolution returns empty, the evaluators short-circuit before touching
+the day, no trace rows are written, and `policy_lop_days` stays `0.0`. That is
+covered by `AttendancePolicyEngineTest.noRulesConfiguredChangesNothing`, and by
+every other test in the suite, all of which are unconfigured companies.
+
+---
+
+## 12. Invariants
 
 Things the system guarantees, each covered by a test:
 
@@ -594,10 +794,19 @@ Things the system guarantees, each covered by a test:
 8. A read never writes.
 9. Payroll cannot run against attendance that was never generated.
 10. A night shift belongs to the date it started on, across month and year ends.
-11. Hand-corrected days obey identical calculation rules to device-read days.
+11. Hand-corrected days obey identical calculation rules to device-read days -
+    including attendance policy.
 12. Regenerating an unchanged roster produces identical rows.
+13. A company with no policy rules produces byte-identical output to what it
+    produced before the policy engine existed.
+14. A policy rule may only ever lower a day's value, except `MISSING_PUNCH`,
+    which exists to rescue a day the device broke.
+15. A policy rule is resolved by the attendance date, never by today - so a rule
+    written in September cannot re-price August.
+16. Loss of pay can never exceed the days the employee was expected to work.
+17. A day already docked for lateness is not also counted as a late mark.
 
-## 12. Not covered
+## 13. Not covered
 
 - **No rest-gap *enforcement*** between consecutive shift assignments - an
   unworkable pair is logged and audited (`SHIFT_SCHEDULE_REST_GAP`), never

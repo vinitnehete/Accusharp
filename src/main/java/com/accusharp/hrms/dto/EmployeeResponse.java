@@ -18,6 +18,20 @@ public record EmployeeResponse(
         String departmentName,
         String designationName,
         String categoryName,
+
+        /**
+         * The configurable employment type assigned to this employee, if any.
+         *
+         * <p>Exposed because {@code EmployeeRequest.employmentTypeId} is applied
+         * unconditionally on update - a client that cannot read the current value
+         * back has no way to send it again, and every ordinary edit (a phone
+         * number, a bank account) would silently clear the assignment. The name
+         * rides along so a read-only screen does not have to fetch the whole
+         * employment-type list to render one label.
+         */
+        Long employmentTypeId,
+        String employmentTypeName,
+
         String supervisorUserId,
         String supervisorName,
         LocalDate joiningDate,

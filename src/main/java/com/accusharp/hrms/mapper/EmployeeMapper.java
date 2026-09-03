@@ -20,6 +20,8 @@ public class EmployeeMapper {
                 employee.getDepartment() == null ? null : employee.getDepartment().getDepartmentName(),
                 employee.getDesignation() == null ? null : employee.getDesignation().getDesignationName(),
                 employee.getCategory() == null ? null : employee.getCategory().getCategoryName(),
+                employee.getEmploymentType() == null ? null : employee.getEmploymentType().getId(),
+                employee.getEmploymentType() == null ? null : employee.getEmploymentType().getTypeName(),
                 employee.getSupervisor() == null ? null : employee.getSupervisor().getUserId(),
                 employee.getSupervisor() == null ? null : employee.getSupervisor().getEmployeeName(),
                 employee.getJoiningDate(),

@@ -6,6 +6,8 @@ import com.accusharp.hrms.dto.AttendanceGenerationResponse;
 import com.accusharp.hrms.dto.AttendanceRecordResponse;
 import com.accusharp.hrms.dto.DailyAttendanceResponse;
 import com.accusharp.hrms.dto.MonthlyAttendanceResponse;
+import com.accusharp.hrms.entity.AttendancePolicyApplication;
+import com.accusharp.hrms.entity.AttendancePolicyRule;
 import com.accusharp.hrms.entity.AttendanceRule;
 import com.accusharp.hrms.entity.DailyAttendance;
 import com.accusharp.hrms.entity.DeviceLog;
@@ -19,6 +21,8 @@ import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.NotFoundException;
+import com.accusharp.hrms.repository.AttendancePolicyApplicationRepository;
+import com.accusharp.hrms.repository.AttendancePolicyOutcomeRepository;
 import com.accusharp.hrms.repository.DailyAttendanceRepository;
 import com.accusharp.hrms.repository.DeviceLogRepository;
 import com.accusharp.hrms.repository.MonthlyAttendanceSummaryRepository;
@@ -30,6 +34,9 @@ import com.accusharp.hrms.service.HolidayService;
 import com.accusharp.hrms.service.calculation.AttendanceCalculationService;
 import com.accusharp.hrms.service.calculation.AttendanceWindowResolver;
 import com.accusharp.hrms.service.calculation.LopCalculationService;
+import com.accusharp.hrms.service.policy.AttendancePolicyResolver;
+import com.accusharp.hrms.service.policy.MonthPolicyEvaluator;
+import com.accusharp.hrms.service.policy.ResolvedPolicy;
 import com.accusharp.hrms.service.leave.LeaveCalculationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -94,6 +101,10 @@ public class AttendanceService {
     private final EmployeeService employeeService;
     private final AuditService auditService;
     private final AttendanceRuleService attendanceRuleService;
+    private final AttendancePolicyResolver attendancePolicyResolver;
+    private final MonthPolicyEvaluator monthPolicyEvaluator;
+    private final AttendancePolicyApplicationRepository policyApplicationRepository;
+    private final AttendancePolicyOutcomeRepository policyOutcomeRepository;
 
     // ---- generation --------------------------------------------------------
 
@@ -128,7 +139,7 @@ public class AttendanceService {
                     id -> resolveCompanyContext(id, first, last));
 
             GenerationTally tally = generateFor(employee, month, request.getGeneratedBy(),
-                    request.isOverwriteManual(), request.isDryRun(), context.rule(), context.holidays());
+                    request.isOverwriteManual(), request.isDryRun(), context);
 
             generated += tally.generated();
             manualPreserved += tally.manualPreserved();
@@ -149,12 +160,19 @@ public class AttendanceService {
     private CompanyGenerationContext resolveCompanyContext(Long companyId, LocalDate first, LocalDate last) {
         AttendanceRule rule = attendanceRuleService.getActiveRuleForCompany(companyId);
         Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, first, last);
-        return new CompanyGenerationContext(rule, holidays);
+        // Loaded once per company alongside the rule and the holiday calendar,
+        // not once per employee per day per rule type - the same batching this
+        // method already exists to do. Empty for every company that has
+        // configured nothing, which is what makes resolution free for them.
+        List<AttendancePolicyRule> policyRules = attendancePolicyResolver.loadCompanyRules(companyId, last);
+        return new CompanyGenerationContext(rule, holidays, policyRules);
     }
 
     private GenerationTally generateFor(Employee employee, YearMonth month, String generatedBy,
                                         boolean overwriteManual, boolean dryRun,
-                                        AttendanceRule rule, Set<LocalDate> holidays) {
+                                        CompanyGenerationContext context) {
+        AttendanceRule rule = context.rule();
+        Set<LocalDate> holidays = context.holidays();
         String userId = employee.getUserId();
         LocalDate first = month.atDay(1);
         LocalDate last = month.atEndOfMonth();
@@ -176,6 +194,8 @@ public class AttendanceService {
                 .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, previousDay, last));
 
         List<DailyAttendance> toSave = new ArrayList<>();
+        List<AttendancePolicyApplication> policyTrace = new ArrayList<>();
+        List<LocalDate> rewrittenDates = new ArrayList<>();
         int rosterDays = 0;
         int generated = 0;
         int manualPreserved = 0;
@@ -211,10 +231,16 @@ public class AttendanceService {
                 continue;
             }
 
-            DailyAttendanceResponse computed = computeDay(userId, window, resolved.punchesOn(date),
-                    holidays, leaveDays, rule);
+            AttendanceCalculationService.PolicyAwareDay computed = computeDay(employee, window,
+                    resolved.punchesOn(date), holidays, leaveDays, rule, context.policyRules());
             DailyAttendance record = current != null ? current : new DailyAttendance();
-            applyComputed(record, userId, schedule, computed, holidays.contains(date));
+            applyComputed(record, userId, schedule, computed.day(), holidays.contains(date));
+
+            // The trace is rebuilt with the day it explains. Only days this run
+            // actually writes get here - a locked or MANUAL day was skipped
+            // above, so it keeps whatever trace it already had.
+            rewrittenDates.add(date);
+            policyTrace.addAll(computed.trace());
 
             record.setRecordStatus(AttendanceRecordStatus.GENERATED);
             record.setRemarks(null);
@@ -233,6 +259,15 @@ public class AttendanceService {
 
         if (!dryRun) {
             dailyAttendanceRepository.saveAll(toSave);
+            // Delete-then-insert rather than merge: the trace is derived, so a
+            // rerun must replace it wholesale rather than accumulate a second
+            // row per rule per run. Scoped to the dates this run rewrote.
+            if (!rewrittenDates.isEmpty()) {
+                policyApplicationRepository.deleteByUserIdAndAttendanceDateIn(userId, rewrittenDates);
+            }
+            if (!policyTrace.isEmpty()) {
+                policyApplicationRepository.saveAll(policyTrace);
+            }
             rebuildSummary(employee, month);
             if (previousMonthTouched) {
                 rebuildSummary(employee, month.minusMonths(1));
@@ -322,11 +357,29 @@ public class AttendanceService {
                     DeviceLog.builder().userId(userId).logDate(request.getFirstIn()).build(),
                     DeviceLog.builder().userId(userId).logDate(request.getLastOut()).build());
 
-            DailyAttendanceResponse computed = attendanceCalculationService.calculateDay(
-                    userId, date, schedule.getShift(), corrected, schedule.isWeekOff(),
-                    holidays.contains(date), leaveDays.containsKey(date), rule);
+            // The same day-scoped policy a device-read day gets. Attendance.md's
+            // promise is that a hand-fixed day "derives its hours, lateness and
+            // overtime by identical rules - there is no second code path that
+            // can drift", and exempting corrections from policy would create
+            // exactly that second path: the same punches would score differently
+            // depending on whether a device or a human supplied them. An
+            // explicit `status` in the request still overrides whatever policy
+            // concluded, immediately below - HR remains the final word.
+            ResolvedPolicy policy = attendancePolicyResolver.resolve(
+                    attendancePolicyResolver.loadCompanyRules(companyId, date), employee, date);
 
-            applyComputed(record, userId, schedule, computed, holidays.contains(date));
+            AttendanceCalculationService.PolicyAwareDay computed =
+                    attendanceCalculationService.calculateDay(
+                            userId, date, schedule.getShift(), corrected, schedule.isWeekOff(),
+                            holidays.contains(date), leaveDays.containsKey(date), rule, policy);
+
+            applyComputed(record, userId, schedule, computed.day(), holidays.contains(date));
+
+            // The correction's own trace replaces the generated one for this day.
+            policyApplicationRepository.deleteByUserIdAndAttendanceDateIn(userId, List.of(date));
+            if (!computed.trace().isEmpty()) {
+                policyApplicationRepository.saveAll(computed.trace());
+            }
 
             // An explicit status still wins - the admin may know the day was
             // half a day even though the corrected times say otherwise.
@@ -455,6 +508,9 @@ public class AttendanceService {
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(userId, fromDate, toDate);
 
+        List<AttendancePolicyRule> policyRules =
+                attendancePolicyResolver.loadCompanyRules(companyId, toDate);
+
         ResolvedRange resolved = resolve(userId, fromDate, toDate, rule);
 
         Map<LocalDate, DailyAttendanceResponse> byDate = new HashMap<>();
@@ -463,7 +519,8 @@ public class AttendanceService {
             DailyAttendance record = stored.get(date);
             byDate.put(date, record != null
                     ? toDailyResponse(record)
-                    : computeDay(userId, window, resolved.punchesOn(date), holidays, leaveDays, rule));
+                    : computeDay(employee, window, resolved.punchesOn(date), holidays, leaveDays,
+                            rule, policyRules).day());
         }
         // A stored day whose roster row was deleted afterwards still exists, still
         // counts towards the month, and must not vanish from the day-by-day read
@@ -642,9 +699,10 @@ public class AttendanceService {
             Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDaysForEmployee =
                     leaveByUser.containsKey(userId) ? Map.of(date, leaveByUser.get(userId)) : Map.of();
 
-            DailyAttendanceResponse computed = computeDay(userId, window, resolution.punchesOn(date),
-                    context.holidays(), leaveDaysForEmployee, context.rule());
-            result.put(userId, computed.status());
+            AttendanceCalculationService.PolicyAwareDay computed = computeDay(employee, window,
+                    resolution.punchesOn(date), context.holidays(), leaveDaysForEmployee,
+                    context.rule(), context.policyRules());
+            result.put(userId, computed.day().status());
         }
 
         return result;
@@ -727,16 +785,29 @@ public class AttendanceService {
         return new ResolvedRange(inRange, resolution);
     }
 
-    /** One day of attendance derived from the punches that day owns. */
-    private DailyAttendanceResponse computeDay(String userId, AttendanceWindowResolver.DayWindow window,
-                                               List<DeviceLog> punches, Set<LocalDate> holidays,
-                                               Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays,
-                                               AttendanceRule rule) {
+    /**
+     * One day of attendance derived from the punches that day owns, with this
+     * employee's day-scoped policy applied.
+     *
+     * <p>The policy is resolved per <b>date</b>, not once per employee: a rule
+     * version effective mid-month must apply to the days after it and not the
+     * days before, which is what stops a rule written in September re-pricing
+     * August. {@code policyRules} is the whole company's rule set, loaded once
+     * per generation run, so resolving per day costs no queries.
+     */
+    private AttendanceCalculationService.PolicyAwareDay computeDay(
+            Employee employee, AttendanceWindowResolver.DayWindow window,
+            List<DeviceLog> punches, Set<LocalDate> holidays,
+            Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays,
+            AttendanceRule rule, List<AttendancePolicyRule> policyRules) {
         ShiftSchedule schedule = window.schedule();
         LocalDate date = schedule.getShiftDate();
 
-        return attendanceCalculationService.calculateDay(userId, date, schedule.getShift(), punches,
-                schedule.isWeekOff(), holidays.contains(date), leaveDays.containsKey(date), rule);
+        ResolvedPolicy policy = attendancePolicyResolver.resolve(policyRules, employee, date);
+
+        return attendanceCalculationService.calculateDay(employee.getUserId(), date, schedule.getShift(),
+                punches, schedule.isWeekOff(), holidays.contains(date), leaveDays.containsKey(date),
+                rule, policy);
     }
 
     private void applyComputed(DailyAttendance record, String userId, ShiftSchedule schedule,
@@ -767,15 +838,27 @@ public class AttendanceService {
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysBetween(employee.getUserId(), first, last);
 
+        List<AttendancePolicyRule> policyRules =
+                attendancePolicyResolver.loadCompanyRules(companyId, last);
+
         ResolvedRange resolved = resolve(employee.getUserId(), first, last, rule);
         List<AttendanceWindowResolver.DayWindow> roster = resolved.days();
 
         List<DailyAttendanceResponse> days = new ArrayList<>(roster.size());
         Set<LocalDate> workingDates = new HashSet<>();
+        // A preview persists nothing, so the trace it needs for the month-scoped
+        // rules is the one it just computed in memory rather than the stored one.
+        Set<LocalDate> latePenalised = new HashSet<>();
+        BigDecimal compOff = BigDecimal.ZERO;
         for (AttendanceWindowResolver.DayWindow window : roster) {
             LocalDate date = window.date();
-            days.add(computeDay(employee.getUserId(), window, resolved.punchesOn(date),
-                    holidays, leaveDays, rule));
+            AttendanceCalculationService.PolicyAwareDay computed = computeDay(employee, window,
+                    resolved.punchesOn(date), holidays, leaveDays, rule, policyRules);
+            days.add(computed.day());
+            computed.trace().stream()
+                    .filter(row -> row.getRuleType() == com.accusharp.hrms.enums.RuleType.LATE_ARRIVAL)
+                    .forEach(row -> latePenalised.add(row.getAttendanceDate()));
+            compOff = compOff.add(computed.compOffCredit());
             if (!window.schedule().isWeekOff() && !holidays.contains(date)) {
                 workingDates.add(date);
             }
@@ -784,7 +867,8 @@ public class AttendanceService {
         long holidayDays = roster.stream().filter(w -> holidays.contains(w.date())).count();
         long weekOffDays = roster.stream().filter(w -> w.schedule().isWeekOff()).count();
 
-        return aggregate(employee, month, days, workingDates, leaveDays, holidayDays, weekOffDays);
+        return aggregate(employee, month, days, workingDates, leaveDays, holidayDays, weekOffDays,
+                latePenalised, compOff.setScale(DAY_SCALE, RoundingMode.HALF_UP));
     }
 
     /**
@@ -799,7 +883,9 @@ public class AttendanceService {
                 workingDatesOf(stored),
                 leaveCalculationService.approvedLeaveDaysInMonth(employee.getUserId(), month),
                 stored.stream().filter(DailyAttendance::isHoliday).count(),
-                stored.stream().filter(DailyAttendance::isWeekOff).count());
+                stored.stream().filter(DailyAttendance::isWeekOff).count(),
+                latePenalisedDates(employee.getUserId(), month),
+                compOffCreditDays(employee.getUserId(), month));
     }
 
     /** Rolls the stored days up and writes the cached summary. */
@@ -825,6 +911,16 @@ public class AttendanceService {
         summary.setTotalHours(rolled.totalHours());
         summary.setOvertimeHours(rolled.overtimeHours());
         summary.setLopDays(rolled.lopDays());
+        summary.setPolicyLopDays(rolled.policyLopDays());
+        summary.setCompOffCreditDays(rolled.compOffCreditDays());
+
+        // Replaced wholesale, never merged: the outcomes are derived from a
+        // replay that starts at a zero accumulator, so a rebuild must leave
+        // exactly what this replay concluded and nothing from the last one.
+        policyOutcomeRepository.deleteByUserIdAndMonth(userId, monthKey);
+        if (!rolled.policyOutcomes().isEmpty()) {
+            policyOutcomeRepository.saveAll(rolled.policyOutcomes());
+        }
 
         return monthlyAttendanceSummaryRepository.save(summary);
     }
@@ -834,7 +930,9 @@ public class AttendanceService {
                                                 List<DailyAttendanceResponse> days,
                                                 Set<LocalDate> workingDates,
                                                 Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays,
-                                                long holidayDays, long weekOffDays) {
+                                                long holidayDays, long weekOffDays,
+                                                Set<LocalDate> latePenalisedDates,
+                                                BigDecimal compOffCreditDays) {
 
         long workingDays = workingDates.size();
 
@@ -861,12 +959,78 @@ public class AttendanceService {
         BigDecimal totalHours = sumHours(days, DailyAttendanceResponse::workingHours);
         BigDecimal overtimeHours = sumHours(days, DailyAttendanceResponse::overtimeHours);
 
-        BigDecimal lopDays = lopCalculationService.calculateLopDays(
+        BigDecimal baseLop = lopCalculationService.calculateLopDays(
                 BigDecimal.valueOf(workingDays), presentDays, paidLeaveDays);
+
+        // Month-scoped rules replay HERE rather than in rebuildSummary, because
+        // rebuildSummary and the read path both funnel through this method.
+        // Hooking only the persisting one would make GET /{userId}/monthly
+        // disagree with the summary payroll pays from, by exactly the penalty.
+        MonthPolicyEvaluator.MonthPolicyResult policyResult = monthPolicyEvaluator.apply(
+                employee.getUserId(), month, days, workingDates, latePenalisedDates,
+                monthPolicyFor(employee, month));
+
+        // Clamped: a badly-configured accumulation rule could otherwise push LOP
+        // past the days the employee was expected to work. calculatePayableDays
+        // already floors payable days at zero, but a slip reading "22 working
+        // days, 31 LOP days" is not something to print.
+        BigDecimal lopDays = baseLop.add(policyResult.lopDays())
+                .min(BigDecimal.valueOf(workingDays))
+                .setScale(DAY_SCALE, RoundingMode.HALF_UP);
 
         return new MonthlyAttendanceResponse(employee.getUserId(), employee.getEmployeeName(), month,
                 workingDays, presentDays, absentDays, halfDays, leaveDayCount, holidayDays, weekOffDays,
-                lateCount, earlyExitCount, invalidPunches, totalHours, overtimeHours, lopDays, days);
+                lateCount, earlyExitCount, invalidPunches, totalHours, overtimeHours, lopDays,
+                policyResult.lopDays(), compOffCreditDays, policyResult.outcomes(), days);
+    }
+
+    /**
+     * The month-scoped policy for one employee, resolved on the <b>first</b> day
+     * of the month.
+     *
+     * <p>Not the last, and not per day. A budget or an occurrence counter is a
+     * property of the month as a whole, so it needs one version for the whole
+     * month; resolving on the month's end would let a rule created on the 28th
+     * retroactively re-judge the preceding 27 days, which is precisely the
+     * surprise effective dating exists to prevent. Resolving on the 1st means a
+     * month-scoped rule takes effect from the first full month on or after its
+     * {@code effectiveFrom} - predictable, and it can be explained to an
+     * employee in one sentence: the budget for September was the one set before
+     * September began.
+     */
+    private ResolvedPolicy monthPolicyFor(Employee employee, YearMonth month) {
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        LocalDate firstOfMonth = month.atDay(1);
+        return attendancePolicyResolver.resolve(
+                attendancePolicyResolver.loadCompanyRules(companyId, firstOfMonth),
+                employee, firstOfMonth);
+    }
+
+    /** Comp-off days the month's stored days earned under a {@code DAY_OFF_WORK} rule. */
+    private BigDecimal compOffCreditDays(String userId, YearMonth month) {
+        return policyApplicationRepository
+                .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(
+                        userId, month.atDay(1), month.atEndOfMonth())
+                .stream()
+                .map(AttendancePolicyApplication::getCompOffCredit)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .setScale(DAY_SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Days a {@code LATE_ARRIVAL} rule already downgraded, read off the stored
+     * trace. Excluded from the late-mark count so one late arrival is never
+     * charged twice - see {@link MonthPolicyEvaluator#apply}.
+     */
+    private Set<LocalDate> latePenalisedDates(String userId, YearMonth month) {
+        return policyApplicationRepository
+                .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(
+                        userId, month.atDay(1), month.atEndOfMonth())
+                .stream()
+                .filter(row -> row.getRuleType() == com.accusharp.hrms.enums.RuleType.LATE_ARRIVAL)
+                .map(AttendancePolicyApplication::getAttendanceDate)
+                .collect(Collectors.toSet());
     }
 
     private List<DailyAttendance> storedDays(String userId, YearMonth month) {
@@ -932,7 +1096,11 @@ public class AttendanceService {
                                    List<AttendanceGenerationResponse.DayChange> changes) {
     }
 
-    /** The attendance rule and holiday calendar for one company, resolved once per {@link #generate}. */
-    private record CompanyGenerationContext(AttendanceRule rule, Set<LocalDate> holidays) {
+    /**
+     * The attendance rule, holiday calendar and policy rule set for one company,
+     * resolved once per {@link #generate}.
+     */
+    private record CompanyGenerationContext(AttendanceRule rule, Set<LocalDate> holidays,
+                                            List<AttendancePolicyRule> policyRules) {
     }
 }

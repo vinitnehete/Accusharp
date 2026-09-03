@@ -1,10 +1,14 @@
 package com.accusharp.hrms.service.calculation;
 
 import com.accusharp.hrms.dto.DailyAttendanceResponse;
+import com.accusharp.hrms.entity.AttendancePolicyApplication;
 import com.accusharp.hrms.entity.AttendanceRule;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.enums.AttendanceStatus;
+import com.accusharp.hrms.service.policy.DayPolicyEvaluator;
+import com.accusharp.hrms.service.policy.ResolvedPolicy;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -43,10 +47,25 @@ import java.util.List;
  * have to think about midnight.
  */
 @Service
+@RequiredArgsConstructor
 public class AttendanceCalculationService {
 
     private static final BigDecimal MINUTES_PER_HOUR = new BigDecimal("60");
     private static final BigDecimal HUNDRED = new BigDecimal("100");
+
+    private final DayPolicyEvaluator dayPolicyEvaluator;
+
+    /**
+     * One day, plus whatever the day-scoped policy rules did to it.
+     *
+     * @param trace          one row per rule that changed something; empty for
+     *                       every company that has configured no rules
+     * @param compOffCredit  days of compensatory off this day earned
+     */
+    public record PolicyAwareDay(DailyAttendanceResponse day,
+                                 List<AttendancePolicyApplication> trace,
+                                 BigDecimal compOffCredit) {
+    }
 
     /**
      * Start of the window in which a punch counts towards this shift day.
@@ -80,13 +99,61 @@ public class AttendanceCalculationService {
     public DailyAttendanceResponse calculateDay(String userId, LocalDate shiftDate, Shift shift,
                                                 List<DeviceLog> punches, boolean weekOff,
                                                 boolean holiday, boolean onLeave, AttendanceRule rule) {
+        return calculateDay(userId, shiftDate, shift, punches, weekOff, holiday, onLeave,
+                rule, ResolvedPolicy.NONE).day();
+    }
+
+    /**
+     * The same calculation, with this employee's day-scoped attendance policy
+     * applied on top - see {@link DayPolicyEvaluator}.
+     *
+     * <p>Policy is applied <b>here</b>, at the tail of the one method that turns
+     * punches into a day, rather than in the caller. {@code
+     * AttendanceService.correctDay} runs a hand-supplied pair of punches back
+     * through this same method precisely so a corrected day cannot obey
+     * different rules from a device-read one; applying policy in the caller
+     * would create exactly the second code path that promise rules out.
+     *
+     * <p>Passing {@link ResolvedPolicy#NONE} - what the eight-argument overload
+     * above does - returns byte-identical output to what this method produced
+     * before the policy engine existed, because the evaluator short-circuits
+     * before touching anything.
+     */
+    public PolicyAwareDay calculateDay(String userId, LocalDate shiftDate, Shift shift,
+                                       List<DeviceLog> punches, boolean weekOff,
+                                       boolean holiday, boolean onLeave, AttendanceRule rule,
+                                       ResolvedPolicy policy) {
 
         if (punches.size() < 2) {
             AttendanceStatus status = resolveNonWorkingStatus(punches.size(), weekOff, holiday, onLeave);
-            return new DailyAttendanceResponse(userId, shiftDate, shift.getShiftCode(),
-                    punches.isEmpty() ? null : punches.getFirst().getLogDate(), null,
-                    zero(), zero(), zero(), 0, 0,
-                    status == AttendanceStatus.INVALID_PUNCH, status);
+            LocalDateTime lonePunch = punches.isEmpty() ? null : punches.getFirst().getLogDate();
+
+            // Captured BEFORE policy runs, and deliberately not re-derived from
+            // the final status. A MISSING_PUNCH rule can turn INVALID_PUNCH into
+            // a half day so the employee is paid for it, but the day WAS an
+            // invalid punch: the flag keeps feeding invalidPunches on the
+            // summary so HR still sees a device that needs fixing. What a day is
+            // worth and what went wrong are two questions - the same separation
+            // recordStatus already has from the lock flag.
+            boolean invalidPunch = status == AttendanceStatus.INVALID_PUNCH;
+
+            DayPolicyEvaluator.DayPolicyResult applied = dayPolicyEvaluator.apply(
+                    new DayPolicyEvaluator.DayContext(userId, shiftDate, shift, punches.size(),
+                            lonePunch, null, 0, (long) shift.getWorkingHours() * 60,
+                            0, 0, 0, weekOff, holiday, status),
+                    policy);
+
+            // Hours stay at zero even when the day is rescued to a half day.
+            // There is no evidence of hours worked - the missing out-punch is
+            // the whole premise - and totalHours drives DAY_WISE overtime, so
+            // inventing them here would invent overtime pay out of a device
+            // fault. The status is a policy decision about what the day is
+            // worth; the hours are a factual record of what was observed.
+            return new PolicyAwareDay(
+                    new DailyAttendanceResponse(userId, shiftDate, shift.getShiftCode(),
+                            lonePunch, null, zero(), zero(), zero(), 0, 0,
+                            invalidPunch, applied.status()),
+                    applied.trace(), applied.compOffCredit());
         }
 
         LocalDateTime firstIn = punches.getFirst().getLogDate();
@@ -109,18 +176,29 @@ public class AttendanceCalculationService {
 
         AttendanceStatus status = resolveWorkedStatus(workedMinutes, shiftMinutes, weekOff, holiday, rule);
 
-        return new DailyAttendanceResponse(userId, shiftDate, shift.getShiftCode(), firstIn, lastOut,
-                toHours(workedMinutes), toHours(breakMinutes), toHours(overtimeMinutes),
-                lateMinutes, earlyExitMinutes, false, status);
+        DayPolicyEvaluator.DayPolicyResult applied = dayPolicyEvaluator.apply(
+                new DayPolicyEvaluator.DayContext(userId, shiftDate, shift, punches.size(),
+                        firstIn, lastOut, workedMinutes, shiftMinutes,
+                        lateMinutes, earlyExitMinutes, overtimeMinutes, weekOff, holiday, status),
+                policy);
+
+        return new PolicyAwareDay(
+                new DailyAttendanceResponse(userId, shiftDate, shift.getShiftCode(), firstIn, lastOut,
+                        toHours(workedMinutes), toHours(breakMinutes), toHours(applied.overtimeMinutes()),
+                        applied.lateMinutes(), earlyExitMinutes, false, applied.status()),
+                applied.trace(), applied.compOffCredit());
     }
 
-    /** How much of a day this attendance status is worth for payroll. */
+    /**
+     * How much of a day this attendance status is worth for payroll.
+     *
+     * <p>Delegates to {@link AttendanceStatus#dayFraction()}, which is where the
+     * figures now live so the policy engine can enforce "a rule may only lower a
+     * day's value" against the same numbers rather than a second copy of them.
+     * This remains the entry point every existing caller uses.
+     */
     public BigDecimal dayFraction(AttendanceStatus status) {
-        return switch (status) {
-            case PRESENT -> BigDecimal.ONE;
-            case HALF_DAY -> new BigDecimal("0.5");
-            default -> BigDecimal.ZERO;
-        };
+        return status.dayFraction();
     }
 
     private AttendanceStatus resolveNonWorkingStatus(int punchCount, boolean weekOff,

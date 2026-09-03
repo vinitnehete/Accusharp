@@ -27,4 +27,16 @@ public interface DailyAttendanceRepository extends JpaRepository<DailyAttendance
      */
     List<DailyAttendance> findAllByUserIdInAndAttendanceDateBetweenOrderByUserIdAscAttendanceDateAsc(
             Collection<String> userIds, LocalDate fromDate, LocalDate toDate);
+
+    /**
+     * Locked days on or after a date, for the employees given - the back-dating
+     * guard on attendance policy rules.
+     *
+     * <p>A locked day is a paid day. A policy version that reaches back into one
+     * would re-price a month somebody has already been paid for, silently, the
+     * next time any report calls {@code syncSummaries}. Refusing the write is
+     * cheaper than detecting the drift afterwards.
+     */
+    List<DailyAttendance> findTop50ByUserIdInAndAttendanceDateGreaterThanEqualAndLockedTrueOrderByAttendanceDateAsc(
+            Collection<String> userIds, LocalDate fromDate);
 }

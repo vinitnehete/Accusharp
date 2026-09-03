@@ -49,6 +49,16 @@ public class EmployeeRequest {
     /** Optional employee grade/category - Worker, Supervisor, Manager, Director, etc. */
     private Long categoryId;
 
+    /**
+     * Optional configurable employment type, deciding how this employee is paid
+     * - see {@code EmploymentType}.
+     *
+     * <p>Null keeps the legacy behaviour derived from {@code status}
+     * (PERMANENT/DAY_WISE/CONTRACT/INTERN), which is what every existing
+     * employee uses. Set it only when the company has defined its own types.
+     */
+    private Long employmentTypeId;
+
     /** Employee.userId of the supervisor; null only for top management. */
     private String supervisorUserId;
 

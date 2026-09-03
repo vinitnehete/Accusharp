@@ -73,4 +73,37 @@ public class MonthlyAttendanceSummary {
 
     @Column(name = "lop_days", nullable = false, precision = 6, scale = 1)
     private BigDecimal lopDays;
+
+    /**
+     * The share of {@link #lopDays} that came from month-scoped attendance
+     * policy rules rather than from the working-days arithmetic - an early-exit
+     * budget overrun, an Nth-late-mark penalty.
+     *
+     * <p>Kept beside the total rather than folded into it silently, because the
+     * two answer different questions: {@code lopDays} is what payroll pays
+     * against, and this is the part somebody chose. A slip audit that cannot
+     * separate "you were absent" from "you were penalised" cannot explain
+     * either. The rules that produced it are in {@code
+     * attendance_policy_outcome}, one row each, with the numbers they used.
+     *
+     * <p>Zero for every company that configures no policy rules, which is what
+     * makes this column additive rather than a behaviour change.
+     */
+    @Column(name = "policy_lop_days", nullable = false, precision = 6, scale = 1)
+    @Builder.Default
+    private BigDecimal policyLopDays = BigDecimal.ZERO;
+
+    /**
+     * Compensatory-off days earned this month by working a weekly off or
+     * holiday under a {@code DAY_OFF_WORK} rule.
+     *
+     * <p>Recorded, not yet bookable: this application has no comp-off leave
+     * type to accrue into - {@code LeaveType} is a fixed enum of three - so the
+     * credit is reported for HR to act on. Making it a real balance is the
+     * dynamic-leave-types work, not this one. See
+     * {@code docs/design/dynamic-configuration.md}.
+     */
+    @Column(name = "comp_off_credit_days", nullable = false, precision = 6, scale = 1)
+    @Builder.Default
+    private BigDecimal compOffCreditDays = BigDecimal.ZERO;
 }

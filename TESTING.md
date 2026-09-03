@@ -1369,6 +1369,27 @@ GET  /api/employees/5/salary-revisions
 See [Step 2](#step-2--create-the-employee)'s "Manual salary structure override
 and regenerate" and "Salary revision" for what each of these does and why.
 
+### Employment types
+
+| Method | Path | Permission |
+|---|---|---|
+| GET | `/api/employment-types` | `EMPLOYMENT_TYPE_READ` |
+| GET | `/api/employment-types/{id}` | `EMPLOYMENT_TYPE_READ` |
+| POST | `/api/employment-types/seed-defaults` | `EMPLOYMENT_TYPE_MANAGE` |
+| POST | `/api/employment-types` | `EMPLOYMENT_TYPE_MANAGE` |
+| PUT | `/api/employment-types/{id}` | `EMPLOYMENT_TYPE_MANAGE` |
+| DELETE | `/api/employment-types/{id}` | `EMPLOYMENT_TYPE_MANAGE` |
+
+### Attendance policy
+
+| Method | Path | Permission |
+|---|---|---|
+| GET | `/api/attendance-policy/rules` | `ATTENDANCE_POLICY_READ` |
+| POST | `/api/attendance-policy/rules` | `ATTENDANCE_POLICY_MANAGE` |
+| DELETE | `/api/attendance-policy/rules/{id}` | `ATTENDANCE_POLICY_MANAGE` |
+| GET | `/api/attendance-policy/effective?userId=&date=` | `ATTENDANCE_POLICY_READ` |
+| POST | `/api/attendance-policy/preview` | `ATTENDANCE_POLICY_MANAGE` |
+
 ### Bulk & CSV endpoints
 
 All five below share one response shape - `{totalRows, successCount,
@@ -1439,6 +1460,185 @@ you need to see every input the calculation used, not just the outputs.
 ```
 
 ---
+
+## Attendance policy rules
+
+Per-population attendance policy - the rules that decide when a late arrival
+costs half a day. Full behaviour in [Attendance.md](Attendance.md) section 11.
+
+Requires `ATTENDANCE_POLICY_READ` / `ATTENDANCE_POLICY_MANAGE` (HR and ADMIN).
+
+### See what applies to somebody today
+
+```
+GET /api/attendance-policy/effective?userId=SE10012&date=2026-09-15
+```
+
+Start here for any "why did this day come out like that" question. It returns,
+for every rule type, the rule that won, **why**, and the rules it beat - plus
+the company-wide `AttendanceRule` thresholds the policy sits on top of, so the
+answer is in one place even though two tables produce it.
+
+```json
+{
+  "userId": "SE10012", "categoryCode": "STAFF", "employmentType": "PERMANENT",
+  "base": {"entryWindowBufferMinutes": 60, "fullDayThresholdPercent": 75.00,
+           "halfDayThresholdPercent": 40.00},
+  "rules": [
+    {"ruleType": "LATE_ARRIVAL", "evaluationScope": "DAY",
+     "applied": {"label": "LATE_ARRIVAL v1 scoped CATEGORY=STAFF", "version": 1,
+                 "params": "{\"graceMinutes\":15,\"penaltyStatus\":\"HALF_DAY\"}"},
+     "appliedBecause": "most specific match: CATEGORY=STAFF",
+     "beaten": [{"label": "LATE_ARRIVAL v1 scoped COMPANY"}]}
+  ]
+}
+```
+
+`applied: null` with `appliedBecause: "no rule of this type is configured..."`
+means today's built-in behaviour applies. If it instead says the most specific
+match is **disabled**, that population has been deliberately opted out.
+
+### Preview before you save — do this every time
+
+```
+POST /api/attendance-policy/preview
+{
+  "month": "2026-09",
+  "rules": [
+    {"scope": "CATEGORY", "scopeRef": "STAFF", "ruleType": "LATE_ARRIVAL",
+     "effectiveFrom": "2026-09-01", "enabled": true,
+     "params": {"graceMinutes": 15, "penaltyStatus": "HALF_DAY"}}
+  ]
+}
+```
+
+Re-evaluates that real month under the proposed rules and returns the diff
+**without writing anything**:
+
+```json
+{"month": "2026-09", "employeesEvaluated": 14, "employeesAffected": 3,
+ "lopDelta": 1.5, "overtimeHoursDelta": 0.00,
+ "warnings": [],
+ "employees": [
+   {"userId": "SE10012", "lopBefore": 0.0, "lopAfter": 1.0, "lopDelta": 1.0,
+    "dayChanges": [{"date": "2026-09-03", "before": "PRESENT", "after": "HALF_DAY",
+                    "reason": "HALF_DAY: in 09:16, 1 min beyond a 15 min grace..."}],
+    "monthOutcomes": []}]}
+```
+
+**`lopDelta` is the number to read.** It is how many days of pay this rule set
+takes off the company for one month. `warnings` flags the dangerous cases - an
+`ABSENT` lateness penalty, a rule set that changes nothing (usually a typo'd
+`scopeRef`), a delta big enough to want a second opinion.
+
+### Save a rule
+
+```
+POST /api/attendance-policy/rules
+{"scope": "CATEGORY", "scopeRef": "STAFF", "ruleType": "LATE_ARRIVAL",
+ "effectiveFrom": "2026-09-01", "enabled": true,
+ "params": {"graceMinutes": 15, "penaltyStatus": "HALF_DAY"},
+ "notes": "Board decision, Aug 2026"}
+```
+
+`scopeRef` is a `userId` for `EMPLOYEE`, an `EmployeeStatus` name for
+`EMPLOYMENT_TYPE`, and a **code** for `CATEGORY`/`DEPARTMENT`/`DESIGNATION`.
+Omit it for `COMPANY`.
+
+**There is no PUT.** Posting the same scope and type again with a later
+`effectiveFrom` appends v2; the chain is the history. To stop a rule applying,
+append a version with `enabled: false`.
+
+```
+GET    /api/attendance-policy/rules?ruleType=LATE_ARRIVAL&scope=CATEGORY
+DELETE /api/attendance-policy/rules/{id}     # only if effectiveFrom is still in the future
+```
+
+### The errors you will actually hit
+
+| Body | Status | Means |
+|---|---|---|
+| `params do not match LATE_ARRIVAL: Unrecognized field "graceMins"` | 400 | Typo in a parameter name. Deliberately strict - a silently ignored field would run the rule on a zero grace |
+| `no employee in this company has CATEGORY 'STAF'` | 400 | The rule would never have matched anybody |
+| `effectiveFrom 2026-08-01 falls inside a locked period (2026-08 is paid for 14 employee(s)...)` | 400 | Back-dating into a paid month. Unlock it, or date the rule later |
+| `...took effect on 2026-09-01 and may have priced days already` | 400 | Delete refused. Append a disabled version instead |
+| `invalid LATE_MARK_ACCUMULATION params: occurrencesPerPenalty must be greater than or equal to 1` | 400 | A divisor of zero, caught on write rather than during payroll |
+
+### Test suites
+
+| Suite | Covers |
+|---|---|
+| `AttendancePolicyResolverTest` | Precedence with employee/category/department/company all matching; version-in-force-on-date; disabled-specific-beats-enabled-general |
+| `DayPolicyEvaluatorTest` | Every day rule at its boundary - exactly 15 minutes late, exactly 240 worked minutes, exactly 30 overtime minutes, the lone punch at exactly the grace - plus rule ordering and the monotonicity invariant |
+| `MonthPolicyEvaluatorTest` | The 60th minute of budget, the 3rd and 6th late mark, order-independence, the double-jeopardy guard |
+| `AttendancePolicyEngineTest` | End to end through a real generation run - **including `noRulesConfiguredChangesNothing`, the regression test the whole feature depends on** - plus idempotency and the LOP clamp |
+| `AttendancePolicyHttpTest` | Permissions, cross-company 404s, append-only versioning, the back-dating guard, every validation message above |
+
+## Employment types
+
+How a population is paid — the seven behaviours that used to be hardcoded per
+`EmployeeStatus`. Requires `EMPLOYMENT_TYPE_READ` / `EMPLOYMENT_TYPE_MANAGE`
+(HR and ADMIN only — this decides pay computation, so it sits with
+`SALARY_RULE_*` rather than with the master-data reads).
+
+### Start from today's behaviour
+
+```
+POST /api/employment-types/seed-defaults
+```
+
+Creates four types — `PERMANENT`, `DAY_WISE`, `CONTRACT`, `INTERN` — carrying
+exactly what the enum hardcodes today. Idempotent, and it never overwrites a
+type you have already customised. Nothing changes until you assign one to
+somebody.
+
+### Define your own
+
+```
+POST /api/employment-types
+{"typeCode": "DAY_WISE_24", "typeName": "Day wise, 24-day base",
+ "payBasis": "PER_ATTENDED_DAY", "payableDaysCap": 24,
+ "lopApplies": false, "paidLeaveAddsPayableDays": false,
+ "overtimeBasis": "MONTHLY_TOTAL_HOURS", "paidLeaveEarnsOvertime": true,
+ "segmentedRevisionEarnings": false, "autoRosterDefaultShift": false,
+ "active": true}
+```
+
+| Field | What it changes |
+|---|---|
+| `payBasis` | `PER_ATTENDED_DAY` (paid for days attended, against a fixed base) or `PER_CALENDAR_DAY_LESS_LOP` (salaried for the whole month, less LOP) |
+| `payableDaysCap` | The fixed base — the 26. **Null inherits `salaryRule.dayWiseDaysInMonth`**; set it only to give this type a different base from the rest of the company |
+| `lopApplies` | Whether attendance shortfalls become loss of pay |
+| `paidLeaveAddsPayableDays` | Whether approved paid leave earns a share of the fixed structure |
+| `overtimeBasis` | `MONTHLY_TOTAL_HOURS` (`totalHours − min(presentDays, cap) × standardHoursPerDay`) or `PER_DAY_SHIFT_EXCESS` (the attendance engine's daily-summed value) |
+| `paidLeaveEarnsOvertime` | Whether paid leave adds its own hours to overtime |
+
+### Assign it
+
+```
+PUT /api/employees/{id}
+{ ..., "employmentTypeId": 3 }
+```
+
+**Until this is set, the employee is paid by the legacy `status` enum, exactly
+as before.** That is deliberate — adoption is per employee, so you can move a
+few people, run a payroll, compare it against last month, and widen from there.
+
+### Refused
+
+| Body | Status | Why |
+|---|---|---|
+| `a PER_ATTENDED_DAY type cannot also apply loss of pay` | 400 | Attendance already decides what is paid; LOP would deduct the same absence twice |
+| `payableDaysCap applies only to a PER_ATTENDED_DAY type` | 400 | A calendar-day type prorates against the month's own length |
+| `employment type code 'X' already exists` | 400 | Per-company codes must be unique, shared catalog included |
+| `is assigned to N employee(s) and cannot be deleted` | 400 | Set `active: false` — deleting would orphan their payroll history |
+
+### Test suites
+
+| Suite | Covers |
+|---|---|
+| `EmploymentTypePayrollTest` | **`noEmploymentTypeFallsBackToTheLegacyEnum`** — the regression this feature depends on — plus a seeded type paying identically to the enum it replaces, and per-type caps changing both proration and the overtime baseline |
+| `EmploymentTypeHttpTest` | Seeding idempotency, cross-company 404s, HR/ADMIN-only access, and every validation above |
 
 ## Before you rely on this
 

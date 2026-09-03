@@ -480,8 +480,8 @@ public class PayrollRegisterService {
     // ---- helpers ------------------------------------------------------------
 
     private BigDecimal prorationBase(Payroll payroll, YearMonth period) {
-        boolean dayWise = payroll.getEmploymentStatus() != null
-                && payroll.getEmploymentStatus().isPaidPerAttendedDay();
+        // The snapshot - see Payroll.wasPaidPerAttendedDay().
+        boolean dayWise = payroll.wasPaidPerAttendedDay();
         if (dayWise && payroll.getRuleDayWiseDaysInMonth() != null) {
             return BigDecimal.valueOf(payroll.getRuleDayWiseDaysInMonth()).setScale(DAY_SCALE, RoundingMode.HALF_UP);
         }

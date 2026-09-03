@@ -779,6 +779,119 @@ app is ready to invest in delivery infrastructure it currently has none of.
 
 **Proof:** `EmployeeSalaryStructureHttpTest.bulkImportCsvFormatReturnsCredentialsSheet`.
 
+## Per-population attendance policy (Phase 12)
+
+Two new permission codes, `ATTENDANCE_POLICY_READ` and
+`ATTENDANCE_POLICY_MANAGE`, granted to HR and ADMIN alongside
+`ATTENDANCE_RULE_*` and to nobody else.
+
+**Deliberately separate from `ATTENDANCE_RULE_*`** rather than folded into it.
+Those three thresholds apply company-wide and are visible in one screen; a
+policy rule can dock a named category half a day each and is a strictly larger
+blast radius. Granting the smaller should not silently grant the larger.
+
+### Tenancy
+
+`AttendancePolicyRule` carries a nullable `company`, the same shared-catalog
+shape `Shift`, `Category`, `Department` and `Designation` have used since
+Phase 6:
+
+- **Read**: a company sees its own rules plus the shared `company = null` rows.
+- **Write**: only its own. A company can never create, edit or delete a shared
+  row, and a platform caller writes only shared rows.
+- **Cross-company access returns 404, not 403** - the same shape an unknown id
+  returns, so the response never confirms another company's rule exists. Same
+  reasoning as every other tenant check since Phase 3.
+- `GET /effective?userId=` resolves the target through
+  `EmployeeService.getEntityByUserId`, the same choke point every cross-company
+  check uses, so naming another company's employee 404s exactly as an unknown
+  one would.
+
+Unlike `Shift`, the shared catalog here is **seeded empty**. A seeded global
+rule would change what every existing tenant is paid on the deploy that
+introduced it.
+
+### Two guards that are about money, not access control
+
+- **Back-dating into a paid month is refused.** A rule version whose
+  `effectiveFrom` reaches back to a locked attendance day is rejected with the
+  months and employee count named. This is narrower than refusing recompute
+  generally, and it is sufficient: because versions resolve by attendance date,
+  a forward-dated rule provably cannot change a past month. Without it, merely
+  *running a report* would re-price a locked month, since `ReportService` calls
+  `syncSummaries`, which persists.
+- **A rule that has ever been in force cannot be deleted**, only superseded by a
+  disabled version - a day it priced may already be on a payslip, and the trace
+  rows explaining that day point at its id. Only a version whose `effectiveFrom`
+  is still in the future is deletable, because it has priced nothing.
+
+### Input handling
+
+Rule parameters arrive as JSON and are bound to a per-`RuleType` record and
+bean-validated before anything is written - never read as a loose map, and
+never evaluated. `FAIL_ON_UNKNOWN_PROPERTIES` is on, so a misspelt field is a
+400 naming it rather than a rule silently running on a zero grace. A stored blob
+that will not bind fails generation by name rather than being skipped: silently
+dropping a rule would change pay by omission.
+
+Every mutation is audited through `AuditService`
+(`ATTENDANCE_POLICY_RULE_CREATE`, `ATTENDANCE_POLICY_RULE_DELETE`) with the
+rule label, effective date and full parameters in the detail.
+
+**Proof:** `AttendancePolicyHttpTest` - 15 tests covering the employee-token
+refusal, cross-company read and delete, the back-dating guard, the
+delete-only-if-future rule, and every validation message above.
+
+## Configurable employment types (Phase 13)
+
+Two new permission codes, `EMPLOYMENT_TYPE_READ` and `EMPLOYMENT_TYPE_MANAGE`,
+granted to **HR and ADMIN only**.
+
+Deliberately *not* granted to SUPERVISOR or EMPLOYEE, unlike the master-data
+reads (`CATEGORY_READ`, `DEPARTMENT_READ`, `DESIGNATION_READ`) it sits next to
+in the catalog. Those are labels; an employment type is the rule deciding
+whether somebody is paid per attended day or per calendar day, and how their
+overtime is computed. It belongs with `SALARY_RULE_READ`.
+
+### Tenancy
+
+`EmploymentType` carries a nullable `company` — the Phase 6 shared-catalog
+shape. A company reads its own rows plus the shared ones, writes only its own,
+and can never edit a shared row: an in-place edit to a shared type's pay basis
+would silently change what every company using it pays, the same class of gap
+Phase 6 closed for `Shift`. Cross-company access returns 404, not 403.
+
+`EmployeeService` resolves `employmentTypeId` through
+`EmploymentTypeService.getById`, so an employee can never be assigned another
+company's private type — the same choke-point inheritance
+department/designation/category already rely on, with no change to the
+assignment code itself.
+
+### Guards specific to money
+
+- **A `PER_ATTENDED_DAY` type may not also apply LOP.** Attendance already
+  decides what such an employee is paid, so loss of pay would deduct the same
+  absence a second time. Refused on write.
+- **A type in use cannot be deleted**, only deactivated. It is referenced by
+  employee rows and, through the payroll snapshot, by every payslip computed
+  under it.
+- **`Payroll` snapshots the pay basis it was computed with.** Without it, a
+  company editing a type would change how already-paid periods are laid out and
+  reconciled in the registers, breaking the immutable-payroll-history guarantee
+  even though no money moved.
+
+### The safety property
+
+`Employee.employmentType` is nullable and `Employee.status` is untouched. An
+employee with no type falls back to the legacy `EmployeeStatus` semantics
+exactly, so deploying this to a running client changes nothing until somebody
+deliberately assigns a type. Every mutation is audited
+(`EMPLOYMENT_TYPE_CREATE` / `_UPDATE` / `_DELETE` / `_SEED`) with the full
+behaviour in the detail.
+
+**Proof:** `EmploymentTypeHttpTest` (8 tests) and
+`EmploymentTypePayrollTest.noEmploymentTypeFallsBackToTheLegacyEnum`.
+
 ## Not yet built (next phases)
 
 - Platform-owner company onboarding flow beyond raw CRUD.

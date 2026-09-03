@@ -115,6 +115,26 @@ public class Employee {
     @Column(name = "employment_status", nullable = false, length = 20)
     private EmployeeStatus status;
 
+    /**
+     * The configurable employment type, and the payroll behaviour that comes
+     * with it - see {@link EmploymentType}.
+     *
+     * <p><b>Nullable, and {@link #status} above stays.</b> The two coexist on
+     * purpose: null here means payroll falls back to the legacy
+     * {@link EmployeeStatus} semantics, which is exactly what every existing
+     * row does and exactly what it did before this column existed. Adopting
+     * configurable types is therefore opt-in per employee rather than a
+     * migration a company must finish before its next payroll run, and rolling
+     * back is clearing one column.
+     *
+     * <p>{@code status} remains the field the CSV importer, the roster default
+     * and every report read, so nothing outside {@code PayBehaviourResolver}
+     * has to know this column exists yet.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "employment_type_id")
+    private EmploymentType employmentType;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "record_status", nullable = false, length = 20)
     private RecordStatus recordStatus;

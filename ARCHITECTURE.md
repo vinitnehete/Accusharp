@@ -80,6 +80,8 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Cached rollup of the stored days |
 | `SalaryRule` | `salary_rule` | One row per company holding every percentage and slab, plus one `company = null` global default a company falls back to until it customizes its own - see [SECURITY.md](SECURITY.md) |
 | `SalaryRevision` | `salary_revision` | Append-only history of one employee's gross-salary changes (hike/promotion/correction) - see "Salary revision history" below |
+| `EmploymentType` | `employment_type` | The payroll behaviour a population is paid by - pay basis, payable-days cap, whether LOP applies, which overtime formula. One row per company plus a shared catalog. `Employee.employmentType` is nullable: null falls back to the legacy `EmployeeStatus` semantics |
+| `AttendancePolicyRule` | `attendance_policy_rule` | Per-population attendance policy, append-only and effective-dated - see "Attendance policy" above |
 | `Payroll` | `payroll` | Immutable snapshot per employee/month/year/revision |
 
 ### Salary structure
@@ -239,6 +241,69 @@ identically for every company (shift timings, grace period, break minutes,
 overtime window, weekly-offs, holidays) was already per-company via `Shift`
 and `Holiday`; these three were the only genuinely global constants left.
 
+### Attendance policy: per-population rules
+
+The three `AttendanceRule` numbers above are company-wide. Real companies hold
+different populations to different standards, so policy is also configurable
+**per employee population** on top of them - by category, department,
+designation, employment type, or an individual employee.
+
+A rule is an `enum RuleType` plus a small typed, bean-validated parameter set,
+never a formula in a column: attendance policy decides salary, and an eval-able
+string cannot be tested, migrated, or explained to an employee disputing a
+deduction. Adding a rule type is a code change; adding a rule is a form.
+
+```
+AttendancePolicyRule  (append-only, versioned, effective-dated)
+        |
+        v
+AttendancePolicyResolver     most specific scope wins, version in force on the ATTENDANCE DATE
+        |
+        +--> DayPolicyEvaluator     inside AttendanceCalculationService.calculateDay
+        |                           (pure per-day: MISSING_PUNCH, SHORT_HOURS,
+        |                            LATE_ARRIVAL, DAY_OFF_WORK, OVERTIME)
+        |
+        +--> MonthPolicyEvaluator   inside AttendanceService.aggregate
+                                    (stateful replay: EARLY_EXIT_BUDGET,
+                                     LATE_MARK_ACCUMULATION)
+```
+
+Three things about this are load-bearing:
+
+- **Day and month scope are genuinely different.** A day rule is a pure function
+  of one day and runs during generation. A month rule - a budget spent day by
+  day, an Nth-occurrence counter - cannot: regenerating day 12 alone would spend
+  budget the rest of the month already spent. Month rules are therefore a replay
+  over the month's stored days in date order, from a zero accumulator, at
+  summary-rebuild time. Recomputed from scratch, never incremented.
+- **Day rules live inside `calculateDay`, not in its caller.** `correctDay` runs
+  hand-supplied punches back through the same method, so putting policy in the
+  caller would create exactly the second code path that "a hand-fixed day cannot
+  obey different rules" rules out.
+- **Versions succeed rather than overlap.** There is no `effectiveTo`. A version
+  runs until the next version's `effectiveFrom`, which makes overlap
+  structurally impossible and lets `uk_policy_rule_effective` actually enforce
+  "two rules of the same type never both apply" - a from/to model could not be
+  enforced by any index MySQL has. Ending a rule appends a disabled version.
+
+Resolution is `EMPLOYEE > DESIGNATION > CATEGORY > DEPARTMENT > EMPLOYMENT_TYPE
+> COMPANY > GLOBAL`, most specific winning outright rather than merging. A
+disabled rule is an answer, not an absence: it stops a broader scope taking over,
+which is what an opt-out has to mean.
+
+Every applied rule leaves a trace - `attendance_policy_application` per day,
+`attendance_policy_outcome` per month - carrying the rule, its version, its
+scope, the before and after, and a rendered sentence. Stored, not derived on
+read, for the same reason `Payroll` snapshots rule percentages: the rule will
+have been superseded by the time anyone asks.
+
+`attendance_policy_rule` ships empty and the `GLOBAL` scope is seeded with
+nothing, so a company that configures nothing produces byte-identical output to
+what it produced before the engine existed. `POST /api/attendance-policy/preview`
+re-evaluates a real past month under a proposed rule set and returns the diff -
+days changed, LOP delta, overtime delta - without writing anything. Full design
+in [docs/design/attendance-policy-engine.md](docs/design/attendance-policy-engine.md).
+
 ### Attendance is generated, then reviewed
 
 Attendance is a stored artifact, not a view that re-derives itself:
@@ -282,6 +347,11 @@ Never entered by hand:
 ```
 LOP days = working days - present days - approved paid leave
 ```
+
+Month-scoped attendance policy rules add to this, and the summary keeps the two
+apart: `lop_days` is the total payroll reads, `policy_lop_days` beside it is the
+share somebody configured. The total is clamped to the working days, so policy
+can never make an employee owe more days than they were expected to work.
 
 Working days already exclude weekly offs and mandatory holidays, so those can
 never become LOP. The specification's worked example - 26 working days, 23
@@ -342,6 +412,55 @@ netSalary        = totalEarnings - totalDeduction
   `otAllowance = overtimeHours x perHour x overtimeRateMultiplier`. See
   `PayrollService.monthlyOvertimeHours` and
   [`DayWisePayrollOvertimeTest`](src/test/java/com/accusharp/hrms/DayWisePayrollOvertimeTest.java).
+
+### Employment types are configurable
+
+`EmployeeStatus` is a fixed enum of four, and one line -
+`employee.getStatus().isPaidPerAttendedDay()` - used to drive **seven** separate
+branches in `PayrollService.build`: the proration base, whether LOP applies, how
+payable days derive, whether paid leave counts toward them, the stored
+present-days figure, which overtime formula runs, and whether a mid-period
+salary revision is segmented. A company could change the *numbers* those
+branches used (`dayWiseDaysInMonth`, `standardHoursPerDay`, both on
+`SalaryRule`) but never the behaviour, and could not add a fifth type at all -
+so two clients with different definitions of "contract" had no way to express
+it.
+
+Each of those seven is now a column on `EmploymentType`:
+
+| Field | Replaces |
+|---|---|
+| `payBasis` | `PER_ATTENDED_DAY` / `PER_CALENDAR_DAY_LESS_LOP` — the proration model |
+| `payableDaysCap` | The 26. Null inherits `salaryRule.dayWiseDaysInMonth` |
+| `lopApplies` | The hardcoded `lopDays = ZERO` for day-wise |
+| `paidLeaveAddsPayableDays` | Whether leave earns a share of the fixed structure |
+| `overtimeBasis` | `MONTHLY_TOTAL_HOURS` vs the attendance engine's daily-summed value |
+| `paidLeaveEarnsOvertime` | Whether leave adds its own hours to overtime |
+| `segmentedRevisionEarnings` | Whether a mid-period revision splits the earnings |
+
+`PayBehaviourResolver` turns an employee into a `PayBehaviour` record, and
+`PayrollService` reads named fields instead of one boolean. The arithmetic is
+unchanged — the `if` moved from the enum to a row.
+
+**The legacy fallback is what makes this safe to deploy.**
+`Employee.employmentType` is nullable and `Employee.status` stays exactly where
+it is. An employee with no type resolves to precisely the behaviour that was
+hardcoded before, so a database with no `employment_type` rows pays everybody
+as it always did, and adoption is opt-in per employee rather than a migration
+that must finish before the next pay run.
+
+**`Payroll` snapshots the behaviour**, not just the employee — `employmentTypeCode`,
+`payBasis`, `payableDaysCap`, alongside the `rule*` columns it already froze. An
+employment type is an editable row now, so without this a company changing a
+type's pay basis would silently change how every historical payslip is laid out
+and reconciled. `Payroll.wasPaidPerAttendedDay()` is what the registers and the
+audit report read; it falls back to the snapshotted enum for payrolls generated
+before types existed.
+
+Per-company plus a shared catalog, the Phase 6 pattern. `POST
+/api/employment-types/seed-defaults` creates the four types reproducing today's
+behaviour as a starting point — idempotent, and it never overwrites a type a
+company has already customised.
 
 ### Immutable payroll history
 
