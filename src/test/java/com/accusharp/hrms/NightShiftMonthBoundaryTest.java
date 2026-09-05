@@ -300,6 +300,8 @@ class NightShiftMonthBoundaryTest {
         request.setMonth(month);
         request.setUserIds(List.of(EMPLOYEE));
         request.setGeneratedBy(HR);
+        // Partial-roster fixture - see AttendanceGenerationRequest#includeUnrostered.
+        request.setIncludeUnrostered(false);
         attendanceService.generate(request);
     }
 

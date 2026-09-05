@@ -390,6 +390,9 @@ class AttendancePolicyEngineTest {
         request.setMonth(PERIOD);
         request.setUserIds(List.of("SE10012"));
         request.setGeneratedBy("HR001");
+        // Each scenario rosters only the handful of days it is about, so the
+        // rest of the month is deliberately not an attendance day here.
+        request.setIncludeUnrostered(false);
         attendanceService.generate(request);
     }
 

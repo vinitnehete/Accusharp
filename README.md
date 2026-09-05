@@ -414,7 +414,9 @@ the date the shift started.
 
 ## 4. Every month: schedule shifts
 
-Nothing works without a roster. An unscheduled day is not an attendance day.
+Roster everyone. An unscheduled day still generates - blank, and `ABSENT`, so
+the gap is visible instead of silently costing nobody anything - but a blank
+`ABSENT` day is loss of pay, and only the roster can make it a real one.
 
 ### Bulk assignment (the usual one)
 

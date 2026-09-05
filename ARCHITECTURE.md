@@ -194,10 +194,13 @@ changing over time. Both are real, unrelated gaps.
 
 ### Attendance
 
-The roster is the source of expectation: a day the employee was not scheduled on
-is not an attendance day at all. For each scheduled day the engine takes the
-punch window, pulls the punches inside it and derives first in, last out,
-working hours, break, late minutes, early exit, overtime and invalid punches.
+The roster is the source of expectation. For each scheduled day the engine takes
+the punch window, pulls the punches inside it and derives first in, last out,
+working hours, break, late minutes, early exit, overtime and invalid punches. A
+day with no roster row has no shift to derive any of that from, so it is stored
+blank and `ABSENT` - visible and correctable, rather than missing from a month
+payroll then pays in full (`includeUnrostered`, on by default; see
+[Attendance.md](Attendance.md) section 3.1).
 
 - **Night shifts.** A shift whose end time is not after its start time crosses
   midnight, so its window ends on the following calendar day - but the day still

@@ -276,6 +276,8 @@ class EmploymentTypePayrollTest {
         generation.setMonth(PERIOD);
         generation.setUserIds(List.of(userId));
         generation.setGeneratedBy(HR);
+        // Partial-roster fixture - see AttendanceGenerationRequest#includeUnrostered.
+        generation.setIncludeUnrostered(false);
         attendanceService.generate(generation);
 
         PayrollRequest request = new PayrollRequest();

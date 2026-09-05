@@ -197,6 +197,9 @@ class PayrollFlowIntegrationTest {
         request.setMonth(PERIOD);
         request.setUserIds(List.of(userId));
         request.setGeneratedBy(HR);
+        // The fixtures roster a subset of the month deliberately - see
+        // AttendanceGenerationRequest#includeUnrostered.
+        request.setIncludeUnrostered(false);
         attendanceService.generate(request);
 
         PayrollRequest payrollRequest = new PayrollRequest();
@@ -338,6 +341,9 @@ class PayrollFlowIntegrationTest {
         request.setMonth(PERIOD);
         request.setUserIds(List.of(midMonthJoiner));
         request.setGeneratedBy(HR);
+        // The fixtures roster a subset of the month deliberately - see
+        // AttendanceGenerationRequest#includeUnrostered.
+        request.setIncludeUnrostered(false);
         attendanceService.generate(request);
 
         PayrollRequest payrollRequest = new PayrollRequest();
@@ -445,6 +451,9 @@ class PayrollFlowIntegrationTest {
         request.setMonth(PERIOD);
         request.setUserIds(List.of(EMPLOYEE));
         request.setGeneratedBy(HR);
+        // The fixtures roster a subset of the month deliberately - see
+        // AttendanceGenerationRequest#includeUnrostered.
+        request.setIncludeUnrostered(false);
         attendanceService.generate(request);
     }
 

@@ -17,10 +17,16 @@ raw punches + roster  ->  one day  ->  a month  ->  reviewed & corrected  ->  lo
 
 Two ideas carry the whole design:
 
-1. **The roster is the source of expectation.** A day the employee was not
-   scheduled on is not an attendance day at all - not present, not absent,
-   simply not a day. This is why *absent* can only ever mean "expected to work
-   and did not".
+1. **The roster is the source of expectation.** A day the employee was
+   scheduled on is interpreted through that shift - its window, grace, break
+   and length - and this is why *absent* can mean "expected to work and did
+   not" rather than merely "no punches".
+
+   A day with **no roster row at all** is still an attendance day, but a blank
+   one: `shift_code` null, no punch times, no hours, status `ABSENT`. A missing
+   roster row is an HR oversight, not a statement that nothing was expected -
+   and treating it as one produced a blank month HR could not review and a
+   payroll that saw zero working days and paid it in full. See section 3.1.
 2. **Attendance is a stored artifact, not a live view.** It is generated once,
    reviewed by a human, corrected where the device got it wrong, then frozen.
    Payroll reads the frozen record, never the raw punches.
@@ -270,6 +276,67 @@ consequence in section 4: those hours count towards total and overtime hours,
 while the day itself does **not** add to `presentDays`, because it was never an
 expected working day. The employee is paid overtime for it, not a day's wage.
 
+### 3.1 A day with no shift
+
+Everything above needs a shift: the window, the grace period, the break, the
+paid length a day is scored against. A day with no roster row has none of them,
+so nothing can be *calculated* for it - but it still becomes a row:
+
+| Field | Value |
+|---|---|
+| `shift_code` | null |
+| `first_in` / `last_out` | the day's punches if any, otherwise null |
+| `working_hours`, `break_hours`, `overtime_hours` | 0 |
+| `late_minutes`, `early_exit_minutes` | 0 |
+| `invalid_punch` | false - the device worked, the roster is what is missing |
+| `week_off` | false - nothing said this day was off |
+| `holiday` | from the company calendar, same as any other day |
+| `status` | `ON_LEAVE` if on approved leave, else `HOLIDAY` if a mandatory holiday, else `ABSENT` |
+
+Three things follow, and each is deliberate:
+
+- **It is a working day, so it is loss of pay.** That is the point. Before this
+  existed an employee nobody rostered generated no rows at all: HR opened the
+  month and saw a blank sheet with nothing to review, and payroll - which
+  derives LOP from `workingDays - presentDays - paidLeave` - saw zero working
+  days and paid the month in full. The gap now shows up in the figure HR
+  reviews instead of being invisible in it.
+- **A holiday and an approved leave still read as themselves.** Neither is a
+  working day, so invariant 4 holds through this path too: a missing roster row
+  can never turn a holiday into LOP.
+- **The employment window bounds it.** Nothing is written before `joiningDate`
+  or after `relievingDate`. Nobody is absent before they were hired.
+
+**Punches are kept, not scored.** Someone who badged in on a day HR forgot to
+schedule keeps their `first_in` and `last_out` on the row, and the day is still
+`ABSENT`: with no shift there is no threshold that could call it present, and
+inventing hours from a missing roster row would be a guess that changes pay.
+The times are the evidence that says *the roster* is what needs fixing.
+
+**Turning it off.** `includeUnrostered: false` on the generate request restores
+the older behaviour, where an unrostered day is not an attendance day at all.
+That is the right setting for a company that rosters deliberately sparsely -
+casual or contract staff scheduled only on the days they actually work - where
+an unrostered day genuinely means "not a working day". Note that such staff are
+usually paid per attended day anyway (`lopApplies() == false`), for whom the
+filled days add visibility without changing pay.
+
+**Correcting one.** The row is correctable like any other, with one restriction:
+because the recompute path needs a shift, an unrostered day can only be fixed by
+forcing a status (`{"status": "PRESENT", "remarks": "...", "updatedBy": "..."}`).
+Supplying punch times alone is refused with a message that says to assign the
+shift and regenerate. Supplied times are still stored alongside a forced status.
+
+The real fix is almost always the roster, not the day: assign the shift and
+regenerate, and the whole month recomputes properly.
+
+**The preview does not do this.** `GET /{userId}/monthly` on a month nobody has
+generated yet returns a preview built from the roster (section 5), and an
+unrostered month previews as empty rather than as thirty absences. That is
+deliberate: a preview persists nothing and is often read for a month that has
+not happened yet, where presenting a wall of `ABSENT` would be alarming and
+wrong. Generation is the step that decides a day exists.
+
 ---
 
 ## 4. Stage three: rolling up a month
@@ -280,9 +347,10 @@ expected working day. The employee is paid overtime for it, not a day's wage.
 workingDays = rostered days that are neither a weekly off nor a mandatory holiday
 ```
 
-Optional holidays stay working days. Days with no roster row are not counted at
-all, so skipping a holiday during bulk assignment removes it from the month
-entirely.
+Optional holidays stay working days. Days with no roster row are counted, as
+blank `ABSENT` days (section 3.1) - unless the run passed
+`includeUnrostered: false`, in which case they are not counted at all and
+skipping a holiday during bulk assignment removes it from the month entirely.
 
 ```
 presentDays  = sum of day values, counting only days in workingDays
@@ -340,8 +408,11 @@ months later. A UI badge is `locked ? "LOCKED" : recordStatus`.
 
 ```
 POST /api/attendance/generate
-{ "month": "2026-06", "userIds": ["SE10012"], "overwriteManual": false }
+{ "month": "2026-06", "userIds": ["SE10012"], "overwriteManual": false,
+  "includeUnrostered": true }
 ```
+
+`includeUnrostered` defaults to `true` - see section 3.1.
 
 `generatedBy` is not a request field to set - it is always the authenticated
 caller (from the bearer token), never client-supplied. See [SECURITY.md](SECURITY.md)
@@ -359,6 +430,15 @@ up. Two rules govern a rerun:
 | `GENERATED` | Recomputes it from punches |
 | `MANUAL` | **Preserves it**, counted in `manualPreserved` |
 | `locked` | **Skips it**, counted in `lockedSkipped` |
+
+Both rules apply to unrostered days too: a blank `ABSENT` day someone corrected
+to `PRESENT` survives the next run exactly like any other `MANUAL` row.
+
+The response reports `unrosteredDaysGenerated` - the subset of `daysGenerated`
+that had no shift behind them - separately from the total, and
+`employeesWithoutRoster` still lists everyone with no roster at all for the
+period. A non-zero count on either means the roster, not the attendance, is
+what needs fixing.
 
 `overwriteManual: true` discards corrections deliberately. There is no way to do
 it by accident.
@@ -786,7 +866,9 @@ Things the system guarantees, each covered by a test:
 2. A punch inside a shift's contractual span is **never discarded** - the
    complementary half, and the one whose absence made a night shift's exit
    vanish while invariant 1 still held.
-3. A day the employee was not rostered on is not an attendance day.
+3. A day the employee was not rostered on is a blank `ABSENT` day, never a
+   missing one - and never outside their joining/relieving window. With
+   `includeUnrostered: false` it is not an attendance day at all.
 4. A weekly off or mandatory holiday can never become loss of pay.
 5. A lone punch is `INVALID_PUNCH`, never `ABSENT`.
 6. A regeneration preserves `MANUAL` rows unless explicitly told otherwise.

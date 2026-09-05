@@ -308,6 +308,10 @@ class AttendanceRegularisationTest {
         request.setUserIds(List.of(EMPLOYEE));
         request.setGeneratedBy(HR);
         request.setOverwriteManual(overwriteManual);
+        // This fixture rosters 26 of September's 30 days on purpose - the test is
+        // about the rostered ones. Opting out of the unrostered fill keeps the
+        // month's figures the roster's, rather than the calendar's.
+        request.setIncludeUnrostered(false);
         return attendanceService.generate(request);
     }
 
