@@ -801,7 +801,24 @@ public class AttendanceService {
      */
     @Transactional
     public List<MonthlyAttendanceSummary> syncSummaries(YearMonth month) {
-        return employeeService.getActiveEntities().stream()
+        return syncSummaries(month, employeeService.getActiveEntities());
+    }
+
+    /**
+     * The same resync over an explicitly supplied population.
+     *
+     * <p>Exists because {@link EmployeeService#getActiveEntities()} above
+     * deliberately excludes a labour contractor's workers (see
+     * {@code Employee#getContractor()}), so the no-argument form cannot
+     * refresh them - and a contractor's monthly report reads the same cached
+     * {@link MonthlyAttendanceSummary} rows a company report does, which have
+     * to be current before it is sent out. The caller owns authorization for
+     * the batch it passes; {@code ContractorAttendanceReportService} resolves
+     * its list through the contractor tenant check first.
+     */
+    @Transactional
+    public List<MonthlyAttendanceSummary> syncSummaries(YearMonth month, List<Employee> employees) {
+        return employees.stream()
                 .filter(employee -> !storedDays(employee.getUserId(), month).isEmpty())
                 .map(employee -> rebuildSummary(employee, month))
                 .toList();

@@ -47,7 +47,12 @@ import java.time.LocalDate;
                 @Index(name = "idx_employee_company", columnList = "company_id"),
                 @Index(name = "idx_employee_department", columnList = "department_id"),
                 @Index(name = "idx_employee_designation", columnList = "designation_id"),
-                @Index(name = "idx_employee_category", columnList = "category_id")
+                @Index(name = "idx_employee_category", columnList = "category_id"),
+                // Every contractor-scoped read (the workforce list, the roster
+                // picker, attendance generation, the monthly report) filters on
+                // this column, and every company-scoped read filters on it being
+                // null - see EmployeeService#getActiveEntities.
+                @Index(name = "idx_employee_contractor", columnList = "contractor_id")
         })
 @Data
 @NoArgsConstructor
@@ -90,6 +95,42 @@ public class Employee {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "supervisor_id")
     private Employee supervisor;
+
+    /**
+     * Set only on a labour contractor's own worker; null on every employee of
+     * the company itself. This one column is what separates the two
+     * populations everywhere in the app.
+     *
+     * <p><b>Why these live in {@code employee} at all.</b> {@code ShiftSchedule},
+     * {@code DailyAttendance}, {@code DeviceLog} and
+     * {@code MonthlyAttendanceSummary} are keyed by the plain {@code userId}
+     * string, and {@link #userId} is unique platform-wide because the biometric
+     * device feed resolves a punch by it alone. A parallel worker table would
+     * either collide with that key or need a second copy of the whole
+     * attendance engine - so a contractor's worker is an employee row that the
+     * company-scoped queries exclude, not a different kind of record.
+     *
+     * <p><b>What it excludes them from.</b>
+     * {@code EmployeeService#getActiveEntities()} and
+     * {@code getAllEntities()} - the two choke points payroll, the dashboard,
+     * every report and the employee directory read - filter these out, so a
+     * contractor's worker can never appear in a payroll run, a PF/ESIC return
+     * or the company headcount. They are reached only through the
+     * contractor-scoped finders beside those.
+     *
+     * <p>The salary structure, the statutory identifiers, the bank details and
+     * the login credentials on this entity all stay null for them: the client
+     * company rosters these people and reports their attendance, it does not
+     * pay them.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "contractor_id")
+    private Contractor contractor;
+
+    /** True when this row is a labour contractor's worker rather than the company's own employee. */
+    public boolean isContractorWorker() {
+        return contractor != null;
+    }
 
     @Column(name = "joining_date")
     private LocalDate joiningDate;

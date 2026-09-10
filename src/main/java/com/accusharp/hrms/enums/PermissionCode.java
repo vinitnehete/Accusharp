@@ -40,6 +40,28 @@ public enum PermissionCode {
     EMPLOYMENT_TYPE_READ,
     EMPLOYMENT_TYPE_MANAGE,
 
+    /**
+     * Labour contractors and the workforce they deploy - onboarding a
+     * contractor, adding its workers, generating their attendance and
+     * reading the reports sent back to them.
+     *
+     * <p>Separate from {@code EMPLOYEE_*} rather than folded into it, and the
+     * separation is the security property, not tidiness: these two grants
+     * address populations with different rules. An {@code EMPLOYEE_UPDATE}
+     * holder can set a gross salary and a role; a {@code CONTRACTOR_MANAGE}
+     * holder can do neither, because the request DTO carries no such field.
+     * A company that outsources contractor administration to a site
+     * coordinator can hand over the second through a custom role without
+     * handing over the payroll master.
+     *
+     * <p>{@code CONTRACTOR_READ} is granted to SUPERVISOR as well: our
+     * supervisors are the ones assigned to the contractor's workers, and they
+     * need to see the workforce whose shifts they roster and whose attendance
+     * they review. {@code CONTRACTOR_MANAGE} stays HR/ADMIN.
+     */
+    CONTRACTOR_READ,
+    CONTRACTOR_MANAGE,
+
     EMPLOYEE_CREATE,
     EMPLOYEE_READ,
     EMPLOYEE_UPDATE,

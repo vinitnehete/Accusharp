@@ -38,10 +38,13 @@ service/
   calculation/  SalaryCalculationService, DeductionCalculationService,
                 AttendanceCalculationService, LopCalculationService
   attendance/   AttendanceService
+  contractor/   ContractorService, ContractorEmployeeService, ContractorAttendanceService -
+                labour contractors and the workforce they deploy. Holds no attendance logic
+                of its own; it resolves a population and hands it to AttendanceService
   shift/        ShiftService, ShiftSchedulingService
   leave/        LeaveService, LeaveBalanceService, LeaveCalculationService
   payroll/      PayrollService, SalarySlipService
-  report/       ReportService, DashboardService
+  report/       ReportService, DashboardService, ContractorAttendanceReportService
 util/         AmountInWords, TemporaryPasswordGenerator,
               EmployeeCsvParser, ShiftAssignmentCsvParser, PayrollCsvParser (CSV -> request DTO,
               one independently-failable row at a time - see "Bulk / CSV mutation endpoints" below),
@@ -58,7 +61,14 @@ Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
 Company -> Department -> Designation -> Employee -> Supervisor mapping
    -> Shift scheduling -> Biometric punches -> Attendance generated
    -> HR corrections -> Leave approval -> LOP -> Payroll -> Salary slip -> Reports
+
+Company -> Contractor -> Contractor's worker -> our Supervisor mapping
+   -> Shift scheduling -> Biometric punches -> Attendance generated
+   -> Contractor attendance report -> (the contractor runs their own payroll)
 ```
+
+The second flow rejoins the first at "Shift scheduling" and leaves it before
+"Payroll" - see [Labour contractors](#labour-contractors) below.
 
 ## Domain model
 
@@ -66,7 +76,8 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 |---|---|---|
 | `Company` | `company` | The tenant. Every company-scoped entity below resolves back to one, directly or via its owning `Employee` |
 | `Department`, `Designation`, `Category`, `Shift` | `department`, `designation`, `category`, `shift` | One row per company, plus rows with `company = null` - a shared, read-only-to-companies catalog (the seeded defaults). Unique on `(company_id, code)`, not code alone - see [SECURITY.md](SECURITY.md) Phase 6. `Category` is the employee grade (Worker, Supervisor, Manager, Director, ...) - a company may define as many as it needs via `/api/categories`, same as `Department`/`Designation` |
-| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below). `category`, `gender`, `uanNo`, `esicIpNo`, `bankAccountNo` and `bankIfscNo` are all optional |
+| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below). `category`, `gender`, `uanNo`, `esicIpNo`, `bankAccountNo` and `bankIfscNo` are all optional. A non-null `contractor` makes the row a labour contractor's worker rather than the company's own employee - see "Labour contractors" below |
+| `Contractor` | `contractor` | A labour contractor engaged by one company. Unlike the masters above there is no shared `company = null` catalog - a contractor is a commercial relationship, not a reference row. One company routinely engages several |
 | `PlatformUser` | `platform_user` | The other principal type - platform-level accounts (company onboarding etc.), not tied to any company |
 | `RefreshToken` | `refresh_token` | Opaque, hashed at rest, single-use with rotation - never a JWT itself |
 | `Permission`, `RolePermission` | `permission`, `role_permission` | The data-driven grant table every `@PreAuthorize` check resolves against - see Security below |
@@ -534,6 +545,142 @@ look up.
 Existing `POST /api/shift-schedules/bulk` (one shift, many employees, a date
 range) is unrelated to this family - it stays a single validated operation
 that 409s on the first conflict, by design (see `ShiftSchedulingService.assignBulk`).
+
+## Labour contractors
+
+A client company does not care what a contractor pays their people. It cares
+that they turned up. So this module does one job: register the contractor,
+register the workers they deploy, roster those workers onto our shifts,
+generate their attendance, and hand the contractor a report they can run their
+own payroll from.
+
+```
+Contractor (agency)
+   |
+   +-- worker  (Employee row, contractor_id set, no pay, no login)
+   |      |
+   |      +-- supervisor -> one of OUR employees
+   |      +-- ShiftSchedule -> our Shift catalog
+   |      +-- DeviceLog     -> the same biometric feed
+   |      +-- DailyAttendance / MonthlyAttendanceSummary
+   |
+   +-- monthly attendance report -> emailed/exported to the contractor
+```
+
+### Why a worker is an `employee` row
+
+`ShiftSchedule`, `DailyAttendance`, `DeviceLog` and `MonthlyAttendanceSummary`
+are all keyed by the plain `user_id` **string**, and `Employee.userId` is
+unique platform-wide precisely because the device feed resolves a punch by it
+alone (see `uk_employee_user_id`). A parallel `contractor_employee` table
+would therefore have had to either share that key space anyway - reintroducing
+the collision the global constraint exists to prevent - or grow a second copy
+of the attendance engine to read from. One nullable foreign key buys the
+punch window, the night-shift handover, the exclusive-window truncation, the
+policy engine, HR corrections and payroll locking unchanged.
+
+The cost is that "every employee of this company" now has to mean two
+different things, and the whole feature turns on getting that right.
+
+### The two choke points
+
+`EmployeeService.getActiveEntities()` and `getAllEntities()` were already the
+single places every company-wide operation resolved its population -
+generate-all payroll, generate-all attendance, the dashboard, every report,
+`ReportScope`, the shift planner, the employee directory, the attendance
+policy scope matcher. Both now filter on `contractor IS NULL`, so all of them
+exclude contractor workers without any of them being edited:
+
+- **payroll can never pay one** - `PayrollService.generateAll` and the period
+  reads both go through these;
+- **the statutory returns can never file one** - PF ECR, ESI, PT and TDS all
+  resolve through `ReportScope`;
+- **the employee directory never lists one** - `getVisible()` is `getAllEntities()`
+  filtered by self-service scope.
+
+Three things deliberately do *not* use them:
+
+- `getActiveEntitiesIncludingContractorWorkers()`, whose only caller is
+  `ShiftSchedulingService.applyHolidayOverride` - a public holiday shuts the
+  site for everyone standing on it, and leaving contractor workers rostered
+  onto a closed plant would bill their absence to their contractor;
+- `plannerScope(supervisorUserId, contractorId)`, which returns one
+  contractor's workforce when given a contractor and the company's own staff
+  otherwise - never both in one grid;
+- `getEntityById`/`getEntityByUserId`, which stay permissive because
+  attendance, shift scheduling and this module all resolve a worker through
+  them. The *mutating* employee paths use `getCompanyEmployeeById` instead,
+  which 404s a contractor's worker - so a `PUT /api/employees/{id}` can never
+  write an `EmployeeRequest` (gross salary, derived structure, a `role`) over
+  somebody this company does not pay.
+
+### What a worker deliberately has none of
+
+`ContractorEmployeeRequest` carries identity, trade, supervisor, deployment
+dates and a phone number. It has no salary field, no PF/ESIC/UAN, no bank
+details and no `role` - not "ignored if supplied", *absent*, which is what
+makes them unsettable rather than a comment asking callers not to.
+`ContractorEmployeeService` additionally pins three things the request cannot
+reach: `role = EMPLOYEE`, `accountEnabled = false` with a null password hash
+(these people are attendance subjects, not users of this system), and
+`status = CONTRACT`.
+
+That last one is load-bearing rather than cosmetic. `EmployeeStatus` is what
+`DefaultRosterService` reads to decide who gets a free `GENERAL`-shift roster
+out to two months ahead, and a contractor's workers must not: they are on site
+only for the days their contractor sends them, so auto-rostering would
+manufacture absent days - and therefore an invoice dispute - for days nobody
+was expected. For the same reason `ContractorAttendanceService.generate`
+defaults `includeUnrostered` to **false**, the opposite of the company
+console's default; `AttendanceGenerationRequest`'s own Javadoc named this
+population as the reason that switch exists.
+
+The supervisor, by contrast, must be one of *our* employees.
+`resolveSupervisor` rejects another contractor's worker outright - one has no
+login and no authority to approve anything, so that reporting line would be
+one nobody could act on. No cycle check is needed: a contractor's worker is
+never anybody's supervisor, so the chain is at most one link deep.
+
+### Reports
+
+`ContractorAttendanceReportService` aggregates, never calculates - the rows
+come straight off the stored `MonthlyAttendanceSummary` and `DailyAttendance`,
+so a contractor's copy of a figure can never disagree with what HR sees on
+screen for the same person on the same day. That property is what makes the
+report worth sending. It resyncs through
+`AttendanceService.syncSummaries(month, employees)` first, because the
+no-argument form reads `getActiveEntities()` and so cannot see this
+population.
+
+Three shapes, and every one of them carries `contractorName` on the **row**
+rather than only in the envelope - a company with several agencies reads these
+across all of them at once, and a grouping that survives only in the JSON does
+not survive the CSV export:
+
+| | |
+|---|---|
+| `ContractorAttendanceRow` | one line per worker for the month - what the contractor invoices from |
+| `ContractorDailyRow` | the day-by-day register behind it, `recordStatus` included so a hand-corrected day is disclosed rather than presented as a device reading |
+| `ContractorSummaryRow` | one line per contractor - the only side-by-side view, and `workersWithoutAttendance` on it is the figure that says a report is not ready to send |
+
+A worker with no generated attendance is listed with zeros rather than
+dropped: their absence from the sheet is exactly what the contractor would not
+notice, and a missing name reads as "nobody deployed them" instead of "nobody
+generated it".
+
+### Permissions
+
+`CONTRACTOR_READ` and `CONTRACTOR_MANAGE`, separate from `EMPLOYEE_*` - and the
+separation is the security property, not tidiness. An `EMPLOYEE_UPDATE` holder
+can set a gross salary and a role; a `CONTRACTOR_MANAGE` holder can do
+neither, so a company can hand contractor administration to a site coordinator
+through a custom role without handing over the payroll master. HR and ADMIN
+hold both; SUPERVISOR holds `CONTRACTOR_READ` only, since our supervisors are
+the ones assigned to these workers and need to see the workforce they roster
+and review. Generating attendance additionally requires `ATTENDANCE_GENERATE`
+on top of `CONTRACTOR_MANAGE` - writing attendance rows is the same act
+whoever the subject is, and must not become reachable through a narrower
+grant.
 
 ## Leave workflow
 

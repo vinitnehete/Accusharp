@@ -287,9 +287,15 @@ public class ShiftSchedulingService {
         if (holidays.isEmpty()) {
             return 0;
         }
-        Set<String> scopedUserIds = companyId == null ? null : employeeService.getActiveEntities().stream()
-                .map(Employee::getUserId)
-                .collect(Collectors.toSet());
+        // Contractor workers included, unlike everywhere else this method's
+        // company scoping is copied from: a public holiday shuts the site for
+        // everyone standing on it. Leaving them out would keep them rostered
+        // onto a day the plant is closed and then bill the absence to their
+        // contractor - see EmployeeService#getActiveEntitiesIncludingContractorWorkers.
+        Set<String> scopedUserIds = companyId == null ? null
+                : employeeService.getActiveEntitiesIncludingContractorWorkers().stream()
+                        .map(Employee::getUserId)
+                        .collect(Collectors.toSet());
 
         List<ShiftSchedule> affected = shiftScheduleRepository
                 .findAllByShiftDateBetween(month.atDay(1), month.atEndOfMonth()).stream()
@@ -362,7 +368,22 @@ public class ShiftSchedulingService {
      */
     @Transactional(readOnly = true)
     public MonthlyPlannerResponse getMonthlyPlanner(YearMonth month, String supervisorUserId) {
-        List<Employee> employees = employeeService.plannerScope(supervisorUserId);
+        return getMonthlyPlanner(month, supervisorUserId, null);
+    }
+
+    /**
+     * As above, for one contractor's workforce when {@code contractorId} is
+     * given - the contractor roster planner.
+     *
+     * <p>The two never appear in one grid: see
+     * {@link EmployeeService#plannerScope(String, Long)}. What they do share
+     * is the {@code Shift} catalog itself, which is the point - a contractor's
+     * worker on the night shift is on the same night shift, with the same
+     * punch window and grace period, as everyone else on that line.
+     */
+    @Transactional(readOnly = true)
+    public MonthlyPlannerResponse getMonthlyPlanner(YearMonth month, String supervisorUserId, Long contractorId) {
+        List<Employee> employees = employeeService.plannerScope(supervisorUserId, contractorId);
 
         List<LocalDate> dates = month.atDay(1).datesUntil(month.atEndOfMonth().plusDays(1)).toList();
         if (employees.isEmpty()) {

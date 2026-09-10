@@ -33,7 +33,7 @@ and a [missing-punch scenario](docs/testing/device_logs_EMP005_missing_out_punch
 7. [Leave](#7-leave)
 8. [Run payroll](#8-run-payroll)
 9. [Salary slips](#9-salary-slips)
-10. [Reports and dashboard](#10-reports-and-dashboard)
+10. [Reports and dashboard](#10-reports-and-dashboard) (incl. [contractor reports](#101-contractor-attendance-reports))
 11. [Full API reference](#11-full-api-reference)
 12. [Troubleshooting](#12-troubleshooting)
 13. [Before going live](#13-before-going-live)
@@ -921,6 +921,87 @@ recalculate, so a report can never disagree with a salary slip.
 Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 `year` numbers.
 
+Every report above covers **your own employees only**. A labour contractor's
+workers are excluded from all of them - including the PF, ESIC and
+professional-tax returns, which is the point: you do not file statutory
+returns for somebody else's staff. Their attendance has its own reports below.
+
+### 10.1 Contractor attendance reports
+
+The whole point of registering a contractor's workers is to hand the
+contractor a defensible attendance sheet they can run their own payroll from.
+
+```bash
+# The month's sheet for one contractor: a cover line plus one row per worker
+curl "http://localhost:8080/api/contractors/2/reports/attendance/monthly?month=2026-09"
+
+# The same thing as a CSV to send them - the contractor's totals are appended
+# below the rows, so the figure they invoice against travels in the same file
+curl -OJ "http://localhost:8080/api/contractors/2/reports/attendance/monthly/export?month=2026-09"
+
+# The day-by-day register behind those totals, for when a figure is queried
+curl "http://localhost:8080/api/contractors/2/reports/attendance/daily?from=2026-09-01&to=2026-09-30"
+
+# Every contractor's month, one line each - the side-by-side view when you
+# have more than one agency on site
+curl "http://localhost:8080/api/contractors/reports/attendance/summary?month=2026-09"
+```
+
+| Report | Endpoint |
+|---|---|
+| One contractor's month | `GET /api/contractors/{id}/reports/attendance/monthly?month=2026-09` |
+| ... as CSV | `GET /api/contractors/{id}/reports/attendance/monthly/export?month=2026-09` |
+| Daily register | `GET /api/contractors/{id}/reports/attendance/daily?from=&to=` |
+| ... as CSV | `GET /api/contractors/{id}/reports/attendance/daily/export?from=&to=` |
+| All contractors, one line each | `GET /api/contractors/reports/attendance/summary?month=2026-09` |
+| ... as CSV | `GET /api/contractors/reports/attendance/summary/export?month=2026-09` |
+
+Two figures on these are worth knowing before you send one out:
+
+- **`workersWithoutAttendance`** on the summary line counts workers with no
+  generated attendance for the period at all. Anything above zero means the
+  report is not ready - generate it first, or those people read as having
+  worked nothing.
+- **`recordStatus`** on each day of the register is `GENERATED` or `MANUAL`.
+  A day somebody corrected by hand is disclosed as such rather than presented
+  as a device reading, which is the difference between a report that survives
+  a dispute and one that does not.
+
+The order for a contractor is the same as for your own staff, minus payroll:
+onboard the contractor, add their workers, roster them, generate, report.
+
+```bash
+# 1. Onboard the contractor
+curl -X POST http://localhost:8080/api/contractors -H 'Content-Type: application/json' -d '{
+  "contractorCode": "ACME", "contractorName": "Acme Manpower Services",
+  "contactPerson": "Sanjay Kale", "email": "sanjay@acmemanpower.example"
+}'
+
+# 2. Add a worker. Identity and a supervisor of yours - nothing else. There is
+#    deliberately no salary field: you do not pay these people.
+curl -X POST http://localhost:8080/api/contractors/2/employees -H 'Content-Type: application/json' -d '{
+  "userId": "ACM001", "employeeCode": "AC-001", "employeeName": "Ravi Kumar",
+  "supervisorUserId": "SUP001", "joiningDate": "2026-08-01"
+}'
+
+# 3. Roster them - the ordinary shift-schedule endpoints, on your own shifts
+curl -X POST http://localhost:8080/api/shift-schedules/bulk -H 'Content-Type: application/json' -d '{
+  "userIds": ["ACM001"], "fromDate": "2026-09-01", "toDate": "2026-09-30",
+  "shiftCode": "GENERAL", "weekOffDays": ["SUNDAY"], "skipHolidays": true
+}'
+
+# 4. Generate their attendance. Scoped to this contractor - it never touches
+#    your own staff, and POST /api/attendance/generate never touches theirs.
+curl -X POST "http://localhost:8080/api/contractors/2/attendance/generate?month=2026-09"
+```
+
+`includeUnrostered` defaults to **false** here, the opposite of the company
+console. A contractor's workers are rostered only for the days they are
+actually sent in, so an unrostered day means "not deployed" - marking it
+absent would put a dispute on their invoice rather than surface a rostering
+gap. Set `?includeUnrostered=true` only if you roster the contractor for every
+calendar day.
+
 ---
 
 ## 11. Full API reference
@@ -932,7 +1013,8 @@ Attendance reports use `month=yyyy-MM`; payroll reports use separate `month` and
 | Departments | `/api/departments` |
 | Designations | `/api/designations` |
 | Categories | `/api/categories` (employee grade - Worker, Supervisor, Manager, Director, ...; company-defined, same pattern as departments/designations) |
-| Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding, `?format=csv` for a downloadable credentials sheet; `POST /{id}/salary-revision`, `GET /{id}/salary-revisions` - hike/promotion history) |
+| Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding, `?format=csv` for a downloadable credentials sheet; `POST /{id}/salary-revision`, `GET /{id}/salary-revisions` - hike/promotion history). Your own staff only - a labour contractor's workers are never returned here, and never accepted for a write |
+| Contractors | `/api/contractors` - labour contractors, the workforce they deploy, that workforce's attendance and the reports sent back to them. See [section 10.1](#101-contractor-attendance-reports) |
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all) |
 | Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |

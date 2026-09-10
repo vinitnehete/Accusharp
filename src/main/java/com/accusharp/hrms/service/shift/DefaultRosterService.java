@@ -76,7 +76,9 @@ public class DefaultRosterService {
     @Transactional
     public int ensureForAllPermanentEmployees(LocalDate fromDate, LocalDate toDate) {
         List<Employee> employees = employeeRepository
-                .findByRecordStatusAndStatus(RecordStatus.ACTIVE, DEFAULT_ROSTER_STATUS);
+                .findByRecordStatusAndStatus(RecordStatus.ACTIVE, DEFAULT_ROSTER_STATUS).stream()
+                .filter(employee -> !employee.isContractorWorker())
+                .toList();
         int created = ensure(employees, fromDate, toDate);
 
         Map<Long, Integer> countByCompany = new HashMap<>();
@@ -96,6 +98,15 @@ public class DefaultRosterService {
     public int ensureForEmployee(Employee employee) {
         if (employee.getStatus() != DEFAULT_ROSTER_STATUS
                 || employee.getRecordStatus() != RecordStatus.ACTIVE) {
+            return 0;
+        }
+        // A contractor's worker is never auto-rostered. They are on site only
+        // for the days their contractor sends them, so filling a default
+        // Monday-to-Saturday GENERAL roster would manufacture absent days -
+        // and therefore an invoice dispute - for days nobody was expected.
+        // ContractorEmployeeService pins their status to CONTRACT, so this
+        // should be unreachable; it is here so that stops being load-bearing.
+        if (employee.isContractorWorker()) {
             return 0;
         }
         LocalDate from = employee.getJoiningDate() != null && employee.getJoiningDate().isAfter(LocalDate.now())

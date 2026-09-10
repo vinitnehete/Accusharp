@@ -167,13 +167,22 @@ public class ShiftScheduleController {
         return shiftSchedulingService.getRoster(userId, fromDate, toDate);
     }
 
-    /** Calendar-shaped roster for the monthly planner UI. */
+    /**
+     * Calendar-shaped roster for the monthly planner UI.
+     *
+     * <p>{@code contractorId} switches the population to that contractor's
+     * deployed workforce instead of the company's own staff - the two are
+     * never merged into one grid (see
+     * {@code EmployeeService#plannerScope(String, Long)}), though both are
+     * rostered onto the same shared {@code Shift} catalog.
+     */
     @PreAuthorize("@authz.can('SHIFT_SCHEDULE_READ')")
     @GetMapping("/planner")
     public MonthlyPlannerResponse getPlanner(
             @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month,
-            @RequestParam(required = false) String supervisorUserId) {
-        return shiftSchedulingService.getMonthlyPlanner(month, supervisorUserId);
+            @RequestParam(required = false) String supervisorUserId,
+            @RequestParam(required = false) Long contractorId) {
+        return shiftSchedulingService.getMonthlyPlanner(month, supervisorUserId, contractorId);
     }
 
     @PreAuthorize("@authz.can('SHIFT_SCHEDULE_MANAGE')")

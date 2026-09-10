@@ -84,6 +84,7 @@ public class PermissionSeeder {
                 PermissionCode.EMPLOYMENT_TYPE_READ, PermissionCode.EMPLOYMENT_TYPE_MANAGE,
                 PermissionCode.EMPLOYEE_CREATE, PermissionCode.EMPLOYEE_READ,
                 PermissionCode.EMPLOYEE_UPDATE, PermissionCode.EMPLOYEE_DELETE,
+                PermissionCode.CONTRACTOR_READ, PermissionCode.CONTRACTOR_MANAGE,
                 PermissionCode.SHIFT_MANAGE, PermissionCode.SHIFT_READ,
                 PermissionCode.SHIFT_SCHEDULE_MANAGE, PermissionCode.SHIFT_SCHEDULE_READ,
                 PermissionCode.ATTENDANCE_READ, PermissionCode.ATTENDANCE_GENERATE,
@@ -117,6 +118,10 @@ public class PermissionSeeder {
                 PermissionCode.DESIGNATION_READ,
                 PermissionCode.CATEGORY_READ,
                 PermissionCode.EMPLOYEE_READ,
+                // Read, not manage: a supervisor rosters and reviews the
+                // contractor workers assigned to them, but onboarding a
+                // contractor is an HR/ADMIN decision - see CONTRACTOR_READ.
+                PermissionCode.CONTRACTOR_READ,
                 PermissionCode.SHIFT_READ,
                 PermissionCode.SHIFT_SCHEDULE_MANAGE, PermissionCode.SHIFT_SCHEDULE_READ,
                 PermissionCode.ATTENDANCE_READ,
