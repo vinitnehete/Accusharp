@@ -55,6 +55,7 @@ class DayPolicyEvaluatorTest {
         assertThat(result.lateMinutes()).isEqualTo(context.lateMinutes());
         assertThat(result.overtimeMinutes()).isEqualTo(context.overtimeMinutes());
         assertThat(result.compOffCredit()).isEqualByComparingTo("0");
+        assertThat(result.paidDayCredit()).isEqualByComparingTo("0");
         assertThat(result.trace()).isEmpty();
     }
 
@@ -235,6 +236,56 @@ class DayPolicyEvaluatorTest {
         assertThat(evaluator.apply(dayOff(239, true), policy).compOffCredit()).isEqualByComparingTo("0.5");
         assertThat(evaluator.apply(dayOff(120, true), policy).compOffCredit()).isEqualByComparingTo("0.5");
         assertThat(evaluator.apply(dayOff(119, true), policy).compOffCredit()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("PAID_DAY counts a worked weekly off as a paid day and leaves its overtime alone, like any working day")
+    void paidDayCreditsAWorkedWeeklyOff() {
+        ResolvedPolicy policy = policy(RuleType.DAY_OFF_WORK,
+                "{\"onWeeklyOff\":\"PAID_DAY\",\"onHoliday\":\"OVERTIME_PAY\","
+                        + "\"fullCreditMinutes\":240,\"halfCreditMinutes\":120}");
+
+        DayPolicyResult result = evaluator.apply(dayOff(485, true), policy);
+
+        assertThat(result.paidDayCredit()).isEqualByComparingTo("1");
+        assertThat(result.compOffCredit()).isEqualByComparingTo("0");
+        // Unlike comp-off, nothing is being traded away: the day is simply
+        // treated as worked, so its excess over the shift is overtime exactly
+        // as it would be on a Tuesday.
+        assertThat(result.overtimeMinutes()).isEqualTo(5);
+        assertThat(result.status()).isEqualTo(AttendanceStatus.PRESENT);
+        assertThat(result.trace()).singleElement().satisfies(row -> {
+            assertThat(row.getPaidDayCredit()).isEqualByComparingTo("1");
+            assertThat(row.getExplanation()).contains("paid day");
+        });
+    }
+
+    @Test
+    @DisplayName("PAID_DAY uses the comp-off minute tiers, so ten minutes on a Sunday is not a paid day")
+    void paidDayCreditTiers() {
+        ResolvedPolicy policy = policy(RuleType.DAY_OFF_WORK,
+                "{\"onWeeklyOff\":\"PAID_DAY\",\"onHoliday\":\"PAID_DAY\","
+                        + "\"fullCreditMinutes\":240,\"halfCreditMinutes\":120}");
+
+        assertThat(evaluator.apply(dayOff(240, true), policy).paidDayCredit()).isEqualByComparingTo("1");
+        assertThat(evaluator.apply(dayOff(239, true), policy).paidDayCredit()).isEqualByComparingTo("0.5");
+        assertThat(evaluator.apply(dayOff(119, true), policy).paidDayCredit()).isEqualByComparingTo("0");
+        // A day that earns nothing changed nothing, so it leaves no trace row.
+        assertThat(evaluator.apply(dayOff(10, true), policy).trace()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("PAID_DAY on holidays alone leaves a worked weekly off on overtime pay")
+    void paidDayTreatsHolidayAndWeeklyOffSeparately() {
+        ResolvedPolicy policy = policy(RuleType.DAY_OFF_WORK,
+                "{\"onWeeklyOff\":\"OVERTIME_PAY\",\"onHoliday\":\"PAID_DAY\","
+                        + "\"fullCreditMinutes\":240,\"halfCreditMinutes\":120}");
+
+        assertThat(evaluator.apply(dayOff(485, false), policy).paidDayCredit()).isEqualByComparingTo("1");
+
+        DayPolicyResult weeklyOff = evaluator.apply(dayOff(485, true), policy);
+        assertThat(weeklyOff.paidDayCredit()).isEqualByComparingTo("0");
+        assertThat(weeklyOff.trace()).isEmpty();
     }
 
     // ---- ordering ----------------------------------------------------------

@@ -12,7 +12,9 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.util.Set;
 
 /**
  * Only the fields a client may set. grossSalaryWage is always derived
@@ -112,6 +114,15 @@ public class EmployeeRequest {
     private BigDecimal otherAllowance;
 
     private boolean overtimeEligible;
+
+    /**
+     * Which days of the week this employee does not work.
+     *
+     * <p>Null means "leave it as it is" - an unconfigured permanent employee
+     * keeps falling back to Sunday, and anyone else keeps having no weekly off. An empty set is the explicit statement that this employee
+     * has no weekly off; see {@code Employee.effectiveWeekOffDays()}.
+     */
+    private Set<DayOfWeek> weekOffDays;
 
     // ---- optional structure override - provide all four or none, see class Javadoc ----
 

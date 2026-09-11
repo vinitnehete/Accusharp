@@ -106,4 +106,27 @@ public class MonthlyAttendanceSummary {
     @Column(name = "comp_off_credit_days", nullable = false, precision = 6, scale = 1)
     @Builder.Default
     private BigDecimal compOffCreditDays = BigDecimal.ZERO;
+
+    /**
+     * Days a {@code DAY_OFF_WORK = PAID_DAY} rule credited into
+     * {@link #presentDays} for working a day off. Already included in
+     * presentDays - kept separately so a payslip that pays one more day than
+     * the employee was expected to work can say why.
+     */
+    @Column(name = "paid_day_off_days", nullable = false,
+            columnDefinition = "decimal(6,1) not null default 0")
+    @Builder.Default
+    private BigDecimal paidDayOffDays = BigDecimal.ZERO;
+
+    /** Days a weekly off was worked - see {@code DailyAttendance#isWorkedOnWeekOff}. */
+    @Column(name = "week_off_worked_days", nullable = false, columnDefinition = "bigint not null default 0")
+    private long weekOffWorkedDays;
+
+    /**
+     * Days somebody punched on their weekly off with no shift assigned - see
+     * {@code DailyAttendance#isUnrosteredPunchOnWeekOff}.
+     */
+    @Column(name = "week_off_unrostered_punch_days", nullable = false,
+            columnDefinition = "bigint not null default 0")
+    private long weekOffUnrosteredPunchDays;
 }

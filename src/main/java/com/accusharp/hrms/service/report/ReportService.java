@@ -91,6 +91,34 @@ public class ReportService {
                 summary -> summary.getOvertimeHours() + " overtime hour(s)");
     }
 
+    /**
+     * Who worked their weekly off, and who punched in on it with no shift
+     * assigned. Read from figures snapshotted onto each stored day at
+     * generation, so changing someone's weekly off later cannot rewrite a past
+     * month's report.
+     */
+    @Transactional
+    public List<ReportDtos.ExceptionRow> weekOffWorkedReport(YearMonth month) {
+        return exceptionReport(month,
+                summary -> summary.getWeekOffWorkedDays() > 0 || summary.getWeekOffUnrosteredPunchDays() > 0,
+                ReportService::describeWeekOffWork);
+    }
+
+    private static String describeWeekOffWork(MonthlyAttendanceSummary summary) {
+        StringBuilder detail = new StringBuilder();
+        if (summary.getWeekOffWorkedDays() > 0) {
+            detail.append(summary.getWeekOffWorkedDays()).append(" day(s) worked on a weekly off");
+        }
+        if (summary.getWeekOffUnrosteredPunchDays() > 0) {
+            if (!detail.isEmpty()) {
+                detail.append("; ");
+            }
+            detail.append(summary.getWeekOffUnrosteredPunchDays())
+                    .append(" day(s) punched on a weekly off with no shift assigned");
+        }
+        return detail.toString();
+    }
+
     // ---- leave -------------------------------------------------------------
 
     @Transactional(readOnly = true)

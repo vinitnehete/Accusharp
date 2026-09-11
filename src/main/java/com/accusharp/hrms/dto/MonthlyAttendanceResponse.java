@@ -34,6 +34,19 @@ public record MonthlyAttendanceResponse(
         /** Compensatory-off days earned by working a weekly off or holiday. */
         BigDecimal compOffCreditDays,
 
+        /**
+         * Days a {@code DAY_OFF_WORK = PAID_DAY} rule credited for working a day
+         * off - already inside {@link #presentDays}, listed separately so the
+         * extra paid day can be explained.
+         */
+        BigDecimal paidDayOffDays,
+
+        /** Days a weekly off was worked, whether by roster or on the employee's own configured day. */
+        long weekOffWorkedDays,
+
+        /** Days somebody punched on their weekly off with no shift assigned. */
+        long weekOffUnrosteredPunchDays,
+
         /** One row per month-scoped rule that produced a penalty, each with the numbers it used. */
         List<AttendancePolicyOutcome> policyOutcomes,
 

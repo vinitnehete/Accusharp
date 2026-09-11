@@ -77,6 +77,12 @@ public class ReportController {
         return reportService.lopReport(month);
     }
 
+    @GetMapping("/attendance/week-off-worked")
+    public List<ReportDtos.ExceptionRow> weekOffWorked(
+            @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month) {
+        return reportService.weekOffWorkedReport(month);
+    }
+
     @GetMapping("/leave-balances")
     public List<ReportDtos.LeaveBalanceRow> leaveBalances(
             @RequestParam(required = false) Integer year) {

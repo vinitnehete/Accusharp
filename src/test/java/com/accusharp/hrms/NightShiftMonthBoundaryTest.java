@@ -308,7 +308,14 @@ class NightShiftMonthBoundaryTest {
     private void saveEmployee(String userId, String code, String name, Role role) {
         Employee employee = Employee.builder()
                 .userId(userId).employeeCode(code).employeeName(name)
-                .status(EmployeeStatus.PERMANENT).recordStatus(RecordStatus.ACTIVE).role(role)
+                // CONTRACT, not PERMANENT: every test in this class builds a
+                // deliberately sparse roster and asserts against exactly the days
+                // it wrote. A permanent employee is auto-rostered onto GENERAL for
+                // every unwritten day (DefaultRosterResolver), which would fill the
+                // gaps this class exists to reason about. Payroll treats the two
+                // identically - see PayBehaviourResolver#legacy - so nothing else
+                // these tests assert is affected.
+                .status(EmployeeStatus.CONTRACT).recordStatus(RecordStatus.ACTIVE).role(role)
                 .joiningDate(LocalDate.of(2022, 1, 1))
                 .grossSalary(new BigDecimal("26000")).pfBasic(new BigDecimal("9000"))
                 .medicalAllowance(new BigDecimal("1250")).otherAllowance(BigDecimal.ZERO)

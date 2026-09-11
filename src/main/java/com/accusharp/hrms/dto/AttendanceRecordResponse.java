@@ -29,6 +29,8 @@ public record AttendanceRecordResponse(
         boolean invalidPunch,
         boolean weekOff,
         boolean holiday,
+        /** The employee's own configured weekly off, even where a roster made it a working day. */
+        boolean configuredWeekOff,
         AttendanceStatus status,
         AttendanceRecordStatus recordStatus,
         boolean locked,
@@ -44,7 +46,7 @@ public record AttendanceRecordResponse(
                 record.getShiftCode(), record.getFirstIn(), record.getLastOut(), record.getWorkingHours(),
                 record.getBreakHours(), record.getOvertimeHours(), record.getLateMinutes(),
                 record.getEarlyExitMinutes(), record.isInvalidPunch(), record.isWeekOff(), record.isHoliday(),
-                record.getStatus(), record.getRecordStatus(), record.isLocked(), record.getRemarks(),
+                record.isConfiguredWeekOff(), record.getStatus(), record.getRecordStatus(), record.isLocked(), record.getRemarks(),
                 record.getGeneratedAt(), record.getGeneratedBy(), record.getUpdatedAt(), record.getUpdatedBy());
     }
 }

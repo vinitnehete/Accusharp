@@ -123,7 +123,9 @@ public final class AttendancePolicyParams {
     }
 
     /**
-     * @param fullCreditMinutes worked minutes earning a whole comp-off day
+     * @param fullCreditMinutes worked minutes earning a whole day's credit - a
+     *                          comp-off day, or a paid day under
+     *                          {@link Treatment#PAID_DAY}
      * @param halfCreditMinutes worked minutes earning half a day; below this,
      *                          nothing is credited
      */
@@ -138,7 +140,17 @@ public final class AttendancePolicyParams {
             /** Today's behaviour: the excess over the shift's paid hours books as overtime. */
             OVERTIME_PAY,
             /** Overtime is zeroed and the day earns a compensatory-off credit instead. */
-            COMP_OFF_CREDIT
+            COMP_OFF_CREDIT,
+            /**
+             * The day counts as attended. Its credit - by the same minute tiers as
+             * comp-off, because any worked day off reads {@code PRESENT} however
+             * short it was - is added to {@code presentDays} without the day
+             * joining {@code workingDays}. For a per-attended-day employee that is
+             * one more paid day, up to the cap; for anyone carrying LOP it offsets
+             * an absence elsewhere in the month rather than paying beyond it.
+             * Overtime is left exactly as it would be on any working day.
+             */
+            PAID_DAY
         }
     }
 

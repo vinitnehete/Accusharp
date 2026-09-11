@@ -9,7 +9,11 @@ import org.apache.commons.csv.CSVRecord;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
+import java.time.DayOfWeek;
+import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Turns an uploaded CSV into {@link EmployeeRequest} rows for bulk onboarding.
@@ -19,7 +23,7 @@ import java.util.List;
  * supervisorUserId, joiningDate, dateOfBirth, gender, status, recordStatus, role, email, phone,
  * uanNo, esicIpNo, bankAccountNo, bankIfscNo,
  * grossSalary, pfBasic, medicalAllowance, otherAllowance, overtimeEligible,
- * basicDA, hra, conveyanceAllowance, educationAllowance}. {@code categoryId}, {@code gender}
+ * weekOffDays, basicDA, hra, conveyanceAllowance, educationAllowance}. {@code categoryId}, {@code gender}
  * and the four statutory/bank columns are all optional, same as every other non-required column.
  * {@code companyId} is ignored for a company-scoped caller - {@code
  * EmployeeController} always overwrites it with the caller's own company, the
@@ -72,6 +76,7 @@ public final class EmployeeCsvParser {
         request.setMedicalAllowance(parseDecimal(record, "medicalAllowance", true));
         request.setOtherAllowance(parseDecimal(record, "otherAllowance", true));
         request.setOvertimeEligible(CsvRowParser.parseBoolean(record, "overtimeEligible"));
+        request.setWeekOffDays(parseWeekOffDays(record));
         request.setBasicDA(parseDecimal(record, "basicDA", false));
         request.setHra(parseDecimal(record, "hra", false));
         request.setConveyanceAllowance(parseDecimal(record, "conveyanceAllowance", false));
@@ -106,4 +111,45 @@ public final class EmployeeCsvParser {
         }
     }
 
+
+    /**
+     * The week-off cell: day names in any order, separated by anything that is
+     * not a letter - {@code "SATURDAY,SUNDAY"}, {@code "Sat Sun"}, {@code "sun /
+     * tue"} all parse. Blank or absent leaves it null, which means
+     * unconfigured; the literal {@code NONE} is the explicit "works every day".
+     *
+     * <p>Deliberately forgiving about how the days are written, and
+     * deliberately not forgiving about whether they are days at all. HR fills
+     * these sheets in Excel by hand, so rejecting a three-hundred-row import
+     * over a lowercase "sun" would be its own kind of bug; silently dropping
+     * "Funday" would hand somebody a week-off they do not have.
+     */
+    private static Set<DayOfWeek> parseWeekOffDays(CSVRecord record) {
+        String value = CsvRowParser.get(record, "weekOffDays");
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        if (value.trim().equalsIgnoreCase("NONE")) {
+            return Set.of();
+        }
+        Set<DayOfWeek> days = EnumSet.noneOf(DayOfWeek.class);
+        for (String token : value.split("[^A-Za-z]+")) {
+            if (!token.isEmpty()) {
+                days.add(toDayOfWeek(token));
+            }
+        }
+        return days;
+    }
+
+    /** Full name or three-letter abbreviation, any case. */
+    private static DayOfWeek toDayOfWeek(String token) {
+        String upper = token.toUpperCase();
+        return Arrays.stream(DayOfWeek.values())
+                .filter(day -> day.name().equals(upper)
+                        || (upper.length() == 3 && day.name().startsWith(upper)))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "weekOffDays must be day names such as SATURDAY, SUNDAY (or SAT, SUN), "
+                                + "or NONE for an employee with no weekly off - got '" + token + "'"));
+    }
 }

@@ -64,7 +64,8 @@ public class AttendanceCalculationService {
      */
     public record PolicyAwareDay(DailyAttendanceResponse day,
                                  List<AttendancePolicyApplication> trace,
-                                 BigDecimal compOffCredit) {
+                                 BigDecimal compOffCredit,
+                                 BigDecimal paidDayCredit) {
     }
 
     /**
@@ -153,7 +154,7 @@ public class AttendanceCalculationService {
                     new DailyAttendanceResponse(userId, shiftDate, shift.getShiftCode(),
                             lonePunch, null, zero(), zero(), zero(), 0, 0,
                             invalidPunch, applied.status()),
-                    applied.trace(), applied.compOffCredit());
+                    applied.trace(), applied.compOffCredit(), applied.paidDayCredit());
         }
 
         LocalDateTime firstIn = punches.getFirst().getLogDate();
@@ -186,7 +187,7 @@ public class AttendanceCalculationService {
                 new DailyAttendanceResponse(userId, shiftDate, shift.getShiftCode(), firstIn, lastOut,
                         toHours(workedMinutes), toHours(breakMinutes), toHours(applied.overtimeMinutes()),
                         applied.lateMinutes(), earlyExitMinutes, false, applied.status()),
-                applied.trace(), applied.compOffCredit());
+                applied.trace(), applied.compOffCredit(), applied.paidDayCredit());
     }
 
     /**

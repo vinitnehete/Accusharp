@@ -53,8 +53,10 @@ import java.util.List;
  * </ul>
  *
  * <p>{@code status} is pinned to {@link EmployeeStatus#CONTRACT} rather than
- * being a request field. It is the field {@code DefaultRosterService} reads
- * to decide who gets a free GENERAL-shift roster, and a contractor's workers
+ * being a request field. It is one of the two things
+ * {@code Employee.autoRostersDefaultShift()} reads to decide who gets a free
+ * GENERAL-shift roster (the other being the contractor link itself, which
+ * rules them out independently), and a contractor's workers
  * must be rostered explicitly for the days they are actually deployed -
  * auto-rostering them would manufacture absent days, and therefore an
  * invoice dispute, for days nobody sent them in.

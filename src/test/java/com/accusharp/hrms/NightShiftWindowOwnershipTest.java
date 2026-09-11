@@ -150,8 +150,10 @@ class NightShiftWindowOwnershipTest {
     @Test
     @DisplayName("a rostered week-off does not truncate the night shift before it")
     void rosteredWeekOffDoesNotStealTheNightShiftsExit() {
-        // DefaultRosterService writes every Sunday exactly like this: a real
-        // GENERAL row carrying weekOff = true. A day off has no shift to defend.
+        // A week off looks exactly like this, whether somebody assigned it or
+        // DefaultRosterResolver derived it from the employee's configured
+        // weekly off: a real GENERAL row carrying weekOff = true. A day off has
+        // no shift to defend.
         roster(D15, night, false);
         roster(D16, general, true);
         punches(D15.atTime(18, 0), D16.atTime(8, 0));
@@ -512,7 +514,14 @@ class NightShiftWindowOwnershipTest {
     private void saveEmployee(String userId, String code, Role role) {
         Employee employee = Employee.builder()
                 .userId(userId).employeeCode(code).employeeName(userId)
-                .status(EmployeeStatus.PERMANENT).recordStatus(RecordStatus.ACTIVE).role(role)
+                // CONTRACT, not PERMANENT: every test in this class builds a
+                // deliberately sparse roster and asserts against exactly the days
+                // it wrote. A permanent employee is auto-rostered onto GENERAL for
+                // every unwritten day (DefaultRosterResolver), which would fill the
+                // gaps this class exists to reason about. Payroll treats the two
+                // identically - see PayBehaviourResolver#legacy - so nothing else
+                // these tests assert is affected.
+                .status(EmployeeStatus.CONTRACT).recordStatus(RecordStatus.ACTIVE).role(role)
                 .joiningDate(LocalDate.of(2022, 1, 1))
                 .grossSalary(new BigDecimal("26000")).pfBasic(new BigDecimal("9000"))
                 .medicalAllowance(new BigDecimal("1250")).otherAllowance(BigDecimal.ZERO)

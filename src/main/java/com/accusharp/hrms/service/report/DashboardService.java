@@ -4,6 +4,7 @@ import com.accusharp.hrms.dto.ReportDtos;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.LeaveRequest;
 import com.accusharp.hrms.entity.Payroll;
+import com.accusharp.hrms.entity.ShiftSchedule;
 import com.accusharp.hrms.enums.AttendanceStatus;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.repository.EmployeeRepository;
@@ -12,6 +13,7 @@ import com.accusharp.hrms.repository.ShiftScheduleRepository;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.attendance.AttendanceService;
 import com.accusharp.hrms.service.payroll.PayrollService;
+import com.accusharp.hrms.service.shift.DefaultRosterResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -48,6 +50,7 @@ public class DashboardService {
     private final EmployeeRepository employeeRepository;
     private final LeaveRequestRepository leaveRequestRepository;
     private final ShiftScheduleRepository shiftScheduleRepository;
+    private final DefaultRosterResolver defaultRosterResolver;
     private final EmployeeService employeeService;
     private final AttendanceService attendanceService;
     private final PayrollService payrollService;
@@ -91,17 +94,15 @@ public class DashboardService {
         long presentToday = countPresent(active, statusesByDate.get(today));
 
         // Only people who were actually scheduled to work can be absent.
-        long scheduledToday = shiftScheduleRepository
-                .findAllByUserIdInAndShiftDateBetween(userIds(active), today, today).stream()
+        long scheduledToday = rosterOn(active, today).stream()
                 .filter(schedule -> !schedule.isWeekOff())
                 .filter(schedule -> !onLeaveToday.contains(schedule.getUserId()))
                 .count();
         long absentToday = Math.max(0, scheduledToday - presentToday);
 
         LocalDate tomorrow = today.plusDays(1);
-        Set<String> scheduledTomorrow = shiftScheduleRepository
-                .findAllByUserIdInAndShiftDateBetween(userIds(active), tomorrow, tomorrow).stream()
-                .map(schedule -> schedule.getUserId()).collect(Collectors.toSet());
+        Set<String> scheduledTomorrow = rosterOn(active, tomorrow).stream()
+                .map(ShiftSchedule::getUserId).collect(Collectors.toSet());
         long unscheduledTomorrow = active.size() - scheduledTomorrow.size();
 
         YearMonth thisMonth = YearMonth.from(today);
@@ -208,5 +209,28 @@ public class DashboardService {
 
     private List<String> userIds(List<Employee> employees) {
         return employees.stream().map(Employee::getUserId).toList();
+    }
+
+    /**
+     * Everyone's roster for one date - stored rows plus the days derived from
+     * each employee's fixed shift and configured weekly off.
+     *
+     * <p>Without the merge these two cards went wrong the moment permanent
+     * employees stopped having stored rows: nobody would be counted as
+     * scheduled, so "absent today" would read zero however many people failed
+     * to turn up, and "unscheduled tomorrow" would report the entire company.
+     * Both would be confidently, quietly wrong - which on a dashboard is worse
+     * than being blank.
+     */
+    private List<ShiftSchedule> rosterOn(List<Employee> employees, LocalDate date) {
+        Map<String, List<ShiftSchedule>> storedByUser = shiftScheduleRepository
+                .findAllByUserIdInAndShiftDateBetween(userIds(employees), date, date).stream()
+                .collect(Collectors.groupingBy(ShiftSchedule::getUserId));
+
+        return employees.stream()
+                .flatMap(employee -> defaultRosterResolver.merge(employee,
+                        storedByUser.getOrDefault(employee.getUserId(), List.of()),
+                        date, date).stream())
+                .toList();
     }
 }

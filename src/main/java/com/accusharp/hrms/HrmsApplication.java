@@ -4,7 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-/** {@code @EnableScheduling} drives {@code DefaultRosterService.runMonthly()}. */
+/** {@code @EnableScheduling} drives {@code RefreshTokenCleanupService}'s nightly purge. */
 @SpringBootApplication
 @EnableScheduling
 public class HrmsApplication {

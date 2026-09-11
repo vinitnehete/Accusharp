@@ -115,8 +115,11 @@ public class EmploymentType {
     private boolean segmentedRevisionEarnings = true;
 
     /**
-     * Whether {@code DefaultRosterService} auto-rosters this type onto the
-     * {@code GENERAL} shift. Only {@code PERMANENT} does today.
+     * Whether an employee of this type is put on the {@code GENERAL} shift for
+     * every day nobody rostered explicitly - see {@code DefaultRosterResolver}
+     * and {@code Employee.autoRostersDefaultShift()}. An employee with no
+     * employment type falls back to {@code status == PERMANENT}, which is what
+     * this used to be hardcoded to.
      */
     @Column(name = "auto_roster_default_shift", nullable = false)
     @Builder.Default

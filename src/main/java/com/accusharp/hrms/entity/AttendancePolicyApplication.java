@@ -98,6 +98,10 @@ public class AttendancePolicyApplication {
     @Column(name = "comp_off_credit", precision = 4, scale = 2)
     private BigDecimal compOffCredit;
 
+    /** Days of pay a {@code DAY_OFF_WORK = PAID_DAY} rule credited for working this day off. */
+    @Column(name = "paid_day_credit", precision = 4, scale = 2)
+    private BigDecimal paidDayCredit;
+
     /**
      * The sentence an employee gets shown - "HALF_DAY: in 09:16, 1 min beyond a
      * 15 min grace on a 09:00 shift, rule LATE_ARRIVAL v1 scoped

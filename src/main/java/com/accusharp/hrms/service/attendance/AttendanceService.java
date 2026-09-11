@@ -13,6 +13,7 @@ import com.accusharp.hrms.entity.DailyAttendance;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
+import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.entity.ShiftSchedule;
 import com.accusharp.hrms.enums.AttendanceRecordStatus;
 import com.accusharp.hrms.enums.AttendanceStatus;
@@ -33,6 +34,8 @@ import com.accusharp.hrms.service.HolidayService;
 import com.accusharp.hrms.service.calculation.AttendanceCalculationService;
 import com.accusharp.hrms.service.calculation.AttendanceWindowResolver;
 import com.accusharp.hrms.service.calculation.LopCalculationService;
+import com.accusharp.hrms.service.shift.DefaultRosterResolver;
+import com.accusharp.hrms.service.shift.ShiftService;
 import com.accusharp.hrms.service.policy.AttendancePolicyResolver;
 import com.accusharp.hrms.service.policy.MonthPolicyEvaluator;
 import com.accusharp.hrms.service.policy.ResolvedPolicy;
@@ -94,6 +97,8 @@ public class AttendanceService {
     private final MonthlyAttendanceSummaryRepository monthlyAttendanceSummaryRepository;
     private final AttendanceCalculationService attendanceCalculationService;
     private final AttendanceWindowResolver windowResolver;
+    private final DefaultRosterResolver defaultRosterResolver;
+    private final ShiftService shiftService;
     private final LeaveCalculationService leaveCalculationService;
     private final LopCalculationService lopCalculationService;
     private final HolidayService holidayService;
@@ -199,7 +204,7 @@ public class AttendanceService {
         // the failure only appears when a month is generated before the next
         // period is rostered, so nothing about generating in order reveals it.
         LocalDate previousDay = first.minusDays(1);
-        ResolvedRange resolved = resolve(userId, previousDay, last, rule);
+        ResolvedRange resolved = resolve(employee, previousDay, last, rule);
 
         Map<LocalDate, DailyAttendance> existing = indexByDate(dailyAttendanceRepository
                 .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, previousDay, last));
@@ -247,6 +252,7 @@ public class AttendanceService {
                     resolved.punchesOn(date), holidays, leaveDays, rule, context.policyRules());
             DailyAttendance record = current != null ? current : new DailyAttendance();
             applyComputed(record, userId, schedule, computed.day(), holidays.contains(date));
+            record.setConfiguredWeekOff(employee.hasConfiguredWeekOffOn(date));
 
             // The trace is rebuilt with the day it explains. Only days this run
             // actually writes get here - a locked or MANUAL day was skipped
@@ -294,7 +300,8 @@ public class AttendanceService {
 
                 DailyAttendance record = current != null ? current : new DailyAttendance();
                 applyUnrostered(record, userId, date, loose.getOrDefault(date, List.of()),
-                        holidays.contains(date), leaveDays.containsKey(date));
+                        holidays.contains(date), leaveDays.containsKey(date),
+                        employee.hasConfiguredWeekOffOn(date));
 
                 // No trace to write - the day-scoped policy engine reads the
                 // shift (grace, working hours, overtime window) that this day by
@@ -426,15 +433,21 @@ public class AttendanceService {
      * those from a missing roster would be a guess, and it would be a guess
      * that changes pay.
      *
-     * <p>{@code weekOff} is false: nothing said this day was off. That makes it
-     * a working day and therefore loss of pay, which is the whole point - the
-     * gap is visible in the figure HR reviews rather than silently absent from
-     * it. A mandatory holiday still reads as a holiday, and approved leave
-     * still reads as leave, so neither can be turned into LOP by a missing
-     * roster row.
+     * <p>{@code weekOff} is false unless the employee has a weekly off
+     * configured for this date (see {@code Employee#hasConfiguredWeekOffOn}).
+     * Otherwise nothing said this day was off, which makes it a working day and
+     * therefore loss of pay - the whole point, since the gap is then visible in
+     * the figure HR reviews rather than silently absent from it. A configured
+     * weekly off stays {@code WEEKLY_OFF} even with punches on it: with no shift
+     * assigned the day is not worked, by the rule HR set, but the punches are
+     * kept and {@link DailyAttendance#isUnrosteredPunchOnWeekOff} puts the day
+     * in front of HR. A mandatory holiday still reads as a holiday, and approved
+     * leave still reads as leave, so neither can be turned into LOP by a
+     * missing roster row.
      */
     private void applyUnrostered(DailyAttendance record, String userId, LocalDate date,
-                                 List<DeviceLog> punches, boolean holiday, boolean onLeave) {
+                                 List<DeviceLog> punches, boolean holiday, boolean onLeave,
+                                 boolean configuredWeekOff) {
         record.setUserId(userId);
         record.setAttendanceDate(date);
         record.setShiftCode(null);
@@ -448,23 +461,28 @@ public class AttendanceService {
         // Not an invalid punch: the device worked, the roster is what is
         // missing. Flagging it here would send HR to fix a reader that is fine.
         record.setInvalidPunch(false);
-        record.setWeekOff(false);
+        record.setWeekOff(configuredWeekOff);
+        record.setConfiguredWeekOff(configuredWeekOff);
         record.setHoliday(holiday);
-        record.setStatus(unrosteredStatus(holiday, onLeave));
+        record.setStatus(unrosteredStatus(holiday, onLeave, configuredWeekOff));
     }
 
     /**
-     * Mirrors {@code AttendanceCalculationService.resolveNonWorkingStatus} minus
-     * the two cases a day with no shift cannot be in: there is no weekly off
-     * without a roster row to declare one, and a lone punch is not
-     * {@code INVALID_PUNCH} here because no window was violated.
+     * Mirrors {@code AttendanceCalculationService.resolveNonWorkingStatus},
+     * precedence included, minus the one case a day with no shift cannot be in:
+     * a lone punch is not {@code INVALID_PUNCH} here because no window was
+     * violated. The weekly off comes from the employee's own configuration,
+     * since there is no roster row to declare one.
      */
-    private AttendanceStatus unrosteredStatus(boolean holiday, boolean onLeave) {
+    private AttendanceStatus unrosteredStatus(boolean holiday, boolean onLeave, boolean weekOff) {
         if (onLeave) {
             return AttendanceStatus.ON_LEAVE;
         }
         if (holiday) {
             return AttendanceStatus.HOLIDAY;
+        }
+        if (weekOff) {
+            return AttendanceStatus.WEEKLY_OFF;
         }
         return AttendanceStatus.ABSENT;
     }
@@ -535,16 +553,15 @@ public class AttendanceService {
             throw new BusinessRuleException("lastOut must be after firstIn");
         }
 
-        // Optional, not required. Generation now writes a blank ABSENT day for a
-        // date nobody rostered, and a day HR can see but cannot correct would be
-        // worse than the blank month that day exists to replace. What the missing
-        // shift does cost is the recompute below: with no start time, grace,
-        // break or shift length there is nothing to derive hours from, so such a
-        // day can only be corrected by forcing a status.
-        ShiftSchedule schedule = shiftScheduleRepository.findByUserIdAndShiftDate(userId, date).orElse(null);
+        // Resolved the way generation resolves it, not read straight off the
+        // roster table. Permanent staff have no stored roster rows any more -
+        // their GENERAL days are derived - and reading the table alone refused
+        // every correction on those days, and saved a forced PRESENT with zero
+        // hours because the hours come from the same missing shift.
+        ShiftSchedule schedule = scheduleForCorrection(employee, date, request);
         if (schedule == null && request.getStatus() == null) {
             throw new BusinessRuleException("No shift is rostered for " + userId + " on " + date
-                    + " - assign the shift and regenerate, or supply an explicit status");
+                    + " - choose the shift in the correction, or supply an explicit status");
         }
 
         if (hasPunches && schedule != null) {
@@ -604,6 +621,11 @@ public class AttendanceService {
         record.setUpdatedBy(request.getUpdatedBy());
         record.setUpdatedAt(Instant.now());
 
+        // Snapshotted here as well as at generation: a corrected day is the one
+        // most likely to be argued about, and "was this their weekly off" has to
+        // answer the same way for it as for every other day.
+        record.setConfiguredWeekOff(employee.hasConfiguredWeekOffOn(date));
+
         DailyAttendance saved = dailyAttendanceRepository.save(record);
         rebuildSummary(employee, YearMonth.from(date));
 
@@ -612,6 +634,52 @@ public class AttendanceService {
         auditService.record("ATTENDANCE_CORRECT", "DailyAttendance", userId + " " + date,
                 AuditOutcome.SUCCESS, "status=" + saved.getStatus() + " remarks=" + request.getRemarks());
         return AttendanceRecordResponse.of(saved);
+    }
+
+    /**
+     * The shift a correction measures its times against.
+     *
+     * <p>Whatever generation would have used - a stored roster row, or the day
+     * derived from the employee's fixed shift and weekly off. A shift named in
+     * the request only ever fills a gap: it is assigned for real, as a roster
+     * row, when the day has no shift at all or only a derived one (which was
+     * only ever a default). A shift somebody actually rostered is refused rather
+     * than silently replaced - changing a real assignment belongs on the roster
+     * screen, with its own audit trail and rest-gap warnings, not as a side
+     * effect of fixing a punch time.
+     *
+     * <p>Stored rather than applied to this one correction because the roster
+     * is what everything else reads: the planner, the dashboard, and the next
+     * regeneration, which would otherwise write the day straight back to blank.
+     */
+    private ShiftSchedule scheduleForCorrection(Employee employee, LocalDate date,
+                                                AttendanceCorrectionRequest request) {
+        String userId = employee.getUserId();
+        List<ShiftSchedule> stored = shiftScheduleRepository.findByUserIdAndShiftDate(userId, date)
+                .map(List::of).orElse(List.of());
+        ShiftSchedule current = defaultRosterResolver.merge(employee, stored, date, date).stream()
+                .findFirst().orElse(null);
+
+        String requested = request.getShiftCode();
+        if (requested == null || requested.isBlank()) {
+            return current;
+        }
+        if (current != null && current.getShift().getShiftCode().equals(requested)) {
+            return current;
+        }
+        if (current != null && !current.isDefaulted()) {
+            throw new BusinessRuleException(userId + " is rostered on the " + current.getShift().getShiftCode()
+                    + " shift on " + date + " - change it on the roster, then correct the day");
+        }
+
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+        Shift shift = shiftService.getByCode(requested, companyId);
+        ShiftSchedule assigned = shiftScheduleRepository.save(ShiftSchedule.builder()
+                .userId(userId).shiftDate(date).shift(shift).weekOff(false)
+                .assignedBy(request.getUpdatedBy()).build());
+        auditService.record("SHIFT_SCHEDULE_ASSIGN", "ShiftSchedule", userId + " " + date,
+                AuditOutcome.SUCCESS, "shift=" + shift.getShiftCode() + " via attendance correction");
+        return assigned;
     }
 
     /**
@@ -726,7 +794,7 @@ public class AttendanceService {
         List<AttendancePolicyRule> policyRules =
                 attendancePolicyResolver.loadCompanyRules(companyId, toDate);
 
-        ResolvedRange resolved = resolve(userId, fromDate, toDate, rule);
+        ResolvedRange resolved = resolve(employee, fromDate, toDate, rule);
 
         Map<LocalDate, DailyAttendanceResponse> byDate = new HashMap<>();
         for (AttendanceWindowResolver.DayWindow window : resolved.days()) {
@@ -886,8 +954,15 @@ public class AttendanceService {
             Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
             CompanyGenerationContext context = contextsByCompany.computeIfAbsent(companyId,
                     id -> resolveCompanyContext(id, date, date));
+            // Same merge the single-employee path applies, on the pre-fetched
+            // slice: an employee on a fixed shift has a roster whether or not
+            // anybody wrote one down, and the dashboard has to see it too or
+            // every permanent employee reads as unscheduled.
+            List<ShiftSchedule> roster = defaultRosterResolver.merge(employee,
+                    rosterByUser.getOrDefault(userId, List.of()),
+                    date.minusDays(1), date.plusDays(1));
             List<AttendanceWindowResolver.DayWindow> windows = windowResolver
-                    .windowsFor(rosterByUser.getOrDefault(userId, List.of()), context.rule());
+                    .windowsFor(roster, context.rule());
             if (windows.stream().anyMatch(w -> w.date().equals(date))) {
                 windowsByUser.put(userId, windows);
             }
@@ -961,11 +1036,19 @@ public class AttendanceService {
     }
 
     /** Resolves one employee's range: roster, punches, and who owns what. */
-    private ResolvedRange resolve(String userId, LocalDate fromDate, LocalDate toDate, AttendanceRule rule) {
-        List<ShiftSchedule> roster = shiftScheduleRepository
+    private ResolvedRange resolve(Employee employee, LocalDate fromDate, LocalDate toDate,
+                                  AttendanceRule rule) {
+        List<ShiftSchedule> stored = shiftScheduleRepository
                 .findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
-                        userId, fromDate.minusDays(1), toDate.plusDays(1));
-        return resolveFrom(roster, userId, fromDate, toDate, rule);
+                        employee.getUserId(), fromDate.minusDays(1), toDate.plusDays(1));
+        // The default days are merged over the same one-day-either-side span the
+        // stored rows are read across, not just the requested range. A night
+        // shift on the last day of a month reaches into the next one, and the
+        // partition can only decide that correctly if the neighbouring days are
+        // present - a derived neighbour is as load-bearing there as a stored one.
+        List<ShiftSchedule> roster = defaultRosterResolver.merge(
+                employee, stored, fromDate.minusDays(1), toDate.plusDays(1));
+        return resolveFrom(roster, employee.getUserId(), fromDate, toDate, rule);
     }
 
     /**
@@ -1073,7 +1156,7 @@ public class AttendanceService {
         List<AttendancePolicyRule> policyRules =
                 attendancePolicyResolver.loadCompanyRules(companyId, last);
 
-        ResolvedRange resolved = resolve(employee.getUserId(), first, last, rule);
+        ResolvedRange resolved = resolve(employee, first, last, rule);
         List<AttendanceWindowResolver.DayWindow> roster = resolved.days();
 
         List<DailyAttendanceResponse> days = new ArrayList<>(roster.size());
@@ -1082,6 +1165,8 @@ public class AttendanceService {
         // rules is the one it just computed in memory rather than the stored one.
         Set<LocalDate> latePenalised = new HashSet<>();
         BigDecimal compOff = BigDecimal.ZERO;
+        BigDecimal paidDayOff = BigDecimal.ZERO;
+        long weekOffWorked = 0;
         for (AttendanceWindowResolver.DayWindow window : roster) {
             LocalDate date = window.date();
             AttendanceCalculationService.PolicyAwareDay computed = computeDay(employee, window,
@@ -1091,16 +1176,24 @@ public class AttendanceService {
                     .filter(row -> row.getRuleType() == com.accusharp.hrms.enums.RuleType.LATE_ARRIVAL)
                     .forEach(row -> latePenalised.add(row.getAttendanceDate()));
             compOff = compOff.add(computed.compOffCredit());
+            paidDayOff = paidDayOff.add(computed.paidDayCredit());
             if (!window.schedule().isWeekOff() && !holidays.contains(date)) {
                 workingDates.add(date);
+            }
+            boolean weeklyOff = window.schedule().isWeekOff() || employee.hasConfiguredWeekOffOn(date);
+            if (weeklyOff && computed.day().status().dayFraction().signum() > 0) {
+                weekOffWorked++;
             }
         }
 
         long holidayDays = roster.stream().filter(w -> holidays.contains(w.date())).count();
         long weekOffDays = roster.stream().filter(w -> w.schedule().isWeekOff()).count();
 
+        // A preview covers rostered days only, so it can hold no unassigned
+        // punches on a weekly off - those days only exist once generated.
         return aggregate(employee, month, days, workingDates, leaveDays, holidayDays, weekOffDays,
-                latePenalised, compOff.setScale(DAY_SCALE, RoundingMode.HALF_UP));
+                latePenalised, compOff.setScale(DAY_SCALE, RoundingMode.HALF_UP),
+                new WeekOffTally(paidDayOff.setScale(DAY_SCALE, RoundingMode.HALF_UP), weekOffWorked, 0));
     }
 
     /**
@@ -1117,7 +1210,10 @@ public class AttendanceService {
                 stored.stream().filter(DailyAttendance::isHoliday).count(),
                 stored.stream().filter(DailyAttendance::isWeekOff).count(),
                 latePenalisedDates(employee.getUserId(), month),
-                compOffCreditDays(employee.getUserId(), month));
+                compOffCreditDays(employee.getUserId(), month),
+                new WeekOffTally(paidDayOffDays(employee.getUserId(), month),
+                        stored.stream().filter(DailyAttendance::isWorkedOnWeekOff).count(),
+                        stored.stream().filter(DailyAttendance::isUnrosteredPunchOnWeekOff).count()));
     }
 
     /** Rolls the stored days up and writes the cached summary. */
@@ -1145,6 +1241,9 @@ public class AttendanceService {
         summary.setLopDays(rolled.lopDays());
         summary.setPolicyLopDays(rolled.policyLopDays());
         summary.setCompOffCreditDays(rolled.compOffCreditDays());
+        summary.setPaidDayOffDays(rolled.paidDayOffDays());
+        summary.setWeekOffWorkedDays(rolled.weekOffWorkedDays());
+        summary.setWeekOffUnrosteredPunchDays(rolled.weekOffUnrosteredPunchDays());
 
         // Replaced wholesale, never merged: the outcomes are derived from a
         // replay that starts at a zero accumulator, so a rebuild must leave
@@ -1157,6 +1256,14 @@ public class AttendanceService {
         return monthlyAttendanceSummaryRepository.save(summary);
     }
 
+    /**
+     * A month's weekly-off figures: days a {@code DAY_OFF_WORK = PAID_DAY} rule
+     * credited into presentDays, days a weekly off was worked, and days somebody
+     * punched on their weekly off with no shift assigned.
+     */
+    private record WeekOffTally(BigDecimal paidDayOffDays, long workedDays, long unrosteredPunchDays) {
+    }
+
     /** The one place month-level figures are derived, stored or preview. */
     private MonthlyAttendanceResponse aggregate(Employee employee, YearMonth month,
                                                 List<DailyAttendanceResponse> days,
@@ -1164,21 +1271,31 @@ public class AttendanceService {
                                                 Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays,
                                                 long holidayDays, long weekOffDays,
                                                 Set<LocalDate> latePenalisedDates,
-                                                BigDecimal compOffCreditDays) {
+                                                BigDecimal compOffCreditDays,
+                                                WeekOffTally weekOffTally) {
 
         long workingDays = workingDates.size();
 
-        BigDecimal presentDays = days.stream()
+        // Attendance on the days they were expected to work. Absence is measured
+        // against this alone, so a Tuesday missed and a Sunday worked in its
+        // place still reads as one absence - the swap is visible, not hidden.
+        BigDecimal attendedWorkingDays = days.stream()
                 .filter(day -> workingDates.contains(day.attendanceDate()))
                 .map(day -> attendanceCalculationService.dayFraction(day.status()))
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .setScale(DAY_SCALE, RoundingMode.HALF_UP);
+        // Plus any worked day off a DAY_OFF_WORK = PAID_DAY rule credited - added
+        // to presentDays and never to workingDays. For a per-attended-day
+        // employee that is one more paid day up to the cap; for anyone carrying
+        // LOP it offsets an absence, and LOP still floors at zero.
+        BigDecimal presentDays = attendedWorkingDays.add(weekOffTally.paidDayOffDays())
                 .setScale(DAY_SCALE, RoundingMode.HALF_UP);
 
         BigDecimal leaveDayCount = leaveCalculationService.totalLeaveDays(leaveDays, workingDates);
         BigDecimal paidLeaveDays = leaveCalculationService.paidLeaveDays(leaveDays, workingDates);
 
         BigDecimal absentDays = BigDecimal.valueOf(workingDays)
-                .subtract(presentDays)
+                .subtract(attendedWorkingDays)
                 .subtract(leaveDayCount)
                 .max(BigDecimal.ZERO)
                 .setScale(DAY_SCALE, RoundingMode.HALF_UP);
@@ -1213,7 +1330,9 @@ public class AttendanceService {
         return new MonthlyAttendanceResponse(employee.getUserId(), employee.getEmployeeName(), month,
                 workingDays, presentDays, absentDays, halfDays, leaveDayCount, holidayDays, weekOffDays,
                 lateCount, earlyExitCount, invalidPunches, totalHours, overtimeHours, lopDays,
-                policyResult.lopDays(), compOffCreditDays, policyResult.outcomes(), days);
+                policyResult.lopDays(), compOffCreditDays, weekOffTally.paidDayOffDays(),
+                weekOffTally.workedDays(), weekOffTally.unrosteredPunchDays(),
+                policyResult.outcomes(), days);
     }
 
     /**
@@ -1236,6 +1355,22 @@ public class AttendanceService {
         return attendancePolicyResolver.resolve(
                 attendancePolicyResolver.loadCompanyRules(companyId, firstOfMonth),
                 employee, firstOfMonth);
+    }
+
+    /**
+     * Days of pay a {@code DAY_OFF_WORK = PAID_DAY} rule credited, read back off
+     * the stored trace exactly as comp-off is - so the summary resync every
+     * report runs first cannot quietly take the day back.
+     */
+    private BigDecimal paidDayOffDays(String userId, YearMonth month) {
+        return policyApplicationRepository
+                .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(
+                        userId, month.atDay(1), month.atEndOfMonth())
+                .stream()
+                .map(AttendancePolicyApplication::getPaidDayCredit)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .setScale(DAY_SCALE, RoundingMode.HALF_UP);
     }
 
     /** Comp-off days the month's stored days earned under a {@code DAY_OFF_WORK} rule. */

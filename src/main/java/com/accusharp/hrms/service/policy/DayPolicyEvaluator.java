@@ -79,6 +79,7 @@ public class DayPolicyEvaluator {
 
     /**
      * @param compOffCredit days of compensatory off this day earned, or zero
+     * @param paidDayCredit days of pay a {@code PAID_DAY} treatment credited, or zero
      * @param trace         one row per rule that actually changed something.
      *                      A rule that resolved but did not fire leaves no row:
      *                      the trace answers "why is this day what it is", and
@@ -86,11 +87,12 @@ public class DayPolicyEvaluator {
      */
     public record DayPolicyResult(AttendanceStatus status, int lateMinutes, long overtimeMinutes,
                                   BigDecimal compOffCredit,
+                                  BigDecimal paidDayCredit,
                                   List<AttendancePolicyApplication> trace) {
 
         static DayPolicyResult unchanged(DayContext context) {
             return new DayPolicyResult(context.baseStatus(), context.lateMinutes(),
-                    context.overtimeMinutes(), BigDecimal.ZERO, List.of());
+                    context.overtimeMinutes(), BigDecimal.ZERO, BigDecimal.ZERO, List.of());
         }
     }
 
@@ -109,6 +111,7 @@ public class DayPolicyEvaluator {
         int lateMinutes = context.lateMinutes();
         long overtimeMinutes = context.overtimeMinutes();
         BigDecimal compOffCredit = BigDecimal.ZERO;
+        BigDecimal paidDayCredit = BigDecimal.ZERO;
         List<AttendancePolicyApplication> trace = new ArrayList<>();
 
         boolean dayOff = context.weekOff() || context.holiday();
@@ -136,7 +139,7 @@ public class DayPolicyEvaluator {
             }
             // Nothing else can apply to a day with one punch: there are no hours
             // to threshold, no exit to measure, and no overtime to round.
-            return new DayPolicyResult(status, lateMinutes, overtimeMinutes, compOffCredit, List.copyOf(trace));
+            return new DayPolicyResult(status, lateMinutes, overtimeMinutes, compOffCredit, paidDayCredit, List.copyOf(trace));
         }
 
         if (context.punchCount() < 2) {
@@ -199,9 +202,7 @@ public class DayPolicyEvaluator {
                         context.weekOff() ? params.onWeeklyOff() : params.onHoliday();
 
                 if (treatment == DayOffWork.Treatment.COMP_OFF_CREDIT) {
-                    BigDecimal credit = context.workedMinutes() >= params.fullCreditMinutes() ? BigDecimal.ONE
-                            : context.workedMinutes() >= params.halfCreditMinutes() ? HALF
-                            : BigDecimal.ZERO;
+                    BigDecimal credit = creditFor(context.workedMinutes(), params);
                     long overtimeBefore = overtimeMinutes;
                     overtimeMinutes = 0;
                     compOffCredit = credit;
@@ -219,6 +220,26 @@ public class DayPolicyEvaluator {
                                             credit.toPlainString(), hours(overtimeBefore).toPlainString(),
                                             rule.get().ruleLabel()))
                             .build());
+                }
+
+                if (treatment == DayOffWork.Treatment.PAID_DAY) {
+                    BigDecimal credit = creditFor(context.workedMinutes(), params);
+                    // A day that earns nothing changed nothing, so it leaves no
+                    // trace row - the trace answers "why is this day what it is".
+                    if (credit.signum() > 0) {
+                        paidDayCredit = credit;
+                        trace.add(AttendancePolicyApplication.builder()
+                                .userId(context.userId()).attendanceDate(context.shiftDate())
+                                .ruleId(rule.get().getId()).ruleType(rule.get().getRuleType())
+                                .ruleVersion(rule.get().getVersion())
+                                .scope(rule.get().getScope()).scopeRef(rule.get().getScopeRef())
+                                .paidDayCredit(credit.setScale(2, RoundingMode.HALF_UP))
+                                .explanation("worked %d min on a %s: counts as %s paid day in presentDays, rule %s"
+                                        .formatted(context.workedMinutes(),
+                                                context.weekOff() ? "weekly off" : "holiday",
+                                                credit.toPlainString(), rule.get().ruleLabel()))
+                                .build());
+                    }
                 }
             }
         }
@@ -245,7 +266,7 @@ public class DayPolicyEvaluator {
             }
         }
 
-        return new DayPolicyResult(status, lateMinutes, overtimeMinutes, compOffCredit, List.copyOf(trace));
+        return new DayPolicyResult(status, lateMinutes, overtimeMinutes, compOffCredit, paidDayCredit, List.copyOf(trace));
     }
 
     private String overtimeExplanation(Overtime params, long before, long after, AttendancePolicyRule rule) {
@@ -300,5 +321,16 @@ public class DayPolicyEvaluator {
 
     private BigDecimal hours(long minutes) {
         return BigDecimal.valueOf(minutes).divide(MINUTES_PER_HOUR, 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * A day off's credit by the rule's minute tiers - shared by comp-off and
+     * paid-day, so the two treatments can never disagree about what counts as
+     * a full day's work.
+     */
+    private static BigDecimal creditFor(long workedMinutes, DayOffWork params) {
+        return workedMinutes >= params.fullCreditMinutes() ? BigDecimal.ONE
+                : workedMinutes >= params.halfCreditMinutes() ? HALF
+                : BigDecimal.ZERO;
     }
 }

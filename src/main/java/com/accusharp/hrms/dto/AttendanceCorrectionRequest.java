@@ -30,6 +30,20 @@ public class AttendanceCorrectionRequest {
     /** Declares the day outright when there are no punch times to give. */
     private AttendanceStatus status;
 
+    /**
+     * The shift the corrected times are measured against, for a day that has
+     * none - an unrostered day, which generation wrote blank because there was
+     * nothing to measure its punches against. Saved as a real roster row, so the
+     * planner shows it and a later regeneration computes against it.
+     *
+     * <p>Only fills a gap. A day whose shift was derived (see {@code
+     * DefaultRosterResolver}) can be switched, since that shift was only ever a
+     * default; a shift somebody actually rostered cannot, because changing a real
+     * assignment belongs on the roster screen with its own audit trail and
+     * rest-gap warnings, not as a side effect of fixing a punch time.
+     */
+    private String shiftCode;
+
     /** Mandatory - a correction without a reason is not auditable. */
     @NotBlank
     @Size(max = 500)

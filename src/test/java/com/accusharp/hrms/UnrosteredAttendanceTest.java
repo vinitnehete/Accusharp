@@ -340,7 +340,14 @@ class UnrosteredAttendanceTest {
         return employeeRepository.save(Employee.builder()
                 .userId(userId).employeeCode("EMP-" + userId).employeeName(userId)
                 .company(company)
-                .status(EmployeeStatus.PERMANENT).recordStatus(RecordStatus.ACTIVE).role(role)
+                // CONTRACT, not PERMANENT: every test in this class builds a
+                // deliberately sparse roster and asserts against exactly the days
+                // it wrote. A permanent employee is auto-rostered onto GENERAL for
+                // every unwritten day (DefaultRosterResolver), which would fill the
+                // gaps this class exists to reason about. Payroll treats the two
+                // identically - see PayBehaviourResolver#legacy - so nothing else
+                // these tests assert is affected.
+                .status(EmployeeStatus.CONTRACT).recordStatus(RecordStatus.ACTIVE).role(role)
                 .joiningDate(joining).relievingDate(relieving)
                 .overtimeEligible(false)
                 .accountEnabled(true).accountLocked(false).failedLoginAttempts(0)

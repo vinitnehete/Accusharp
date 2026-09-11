@@ -15,6 +15,21 @@ public record MonthlyPlannerResponse(
         List<EmployeeRow> rows
 ) {
 
-    public record EmployeeRow(String userId, String employeeName, Map<LocalDate, String> shiftByDate) {
+    /**
+     * @param shiftByDate     the shift code for each planned date, or {@code WO}
+     *                        for a weekly off
+     * @param defaultedByDate which of those days nobody assigned - derived from
+     *                        the employee's fixed shift and configured weekly
+     *                        off rather than stored (see
+     *                        {@code DefaultRosterResolver}). Keyed identically
+     *                        to {@code shiftByDate}, and additive: a client that
+     *                        ignores it renders exactly what it rendered before.
+     *                        The planner is where HR decides what still needs
+     *                        assigning, so "this is just the usual shift" and
+     *                        "somebody chose this" have to look different.
+     */
+    public record EmployeeRow(String userId, String employeeName,
+                              Map<LocalDate, String> shiftByDate,
+                              Map<LocalDate, Boolean> defaultedByDate) {
     }
 }

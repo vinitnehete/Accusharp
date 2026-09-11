@@ -58,8 +58,8 @@ public enum RuleType {
     LATE_ARRIVAL(RuleEvaluationScope.DAY),
 
     /**
-     * What working a weekly off or a holiday earns: overtime pay, or a
-     * compensatory-off credit instead.
+     * What working a weekly off or a holiday earns: overtime pay, a
+     * compensatory-off credit instead, or a paid day.
      *
      * <p>Worth knowing what the alternative is actually worth. Overtime is
      * {@code max(0, worked - workingHours * 60)} on every day, day off

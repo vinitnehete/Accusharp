@@ -628,7 +628,7 @@ public class PayrollService {
      * How many days of this calendar period the employee was actually on the
      * books - the intersection of the period with [{@code joiningDate},
      * {@code relievingDate}]. A joiner/leaver never has attendance/roster
-     * data for the days outside that window (see {@code DefaultRosterService}),
+     * data for the days outside that window (see {@code DefaultRosterResolver}),
      * so this is what keeps proration from treating those invisible days as
      * fully worked. An employee with no {@code joiningDate} on record (legacy
      * data predating the field) is treated as employed for the whole period,

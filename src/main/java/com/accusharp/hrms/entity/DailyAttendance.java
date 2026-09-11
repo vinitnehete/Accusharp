@@ -83,6 +83,24 @@ public class DailyAttendance {
     @Column(name = "holiday", nullable = false)
     private boolean holiday;
 
+    /**
+     * Whether this date was one of the employee's configured weekly-off days
+     * when the day was generated - see {@code Employee#hasConfiguredWeekOffOn}.
+     *
+     * <p>Not the same as {@link #weekOff}. HR can roster someone onto their
+     * weekly off, which makes it a working day ({@code weekOff = false}) that is
+     * still their weekly off - and that is exactly the day "who worked their
+     * weekly off" has to find.
+     *
+     * <p>Snapshotted, like {@link #holiday}, rather than re-derived from the
+     * employee record. Every report resyncs the monthly summaries from these
+     * rows before reading them, so a re-derived flag would let a change to
+     * someone's weekly off in October silently rewrite September.
+     */
+    @Column(name = "configured_week_off", nullable = false,
+            columnDefinition = "boolean not null default false")
+    private boolean configuredWeekOff;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private AttendanceStatus status;
@@ -137,5 +155,20 @@ public class DailyAttendance {
     /** A day the employee was expected to work - the LOP denominator. */
     public boolean isWorkingDay() {
         return !weekOff && !holiday;
+    }
+
+    /** A weekly off - by roster or by the employee's own configuration - that was worked. */
+    public boolean isWorkedOnWeekOff() {
+        return (weekOff || configuredWeekOff) && status.dayFraction().signum() > 0;
+    }
+
+    /**
+     * Punches on a weekly off with no shift assigned. Not worked, by the rule HR
+     * set - with no shift the day is not present - but it is either a roster
+     * somebody forgot to write or a day worked unpaid, and HR needs to see both.
+     */
+    public boolean isUnrosteredPunchOnWeekOff() {
+        return (weekOff || configuredWeekOff) && shiftCode == null && firstIn != null
+                && status.dayFraction().signum() == 0;
     }
 }

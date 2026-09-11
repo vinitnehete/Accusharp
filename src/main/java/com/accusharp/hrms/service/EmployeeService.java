@@ -27,7 +27,6 @@ import com.accusharp.hrms.repository.SalaryStructureRevisionRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
-import com.accusharp.hrms.service.shift.DefaultRosterService;
 import com.accusharp.hrms.util.TemporaryPasswordGenerator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -75,7 +74,6 @@ public class EmployeeService {
     private final AuditService auditService;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
-    private final DefaultRosterService defaultRosterService;
     private final SalaryRevisionRepository salaryRevisionRepository;
     private final SalaryStructureRevisionRepository salaryStructureRevisionRepository;
 
@@ -107,8 +105,6 @@ public class EmployeeService {
         EmployeeResponse response = employeeMapper.toResponse(saved);
         auditService.record("EMPLOYEE_CREATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
                 "role=" + response.role());
-        // Permanent employees default onto the GENERAL shift for every day - see DefaultRosterService.
-        defaultRosterService.ensureForEmployee(saved);
         return new EmployeeCreationResponse(response, temporaryPassword);
     }
 
@@ -186,8 +182,6 @@ public class EmployeeService {
         EmployeeResponse response = employeeMapper.toResponse(saved);
         auditService.record("EMPLOYEE_UPDATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
                 "role=" + response.role());
-        // Covers status changing to PERMANENT or a re-activation - a no-op otherwise.
-        defaultRosterService.ensureForEmployee(saved);
         return response;
     }
 
@@ -960,6 +954,14 @@ public class EmployeeService {
         employee.setMedicalAllowance(request.getMedicalAllowance());
         employee.setOtherAllowance(request.getOtherAllowance());
         employee.setOvertimeEligible(request.isOvertimeEligible());
+        // Null leaves whatever is already there, so a caller that does not know
+        // about this field yet - an old integration, a bulk sheet without the
+        // column - cannot blank out a week-off somebody configured. Clearing it
+        // is done by sending an empty set, which is the explicit "no weekly
+        // off" statement rather than the absence of one.
+        if (request.getWeekOffDays() != null) {
+            employee.setWeekOffDays(request.getWeekOffDays());
+        }
         applyStructureOverride(employee, request);
     }
 

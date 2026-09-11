@@ -28,8 +28,7 @@ import java.time.Instant;
  *       retained for no purpose is only ever a liability in a breach.</li>
  * </ul>
  *
- * <p>Runs daily at 03:00, deliberately after {@code DefaultRosterService}'s
- * 02:00 monthly job so the two never contend. Deletion is limited to rows that
+ * <p>Runs daily at 03:00. Deletion is limited to rows that
  * are already useless: expired, or revoked before the retention cutoff.
  * Recently-revoked rows are kept for a grace period because
  * {@code RefreshTokenService} relies on finding a revoked row to detect replay

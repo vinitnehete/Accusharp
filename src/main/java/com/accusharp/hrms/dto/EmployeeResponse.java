@@ -6,7 +6,9 @@ import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 
 import java.math.BigDecimal;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.util.Set;
 
 /** Flattens the lazy master associations so the API never leaks proxies. */
 public record EmployeeResponse(
@@ -56,6 +58,15 @@ public record EmployeeResponse(
         BigDecimal otherAllowance,
         BigDecimal grossSalaryWage,
         boolean overtimeEligible,
+        Set<DayOfWeek> weekOffDays,
+
+        /**
+         * Whether this employee is put on the default GENERAL shift for days
+         * nobody rostered - see {@code Employee.autoRostersDefaultShift()}. The
+         * form needs it to say what an unset weekly off means: Sunday for these
+         * employees, no weekly off at all for everyone else.
+         */
+        boolean autoRostersDefaultShift,
         boolean salaryStructureOverridden
 ) {
 }

@@ -12,8 +12,10 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Set;
 
 /**
  * Employee master. Holds the salary <em>structure</em>, never a specific
@@ -259,6 +261,92 @@ public class Employee {
 
     @Column(name = "overtime_eligible", nullable = false)
     private boolean overtimeEligible;
+
+    // ---- the working week ---------------------------------------------------
+
+    /**
+     * Which days of the week this employee does not work.
+     *
+     * <p>Null means unconfigured, and is <b>not</b> the same as empty - see
+     * {@link #effectiveWeekOffDays()} and {@link WeekOffDaysConverter}.
+     *
+     * <p>This is the whole of what a roster row used to say about an employee
+     * who always works the same shift. They were previously given ninety
+     * generated {@code ShiftSchedule} rows a quarter whose only content was
+     * "Sunday is off" - hardcoded, so every employee got Sunday whether that
+     * was their day or not, and the rows ran out two months ahead and took
+     * their attendance with them.
+     */
+    @Convert(converter = WeekOffDaysConverter.class)
+    @Column(name = "week_off_days", length = 120)
+    private Set<DayOfWeek> weekOffDays;
+
+    /**
+     * The week-off days to actually apply, resolving the unconfigured case.
+     *
+     * <p>Null resolves to Sunday: that is what the deleted
+     * {@code DefaultRosterService} wrote into every roster row it created, so
+     * an existing database - where this column is null on every row - keeps
+     * behaving exactly as it did. Adopting the field is then per-employee, and
+     * setting it to an empty set is how a company says an employee has no
+     * weekly off at all.
+     */
+    public Set<DayOfWeek> effectiveWeekOffDays() {
+        return weekOffDays == null ? Set.of(DayOfWeek.SUNDAY) : weekOffDays;
+    }
+
+    /** Whether this date falls on one of this employee's week-off days. */
+    public boolean isWeekOffOn(LocalDate date) {
+        return effectiveWeekOffDays().contains(date.getDayOfWeek());
+    }
+
+    /**
+     * Whether this date is one of this employee's weekly-off days, for the two
+     * places that ask regardless of how the day was rostered: turning an
+     * unassigned day into a weekly off rather than an absence, and tracking who
+     * worked theirs.
+     *
+     * <p>Auto-rostered employees keep {@link #isWeekOffOn}'s unset-means-Sunday
+     * fallback, because that is what their roster rows always said. Everyone
+     * else has a weekly off only once somebody sets one: the deleted cron never
+     * rostered day-wise or contract staff, so for them there is no existing
+     * behaviour to preserve - and every reason not to invent a day off nobody
+     * agreed to.
+     */
+    public boolean hasConfiguredWeekOffOn(LocalDate date) {
+        if (autoRostersDefaultShift()) {
+            return isWeekOffOn(date);
+        }
+        return weekOffDays != null && weekOffDays.contains(date.getDayOfWeek());
+    }
+
+    /**
+     * Whether attendance generation should put this employee on the default
+     * {@code GENERAL} shift for days nobody rostered explicitly.
+     *
+     * <p>Reads {@link EmploymentType#isAutoRosterDefaultShift()} when the
+     * employee has a configurable type, and otherwise falls back to the legacy
+     * {@code status == PERMANENT} rule - the same fallback shape
+     * {@code PayBehaviourResolver} uses, and for the same reason: a database
+     * with no {@code employment_type} rows behaves precisely as it did before
+     * the table existed.
+     *
+     * <p>Deliberately not routed through {@code PayBehaviourResolver}, which
+     * needs a {@code SalaryRule} the attendance engine has no business loading.
+     *
+     * <p>A contractor's worker never qualifies, whatever the flag says. They
+     * are on site only for the days their contractor sends them, so a default
+     * roster would manufacture absent days - and therefore an invoice dispute -
+     * for days nobody was expected.
+     */
+    public boolean autoRostersDefaultShift() {
+        if (isContractorWorker()) {
+            return false;
+        }
+        return employmentType == null
+                ? status == EmployeeStatus.PERMANENT
+                : employmentType.isAutoRosterDefaultShift();
+    }
 
     // ---- authentication -----------------------------------------------------
     // userId doubles as the login username. Never serialized to any response DTO.
