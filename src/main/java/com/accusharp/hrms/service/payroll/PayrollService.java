@@ -20,6 +20,7 @@ import com.accusharp.hrms.service.attendance.AttendanceService;
 import com.accusharp.hrms.service.calculation.DeductionCalculationService;
 import com.accusharp.hrms.service.calculation.LopCalculationService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import com.accusharp.hrms.service.leave.EarnedLeaveAccrualService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -76,6 +77,7 @@ public class PayrollService {
     private final LopCalculationService lopCalculationService;
     private final PayBehaviourResolver payBehaviourResolver;
     private final AuditService auditService;
+    private final EarnedLeaveAccrualService earnedLeaveAccrualService;
 
     /**
      * Generates the period once; a second call is a conflict.
@@ -335,6 +337,12 @@ public class PayrollService {
         // with it - a failed generation never leaves a month locked with no
         // payroll to show for it.
         attendanceService.lockMonth(employee, period);
+
+        // Earned leave is credited here, from the same locked attendance this
+        // payroll pays from - the one moment those figures cannot move again.
+        // Idempotent per month, so a regeneration adjusts the credit rather than
+        // adding a second one; a company with no EL rule posts nothing.
+        earnedLeaveAccrualService.accrueMonth(employee, period, attendance);
 
         Payroll payroll = new Payroll();
         payroll.setEmployeeId(employee.getUserId());

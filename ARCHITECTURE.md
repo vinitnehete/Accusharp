@@ -688,8 +688,10 @@ grant.
 Employee applies -> Supervisor endorses -> HR approves
 ```
 
-Balance moves at exactly two points: it is consumed on final approval and
-restored on cancellation. A rejection never touches it. Overlapping open or
+Applying for leave moves the balance at exactly two points: it is consumed on
+final approval and restored on cancellation. A rejection never touches it. (Earned
+leave and the year close move it too - see below - but always through the
+`leave_credit` ledger, never through a leave request.) Overlapping open or
 approved requests are refused, half days are only valid on a single-day request,
 and the balance is checked at application time so the approver never hits an
 empty quota.
@@ -705,6 +707,49 @@ independently-failable-row shape as the other bulk/CSV endpoints below.
 `LeaveRequest.origin` (`SELF_SERVICE`/`HR_DIRECT`) is what distinguishes the
 two once both sit at `APPROVED` - the leave-side analog of `DailyAttendance`'s
 `GENERATED`/`MANUAL` `recordStatus`.
+
+### Leave rules, earned leave and year close
+
+Who gets which leave is a `LeaveRule` per leave type and population - company-wide,
+overridden per employment type, most specific wins (`LeaveRuleResolver`). A rule
+gives the type as a yearly grant (pro-rated for mid-year joiners), earned from
+attendance (EL only), or not at all. With no rule, a balance opens at the
+`LeaveType` default - CL 12, SL 8, EL 0 - exactly as before rules existed, and a
+balance row that already exists is never re-seeded, so hand-entered opening EL
+balances survive any rule configured afterwards. Contractor workers get none.
+
+Two more postings move a balance's quota. Each is one row in the `leave_credit`
+ledger with its reason in words, and each is idempotent per period - reposting
+replaces the row and moves the balance by the difference:
+
+- **Monthly EL accrual** - `EarnedLeaveAccrualService`, called by `PayrollService`
+  as it locks the month, so the credit comes from attendance that can no longer
+  change. Days counted = working days minus LOP. A full month (employed all month,
+  no LOP) earns 1.5; otherwise the higher of the rule's step (20 days = 1,
+  10 = 0.5) or the legal floor of one day per 20 worked (OSH Code 2020 s.32, in
+  force since 21 November 2025), rounded up. The EL rule's effective month is the
+  go-live: nothing before it is ever credited. Regenerating payroll recomputes the
+  month's credit rather than adding a second one.
+- **Year close** - `POST /api/leave-balances/close-year`, run by HR once December's
+  payroll is done (December's EL is credited by that run, in January - which is
+  why this is not an automatic 1 January rollover). Carries each balance into the
+  next year up to its rule's cap (30 for EL); anything above the cap is reported
+  for payout, not paid. A type with no cap lapses. Safe to rerun.
+
+**The leave year is per company** - `Company.leaveYearStartMonth`, January
+(calendar) or April (financial), set at `PUT /api/leave-settings`. Balances are
+numbered by the year their leave year starts in (`LeaveYears`), so a calendar
+company is unchanged; for an April company, 2026 is April 2026 to March 2027,
+shown as 2026-27. Which balance a leave comes out of and goes back to, where a
+month's EL lands, joiner pro-rating and the year close all follow it, and a leave
+may not span two leave years. It can be switched only while the company has no
+leave taken, pending or credited; a balance that merely exists - they open
+automatically when viewed - does not block it.
+
+What happens above a rule's carry-forward cap is the rule's `excessOverCap`:
+listed for payout (the default, and what the OSH Code requires for its "workers")
+or lapsed. "Only EL carries, at most 45, the rest lapses" is three rules: EL with
+cap 45 and `LAPSE`, CL and SL with no cap.
 
 ## Security &amp; multi-tenancy
 

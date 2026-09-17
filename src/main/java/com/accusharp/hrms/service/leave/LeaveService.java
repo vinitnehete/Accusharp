@@ -63,16 +63,15 @@ public class LeaveService {
                 && !payload.getFromDate().equals(payload.getToDate())) {
             throw new BusinessRuleException("A half day leave must start and end on the same date");
         }
-        if (payload.getFromDate().getYear() != payload.getToDate().getYear()) {
-            throw new BusinessRuleException("A leave request cannot span two calendar years - split it");
-        }
+        assertWithinOneLeaveYear(employee, payload.getFromDate(), payload.getToDate());
         assertNoOverlap(payload.getUserId(), payload.getFromDate(), payload.getToDate());
 
         BigDecimal totalDays = leaveCalculationService.countDays(
                 payload.getFromDate(), payload.getToDate(), payload.getDuration());
 
         // Fail early rather than letting the approver hit an empty balance.
-        assertBalanceAvailable(payload.getUserId(), payload.getLeaveType(), payload.getFromDate().getYear(), totalDays);
+        assertBalanceAvailable(payload.getUserId(), payload.getLeaveType(),
+                leaveYearOf(employee, payload.getFromDate()), totalDays);
 
         LeaveRequest request = LeaveRequest.builder()
                 .userId(payload.getUserId())
@@ -109,7 +108,7 @@ public class LeaveService {
      */
     @Transactional
     public LeaveResponse hrDirectCreate(LeaveHrDirectRequest request) {
-        employeeService.getEntityByUserId(request.getUserId()); // tenant check, same as assertTargetAccessible
+        Employee employee = employeeService.getEntityByUserId(request.getUserId()); // tenant check, same as assertTargetAccessible
         assertHrOrAdmin(request.getApproverId());
 
         if (request.getFromDate().isAfter(request.getToDate())) {
@@ -119,16 +118,15 @@ public class LeaveService {
                 && !request.getFromDate().equals(request.getToDate())) {
             throw new BusinessRuleException("A half day leave must start and end on the same date");
         }
-        if (request.getFromDate().getYear() != request.getToDate().getYear()) {
-            throw new BusinessRuleException("A leave request cannot span two calendar years - split it");
-        }
+        assertWithinOneLeaveYear(employee, request.getFromDate(), request.getToDate());
         assertNoOverlap(request.getUserId(), request.getFromDate(), request.getToDate());
 
         BigDecimal totalDays = leaveCalculationService.countDays(
                 request.getFromDate(), request.getToDate(), request.getDuration());
-        assertBalanceAvailable(request.getUserId(), request.getLeaveType(), request.getFromDate().getYear(), totalDays);
+        assertBalanceAvailable(request.getUserId(), request.getLeaveType(),
+                leaveYearOf(employee, request.getFromDate()), totalDays);
 
-        leaveBalanceService.consume(request.getUserId(), request.getFromDate().getYear(),
+        leaveBalanceService.consume(request.getUserId(), leaveYearOf(employee, request.getFromDate()),
                 request.getLeaveType(), totalDays);
 
         LeaveRequest entity = LeaveRequest.builder()
@@ -183,7 +181,7 @@ public class LeaveService {
         }
         assertHrOrAdmin(decision.getApproverId());
 
-        leaveBalanceService.consume(request.getUserId(), request.getFromDate().getYear(),
+        leaveBalanceService.consume(request.getUserId(), leaveYearOf(request.getUserId(), request.getFromDate()),
                 request.getLeaveType(), request.getTotalDays());
 
         request.setStatus(LeaveStatus.APPROVED);
@@ -225,7 +223,7 @@ public class LeaveService {
             throw new BusinessRuleException("Leave is already " + request.getStatus());
         }
         if (request.getStatus().consumesBalance()) {
-            leaveBalanceService.restore(request.getUserId(), request.getFromDate().getYear(),
+            leaveBalanceService.restore(request.getUserId(), leaveYearOf(request.getUserId(), request.getFromDate()),
                     request.getLeaveType(), request.getTotalDays());
         }
         request.setStatus(LeaveStatus.CANCELLED);
@@ -305,6 +303,34 @@ public class LeaveService {
                 .isEmpty();
         if (overlaps) {
             throw new BusinessRuleException("An open or approved leave already covers part of this range");
+        }
+    }
+
+    /**
+     * The leave year a date's leave comes out of - the company's own year,
+     * starting in January or April (see {@link LeaveYears}). Approval, cancellation
+     * and the balance check all go through here, so a leave always comes out of
+     * and goes back to the same balance.
+     */
+    private int leaveYearOf(Employee employee, LocalDate date) {
+        return LeaveYears.leaveYearOf(date, LeaveYears.startMonthOf(employee));
+    }
+
+    private int leaveYearOf(String userId, LocalDate date) {
+        return leaveYearOf(employeeService.getEntityByUserId(userId), date);
+    }
+
+    /**
+     * One request, one balance: a leave running across the end of the company's
+     * leave year - 31 December, or 31 March for a financial-year company - would
+     * have to come out of two, so it has to be split instead.
+     */
+    private void assertWithinOneLeaveYear(Employee employee, LocalDate fromDate, LocalDate toDate) {
+        int startMonth = LeaveYears.startMonthOf(employee);
+        int fromYear = LeaveYears.leaveYearOf(fromDate, startMonth);
+        if (fromYear != LeaveYears.leaveYearOf(toDate, startMonth)) {
+            throw new BusinessRuleException("A leave request cannot span two leave years - split it at "
+                    + LeaveYears.endOf(fromYear, startMonth));
         }
     }
 

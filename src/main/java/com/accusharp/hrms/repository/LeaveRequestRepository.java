@@ -38,4 +38,7 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
      */
     List<LeaveRequest> findAllByUserIdInAndFromDateLessThanEqualAndToDateGreaterThanEqualOrderByFromDateDesc(
             Collection<String> userIds, LocalDate toDate, LocalDate fromDate);
+
+    /** Whether any of these employees has a live leave request - see {@code LeaveSettingsService}. */
+    boolean existsByUserIdInAndStatusIn(Collection<String> userIds, Collection<LeaveStatus> statuses);
 }
