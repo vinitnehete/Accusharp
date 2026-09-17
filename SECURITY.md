@@ -481,7 +481,8 @@ product decision. Confirmed shape:
   deliberately excluded**: these stay company-wide for SUPERVISOR/HR/ADMIN
   exactly as before - they're aggregate reports, not individual-record
   access, and restricting them wasn't part of what this phase was asked to
-  fix.
+  fix. **Superseded by Phase 14**: reports and the dashboard are now scoped
+  the same way.
 
 ### The mechanism: one pair of methods on `EmployeeService`
 
@@ -891,6 +892,55 @@ behaviour in the detail.
 
 **Proof:** `EmploymentTypeHttpTest` (8 tests) and
 `EmploymentTypePayrollTest.noEmploymentTypeFallsBackToTheLegacyEnum`.
+
+## Reports scoped to a supervisor's team, and two silent state changes (Phase 14)
+
+### Reports and the dashboard follow self-service scoping
+
+Phase 8 left `REPORT_READ` and `DASHBOARD_READ` company-wide, and every
+`SUPERVISOR` holds both. The UI hid the Reports menu from supervisors, but the
+API did not: any supervisor could pull the whole company's payroll register,
+bank advice, PF ECR, ESI return, PT register and TDS figures. The product
+decision is now that a supervisor sees their own team's reports only.
+
+- **One population.** `EmployeeService.getVisibleEntities()` /
+  `getActiveVisibleEntities()` are the company's employees narrowed by the same
+  rule as `assertSelfOrManages` - HR/ADMIN everyone, a SUPERVISOR themselves
+  plus direct reports, an EMPLOYEE themselves - checked against the loaded
+  entities rather than one lookup per row. `ReportScope`, `ReportService`,
+  `ReportController.employeeReport` and `DashboardService` all read from it, so
+  totals (by department, the audit summary, bank advice control totals) are
+  computed over the team, not filtered after the fact.
+- **One way to read a period.** The unrestricted `PayrollService.getPeriod` is
+  gone; `getPeriodForCaller` is the only period read, used by every report, the
+  dashboard, `PayrollController` and the salary slip exports.
+- **The dashboard opened for supervisors again.** `DashboardService` used to
+  load the whole company and then `assertSelfOrManages` every employee, which
+  threw a 404 for any supervisor in a company with anyone outside their team.
+- Deactivated employees stay in HR's payroll reports, as before.
+
+**Proof:** `SupervisorReportScopingHttpTest` (6 tests).
+
+### Custom role permissions: saving an overlapping list returned 409
+
+`CustomRoleService.setPermissions` deleted every grant and inserted the new
+list. Hibernate inserts an IDENTITY row as soon as it is saved but holds
+deletes until flush, so re-inserting a permission the role already had hit
+`uk_custom_role_permission` - ticking every box, or saving an unchanged list,
+failed with "Request violates a database constraint". It now removes only the
+unticked grants and inserts only the new ones.
+
+**Proof:** `CustomRoleHttpTest.savingAnOverlappingPermissionListReplacesItExactly`.
+
+### An update that omitted a field reset it
+
+`EmployeeService.apply` defaulted `role` to EMPLOYEE and `recordStatus` to
+ACTIVE on update as well as create, so a `PUT /api/employees/{id}` without them
+silently demoted a supervisor (hiding their team) or reactivated a deactivated
+employee. Omitted now keeps the current value; the defaults apply only to a new
+record.
+
+**Proof:** `EmployeeUpdateHttpTest` (4 tests).
 
 ## Not yet built (next phases)
 

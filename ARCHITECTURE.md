@@ -780,10 +780,9 @@ is the summary.
   `EMPLOYEE` sees only their own record across the employee directory,
   attendance, leave, leave balance, salary slips and shift roster; a
   `SUPERVISOR` sees themselves plus their own direct reports for the same
-  set; `ADMIN`/`HR` are unrestricted within their own company.
-  `ReportService`/`DashboardService` are a deliberate exception - those stay
-  company-wide for SUPERVISOR/HR/ADMIN, since they're aggregate reports, not
-  individual-record access.
+  set; `ADMIN`/`HR` are unrestricted within their own company. Reports and
+  the dashboard follow the same rule (Phase 14): a `SUPERVISOR` sees their
+  own team's rows and totals, never the company's payroll.
 - **Account security.** BCrypt password hashing, account lockout after
   repeated failed logins, no account-enumeration in login errors, short-lived
   JWT access tokens plus opaque rotating refresh tokens. Every newly created
