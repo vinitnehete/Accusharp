@@ -427,6 +427,59 @@ netSalary        = totalEarnings - totalDeduction
   `PayrollService.monthlyOvertimeHours` and
   [`DayWisePayrollOvertimeTest`](src/test/java/com/accusharp/hrms/DayWisePayrollOvertimeTest.java).
 
+### Work policy: who follows the process at all
+
+`EmploymentType` above shapes an attendance-based calculation. It cannot say
+that somebody has no attendance to calculate from - and a company owner or
+director usually hasn't: no punches, no roster, no approvals, paid the same
+salary every month with only the statutory deductions taken off. Payroll
+refused to run for them at all, since it demands generated attendance for every
+employee, so the only way through was to fabricate a month of attendance for a
+person who was never tracked.
+
+`WorkPolicy` answers two questions per population - is their attendance
+tracked, and where does their pay come from:
+
+```
+WorkPolicy  (append-only, versioned, effective-dated)
+        |
+        v
+WorkPolicyResolver     most specific scope wins, version in force on the date
+        |
+        +--> AttendanceService.generate   NOT_TRACKED employees are skipped entirely
+        |
+        +--> PayrollService.build         FIXED_MONTHLY pays the structure for the
+                                          days employed, with no attendance at all
+```
+
+Deliberately the same shape as the attendance policy engine: the same
+`RuleScope` chain (`EMPLOYEE > DESIGNATION > CATEGORY > DEPARTMENT >
+EMPLOYMENT_TYPE > COMPANY > GLOBAL`, most specific winning outright), the same
+succession model with no `effectiveTo`, the same "a disabled version is an
+answer, not an absence", and the same empty start - a company that configures
+nothing is paid to the rupee as it was before the table existed. The scope
+lookup itself is shared code (`ScopeRefs`), so the two engines can never
+disagree about what "this employee's category" means.
+
+Three things follow from `FIXED_MONTHLY`:
+
+- **Attendance is neither required nor consulted.** The month is built as
+  employed-throughout rather than read, and never stored - these employees have
+  no attendance rows, which is the point.
+- **Proration is by employment, not attendance.** A full month pays the whole
+  structure; only a joining or relieving date inside the period reduces it.
+  Loss of pay is zero, because there is nothing to be absent from.
+- **Everything downstream is unchanged.** Every deduction applies as usual, and
+  earned leave still accrues, so a director's balance grows like anyone else's.
+
+`Payroll` snapshots `payrollMode`, `workPolicyScope` and `workPolicyVersion`
+beside the rule percentages it already froze - a policy is an editable row, and
+without this a company switching a population to fixed-monthly pay would
+silently restate every payslip that population was ever paid from attendance.
+
+Paying from attendance nobody records is refused when the policy is written,
+not discovered on a payslip: `NOT_TRACKED` with `ATTENDANCE_BASED` is a 400.
+
 ### Employment types are configurable
 
 `EmployeeStatus` is a fixed enum of four, and one line -

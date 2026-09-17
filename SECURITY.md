@@ -113,6 +113,7 @@ grants are fixed at startup by `PermissionSeeder`, not editable at runtime.
 | `LEAVE_SUPERVISOR_APPROVE` | ✓ | ✓ | ✓ (own team, enforced in service) | - | - |
 | `LEAVE_APPROVE` (approve/reject/cancel) | ✓ | ✓ | - | - | - |
 | `LEAVE_BALANCE_MANAGE`, `SALARY_RULE_READ/MANAGE`, `PAYROLL_PROCESS` | ✓ | ✓ | - | - | - |
+| `WORK_POLICY_READ/MANAGE` (who is tracked, who is paid a fixed salary) | ✓ | ✓ | - | - | - |
 | `PAYROLL_READ`, `REPORT_READ`, `DASHBOARD_READ` | ✓ | ✓ | ✓ | - | - |
 | `SALARY_SLIP_READ` | ✓ | ✓ | ✓ | ✓ | - |
 

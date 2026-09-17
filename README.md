@@ -410,6 +410,39 @@ A shift whose `endTime` is **not after** its `startTime` automatically crosses
 midnight - `18:00 -> 08:00` is handled correctly, and the day still belongs to
 the date the shift started.
 
+### 3.7 Work policies (only if some people are outside the process)
+
+Everybody is assumed to punch, be rostered, have attendance generated and be
+paid from it. An owner or a director usually does none of that, and payroll
+refuses to run without generated attendance - so say so, once:
+
+```bash
+# This one person is not tracked, and is paid their salary every month
+curl -X POST http://localhost:8080/api/work-policies -H 'Content-Type: application/json' -d '{"scope":"EMPLOYEE","scopeRef":"EMP007","attendanceTracking":"NOT_TRACKED","payrollMode":"FIXED_MONTHLY","effectiveFrom":"2026-04-01"}'
+
+# Or a whole grade of them, by category, designation, department or employment type
+curl -X POST http://localhost:8080/api/work-policies -H 'Content-Type: application/json' -d '{"scope":"CATEGORY","scopeRef":"DIRECTOR","attendanceTracking":"NOT_TRACKED","payrollMode":"FIXED_MONTHLY","effectiveFrom":"2026-04-01"}'
+
+# What does one person actually follow, and under which rule?
+curl 'http://localhost:8080/api/work-policies/effective?userId=EMP007&date=2026-04-30'
+```
+
+| Field | Meaning |
+|---|---|
+| `attendanceTracking` | `TRACKED` (the default everybody is on) or `NOT_TRACKED` - generation skips them, so no day of theirs is ever marked absent |
+| `payrollMode` | `ATTENDANCE_BASED` (the default) or `FIXED_MONTHLY` - the salary structure for the days employed, whatever attendance says |
+| `scope` | `EMPLOYEE`, `DESIGNATION`, `CATEGORY`, `DEPARTMENT`, `EMPLOYMENT_TYPE` or `COMPANY`. The most specific one wins outright |
+| `effectiveFrom` | A policy applies from this date on. Changing it appends a version; ending it appends one with `"enabled": false` |
+
+A `FIXED_MONTHLY` employee is paid the whole structure for a full month, and
+prorated only for a mid-month joining or relieving date. Every deduction still
+applies - PF, ESIC, PT, MLWF, TDS - and earned leave still accrues. Pay cannot
+come from attendance nobody records: `NOT_TRACKED` with `ATTENDANCE_BASED` is
+refused when you write it.
+
+Configure nothing and nothing changes: every employee stays tracked and paid
+from attendance, exactly as before this existed.
+
 ---
 
 ## 4. Every month: schedule shifts
