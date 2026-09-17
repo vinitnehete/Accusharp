@@ -9,8 +9,10 @@ report/dashboard scoping), **Phase 7** (a full re-audit of every remaining
 service, which found and fixed four more cross-company gaps), **Phase 8**
 ("view only my own data" self-service scoping), **Phase 9** (working
 employee logins, admin-triggered password reset, full audit coverage, and
-audit log retention/export), and **Phase 10** (dynamic role/permission
-management) of a multi-phase security rollout. Read this
+audit log retention/export), **Phase 10** (dynamic role/permission
+management), **Phase 14** (reports and dashboard scoped to a supervisor's
+team) and **Phase 15** (custom roles effective end to end) of a multi-phase
+security rollout. Read this
 alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
 
@@ -942,6 +944,51 @@ record.
 
 **Proof:** `EmployeeUpdateHttpTest` (4 tests).
 
+## Custom roles that work end to end (Phase 15)
+
+Phase 10 made custom roles grant permissions, and `@authz.can` honoured them -
+but nothing else did. The UI decided what to show from a hardcoded role ->
+permission table, and several services, having let the request past the gate,
+then asked for the HR or ADMIN role by name. An employee given a custom role saw
+no new menu, and a supervisor given `LEAVE_APPROVE` was told that "final leave
+approval requires the HR or ADMIN role".
+
+### One answer, asked three ways
+
+`AuthorizationService` now answers the same question for the gate
+(`can`), for a login (`effectivePermissions`) and for a service-layer check
+about an actor who is not the caller (`employeeCan`) - base role grants from
+`PermissionRegistry` plus, for an employee, their custom roles, read fresh.
+
+- **Login and refresh return `permissions`.** `TokenResponse` carries the
+  session's effective permission codes; the SPA's `can()` reads them instead of
+  its own copy of the grant table, and the sidebar and route guards share one
+  set of rules (`constants/access.js`). A permission list from an older server
+  is absent rather than wrong, so the UI falls back to the fixed role's grants.
+- **Capability checks ask for the permission.** `AttendanceService` (generate /
+  correct / unlock) and `LeaveService` (final approval, HR-direct entry) no
+  longer test for HR or ADMIN by name.
+
+### Whose records: `EmployeeService.assertManages`
+
+A permission alone must not decide *whose* attendance may be corrected or whose
+leave approved, so every one of those writes now resolves its target through
+`assertManages`: HR/ADMIN the whole company, a SUPERVISOR their direct reports,
+anyone else nobody - and, unlike `assertSelfOrManages`, **not the caller's own
+record** for a team-scoped caller. A custom role handing a supervisor
+`ATTENDANCE_CORRECT` or `LEAVE_APPROVE` must not let them correct their own
+attendance or approve, reject or cancel their own leave. ADMIN/HR, who could
+always do both, are unchanged. A generation run with no `userIds` covers the
+managed population rather than the whole company.
+
+Scope is deliberately still the fixed role's to decide; a custom role cannot
+widen it (see "Not yet built").
+
+**Proof:** `CustomRoleCapabilityHttpTest` (8 tests),
+`CustomRoleHttpTest.loginPermissionsIncludeCustomRoles`,
+`AuthApiHttpTest.loginAndRefreshReturnEffectivePermissions`, and on the frontend
+`navConfig.test.js`, `access.test.js` and `AuthContext.test.jsx`.
+
 ## Not yet built (next phases)
 
 - Platform-owner company onboarding flow beyond raw CRUD.
@@ -964,12 +1011,14 @@ record.
   bulk credentials file entirely, at the cost of needing a delivery channel
   (email/SMS) to actually get the link to each employee, which this app
   does not have.
-- A UI for assigning/removing an employee's custom roles and browsing
-  what a role grants (Phase 10 shipped the API only, see
-  `CustomRoleController`) - and a decision on whether a custom role should
-  be able to grant *more* than what its own creator (ADMIN) already holds,
-  which today it can (Phase 10 blocks only the platform-only codes, not a
-  general no-privilege-escalation check).
+- A decision on whether a custom role should be able to grant *more* than
+  what its own creator (ADMIN) already holds, which today it can (only the
+  platform-only codes are blocked, not a general no-privilege-escalation
+  check).
+- Scope through a custom role: a custom role can grant a capability, but
+  whose records it reaches is still the fixed role's to decide (Phase 15),
+  so "this director sees every team below them" and "this payroll officer
+  sees the whole company" cannot be expressed yet.
 
 See the original security analysis in this repository's PR/session history
 for the full phased plan.

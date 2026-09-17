@@ -801,14 +801,22 @@ is the summary.
   old rows but is gated by a permission granted only to platform roles,
   never a company role - the entity a trail holds accountable must never be
   able to erase it.
-- **Dynamic role/permission management** (Phase 10): a company `ADMIN` can
-  define named custom roles, grant each an arbitrary set of permissions,
-  and assign them to employees - additive on top of the employee's fixed
-  `Role`, never a replacement for it, so every hardcoded `Role` check
-  elsewhere in the app (self-escalation guard, supervisor-team rules,
-  self-service scoping) is untouched by this. Platform-only permissions can
-  never be granted through a custom role. See `CustomRoleController`/
-  `CustomRoleService` and SECURITY.md's Phase 10 write-up.
+- **Dynamic role/permission management** (Phase 10, effective end to end in
+  Phase 15): a company `ADMIN` can define named custom roles, grant each an
+  arbitrary set of permissions, and assign them to employees - additive on top
+  of the employee's fixed `Role`, never a replacement for it. Platform-only
+  permissions can never be granted through a custom role.
+
+  **A permission says what may be done; the fixed role still says to whom.**
+  Login and refresh return the session's effective permissions (base role plus
+  custom roles), which is what the UI's menus and route guards read, and the
+  service-layer checks ask for the permission by name rather than for HR or
+  ADMIN - so a custom role works past the `@PreAuthorize` gate too. Whose
+  records may be touched stays with the fixed role: HR/ADMIN the company, a
+  `SUPERVISOR` their direct reports (never their own record, for the privileged
+  writes a custom role unlocks), anyone else nobody -
+  `EmployeeService.assertManages`. See `CustomRoleController`/
+  `CustomRoleService` and SECURITY.md's Phase 10 and 15 write-ups.
 
 ## Design decisions worth knowing
 
@@ -835,8 +843,7 @@ tooling), and dynamic role/permission management all exist now (see
 Security &amp; multi-tenancy above and [SECURITY.md](SECURITY.md)). Still
 open: a self-service ("I forgot my password, no admin involved") recovery
 flow - an ADMIN/HR-triggered reset exists instead, since there's no email
-delivery infrastructure to build the self-service version on; a UI for
-custom-role assignment (the API exists, see `CustomRoleController`); and a
+delivery infrastructure to build the self-service version on; and a
 general no-privilege-escalation check on custom roles (today only
 platform-only permission codes are blocked, not "grant nothing beyond what
 you yourself hold"). Also not built: multi-branch support, notification
