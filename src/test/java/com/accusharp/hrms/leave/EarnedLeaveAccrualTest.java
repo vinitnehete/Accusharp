@@ -10,7 +10,7 @@ import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveCreditKind;
 import com.accusharp.hrms.enums.LeaveGrant;
-import com.accusharp.hrms.enums.LeaveRuleScope;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
@@ -19,7 +19,7 @@ import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.LeaveBalanceRepository;
 import com.accusharp.hrms.repository.LeaveCreditRepository;
 import com.accusharp.hrms.repository.LeaveRuleRepository;
-import com.accusharp.hrms.service.leave.EarnedLeaveAccrualService;
+import com.accusharp.hrms.service.leave.LeaveAccrualService;
 import com.accusharp.hrms.service.leave.LeaveBalanceService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,7 +62,7 @@ class EarnedLeaveAccrualTest {
     private static final LocalDate GO_LIVE = LocalDate.of(2026, 9, 1);
     private static final String EMPLOYEE = "EA001";
 
-    @Autowired private EarnedLeaveAccrualService accrualService;
+    @Autowired private LeaveAccrualService accrualService;
     @Autowired private LeaveBalanceService leaveBalanceService;
     @Autowired private LeaveBalanceRepository leaveBalanceRepository;
     @Autowired private LeaveCreditRepository leaveCreditRepository;
@@ -216,7 +216,7 @@ class EarnedLeaveAccrualTest {
 
     private void elRule(LocalDate effectiveFrom) {
         leaveRuleRepository.save(LeaveRule.builder()
-                .company(company).scope(LeaveRuleScope.COMPANY).scopeRef(LeaveRule.ANY)
+                .company(company).scope(RuleScope.COMPANY).scopeRef(LeaveRule.ANY)
                 .leaveType(LeaveType.EARNED_LEAVE).grantMethod(LeaveGrant.EARNED_BY_ATTENDANCE)
                 .carryForwardCap(new BigDecimal("30"))
                 .effectiveFrom(effectiveFrom).enabled(true)

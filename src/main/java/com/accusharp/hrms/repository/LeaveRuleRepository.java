@@ -1,7 +1,7 @@
 package com.accusharp.hrms.repository;
 
 import com.accusharp.hrms.entity.LeaveRule;
-import com.accusharp.hrms.enums.LeaveRuleScope;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.LeaveType;
 import org.springframework.data.jpa.repository.JpaRepository;
 
@@ -19,8 +19,8 @@ public interface LeaveRuleRepository extends JpaRepository<LeaveRule, Long> {
     List<LeaveRule> findAllByCompanyIsNullOrderByLeaveTypeAscEffectiveFromDesc();
 
     boolean existsByCompanyIdAndScopeAndScopeRefAndLeaveTypeAndEffectiveFrom(
-            Long companyId, LeaveRuleScope scope, String scopeRef, LeaveType leaveType, LocalDate effectiveFrom);
+            Long companyId, RuleScope scope, String scopeRef, LeaveType leaveType, LocalDate effectiveFrom);
 
     boolean existsByCompanyIsNullAndScopeAndScopeRefAndLeaveTypeAndEffectiveFrom(
-            LeaveRuleScope scope, String scopeRef, LeaveType leaveType, LocalDate effectiveFrom);
+            RuleScope scope, String scopeRef, LeaveType leaveType, LocalDate effectiveFrom);
 }

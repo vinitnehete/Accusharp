@@ -11,9 +11,18 @@ public enum LeaveGrant {
 
     /**
      * Earned month by month from locked attendance - see
-     * {@code EarnedLeaveAccrualService}. Only valid for {@link LeaveType#EARNED_LEAVE}.
+     * {@code LeaveAccrualService}. Only valid for {@link LeaveType#EARNED_LEAVE}.
      */
     EARNED_BY_ATTENDANCE,
+
+    /**
+     * A flat number of days credited for each whole month on the books - "one
+     * casual leave a month", which is how a great many companies actually run
+     * CL and SL. Unlike {@link #EARNED_BY_ATTENDANCE} it does not look at
+     * attendance at all; unlike {@link #YEARLY_GRANT} the year's leave is not
+     * available on the first day of it.
+     */
+    MONTHLY_ACCRUAL,
 
     /**
      * None of this leave at all. The balance is simply zero, and the existing

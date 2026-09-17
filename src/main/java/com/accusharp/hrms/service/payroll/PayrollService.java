@@ -22,7 +22,7 @@ import com.accusharp.hrms.service.attendance.AttendanceService;
 import com.accusharp.hrms.service.calculation.DeductionCalculationService;
 import com.accusharp.hrms.service.calculation.LopCalculationService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
-import com.accusharp.hrms.service.leave.EarnedLeaveAccrualService;
+import com.accusharp.hrms.service.leave.LeaveAccrualService;
 import com.accusharp.hrms.service.policy.WorkPolicyResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -81,7 +81,7 @@ public class PayrollService {
     private final LopCalculationService lopCalculationService;
     private final PayBehaviourResolver payBehaviourResolver;
     private final AuditService auditService;
-    private final EarnedLeaveAccrualService earnedLeaveAccrualService;
+    private final LeaveAccrualService leaveAccrualService;
     private final WorkPolicyResolver workPolicyResolver;
 
     /**
@@ -346,7 +346,7 @@ public class PayrollService {
         // payroll pays from - the one moment those figures cannot move again.
         // Idempotent per month, so a regeneration adjusts the credit rather than
         // adding a second one; a company with no EL rule posts nothing.
-        earnedLeaveAccrualService.accrueMonth(employee, period, attendance);
+        leaveAccrualService.accrueMonth(employee, period, attendance);
 
         Payroll payroll = new Payroll();
         payroll.setEmployeeId(employee.getUserId());
@@ -661,7 +661,10 @@ public class PayrollService {
      * nothing absent, no loss of pay. Built rather than read, and never stored -
      * these employees have no attendance rows, which is the point of the policy.
      * Earned leave still accrues from it, so a director's leave balance grows
-     * like everybody else's.
+     * like everybody else's - counting every day they were on the books as
+     * worked, since nobody recorded which days they did. That is never less
+     * than the law requires, and a rule's {@code yearlyAccrualCap} is how a
+     * company holds it to a figure of its own.
      */
     private MonthlyAttendanceSummary employedMonth(Employee employee, YearMonth period, EmployedWindow window) {
         BigDecimal days = window.days();

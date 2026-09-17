@@ -3,7 +3,7 @@ package com.accusharp.hrms.dto;
 import com.accusharp.hrms.entity.CreditStep;
 import com.accusharp.hrms.enums.ExcessHandling;
 import com.accusharp.hrms.enums.LeaveGrant;
-import com.accusharp.hrms.enums.LeaveRuleScope;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.LeaveType;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
@@ -23,7 +23,7 @@ import java.util.List;
 public class LeaveRuleRequest {
 
     @NotNull
-    private LeaveRuleScope scope;
+    private RuleScope scope;
 
     /** An employment type name for {@code EMPLOYMENT_TYPE}; ignored (always {@code ANY}) for {@code COMPANY}. */
     private String scopeRef;
@@ -44,6 +44,14 @@ public class LeaveRuleRequest {
 
     @Min(1)
     private Integer daysPerStatutoryDay;
+
+    /** Days credited per whole month on the books, for {@code MONTHLY_ACCRUAL}. */
+    @DecimalMin("0")
+    private BigDecimal monthlyCredit;
+
+    /** The most one year may accrue in total. Null is no ceiling. */
+    @DecimalMin("0")
+    private BigDecimal yearlyAccrualCap;
 
     @DecimalMin("0")
     private BigDecimal carryForwardCap;

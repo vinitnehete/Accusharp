@@ -7,7 +7,7 @@ import com.accusharp.hrms.entity.LeaveBalance;
 import com.accusharp.hrms.entity.LeaveRule;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveGrant;
-import com.accusharp.hrms.enums.LeaveRuleScope;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
@@ -89,7 +89,7 @@ class LeaveEntitlementTest {
     @DisplayName("a company-wide rule sets the yearly amount")
     void companyRuleSetsTheQuota() {
         employee("LE002", EmployeeStatus.PERMANENT, LocalDate.of(2022, 1, 1));
-        rule(LeaveRuleScope.COMPANY, LeaveRule.ANY, LeaveType.CASUAL_LEAVE,
+        rule(RuleScope.COMPANY, LeaveRule.ANY, LeaveType.CASUAL_LEAVE,
                 LeaveGrant.YEARLY_GRANT, "10", LocalDate.of(2026, 1, 1));
 
         assertThat(quota("LE002", LeaveType.CASUAL_LEAVE)).isEqualByComparingTo("10");
@@ -100,9 +100,9 @@ class LeaveEntitlementTest {
     void employmentTypeRuleBeatsCompanyRule() {
         employee("LE003", EmployeeStatus.PERMANENT, LocalDate.of(2022, 1, 1));
         employee("LE004", EmployeeStatus.DAY_WISE, LocalDate.of(2022, 1, 1));
-        rule(LeaveRuleScope.COMPANY, LeaveRule.ANY, LeaveType.CASUAL_LEAVE,
+        rule(RuleScope.COMPANY, LeaveRule.ANY, LeaveType.CASUAL_LEAVE,
                 LeaveGrant.YEARLY_GRANT, "10", LocalDate.of(2026, 1, 1));
-        rule(LeaveRuleScope.EMPLOYMENT_TYPE, "DAY_WISE", LeaveType.CASUAL_LEAVE,
+        rule(RuleScope.EMPLOYMENT_TYPE, "DAY_WISE", LeaveType.CASUAL_LEAVE,
                 LeaveGrant.NOT_ENTITLED, null, LocalDate.of(2026, 1, 1));
 
         assertThat(quota("LE003", LeaveType.CASUAL_LEAVE)).isEqualByComparingTo("10");
@@ -113,7 +113,7 @@ class LeaveEntitlementTest {
     @DisplayName("leave someone is not entitled to is refused by the existing balance check, unchanged")
     void notEntitledIsRefusedAsBefore() {
         employee("LE005", EmployeeStatus.DAY_WISE, LocalDate.of(2022, 1, 1));
-        rule(LeaveRuleScope.EMPLOYMENT_TYPE, "DAY_WISE", LeaveType.CASUAL_LEAVE,
+        rule(RuleScope.EMPLOYMENT_TYPE, "DAY_WISE", LeaveType.CASUAL_LEAVE,
                 LeaveGrant.NOT_ENTITLED, null, LocalDate.of(2026, 1, 1));
 
         assertThatThrownBy(() -> leaveBalanceService.consume("LE005", YEAR, LeaveType.CASUAL_LEAVE, BigDecimal.ONE))
@@ -124,9 +124,9 @@ class LeaveEntitlementTest {
     @Test
     @DisplayName("someone joining mid-year gets the yearly amount pro-rated to the months left, to the nearest half day")
     void midYearJoinerIsProRated() {
-        rule(LeaveRuleScope.COMPANY, LeaveRule.ANY, LeaveType.CASUAL_LEAVE,
+        rule(RuleScope.COMPANY, LeaveRule.ANY, LeaveType.CASUAL_LEAVE,
                 LeaveGrant.YEARLY_GRANT, "12", LocalDate.of(2026, 1, 1));
-        rule(LeaveRuleScope.COMPANY, LeaveRule.ANY, LeaveType.SICK_LEAVE,
+        rule(RuleScope.COMPANY, LeaveRule.ANY, LeaveType.SICK_LEAVE,
                 LeaveGrant.YEARLY_GRANT, "8", LocalDate.of(2026, 1, 1));
         employee("LE006", EmployeeStatus.PERMANENT, LocalDate.of(2026, 9, 1));
         employee("LE007", EmployeeStatus.PERMANENT, LocalDate.of(2026, 8, 10));
@@ -141,7 +141,7 @@ class LeaveEntitlementTest {
     @DisplayName("a rule effective from next year does not touch this year")
     void aFutureRuleDoesNotApplyYet() {
         employee("LE008", EmployeeStatus.PERMANENT, LocalDate.of(2022, 1, 1));
-        rule(LeaveRuleScope.COMPANY, LeaveRule.ANY, LeaveType.CASUAL_LEAVE,
+        rule(RuleScope.COMPANY, LeaveRule.ANY, LeaveType.CASUAL_LEAVE,
                 LeaveGrant.YEARLY_GRANT, "10", LocalDate.of(2027, 1, 1));
 
         assertThat(quota("LE008", LeaveType.CASUAL_LEAVE)).isEqualByComparingTo("12");
@@ -154,7 +154,7 @@ class LeaveEntitlementTest {
         leaveBalanceRepository.save(LeaveBalance.builder()
                 .userId("LE009").leaveYear(YEAR).leaveType(LeaveType.EARNED_LEAVE)
                 .quota(new BigDecimal("14.5")).used(BigDecimal.ZERO).build());
-        rule(LeaveRuleScope.COMPANY, LeaveRule.ANY, LeaveType.EARNED_LEAVE,
+        rule(RuleScope.COMPANY, LeaveRule.ANY, LeaveType.EARNED_LEAVE,
                 LeaveGrant.EARNED_BY_ATTENDANCE, null, LocalDate.of(2026, 1, 1));
 
         // This is how the opening EL balances arrive: typed into the table.
@@ -166,7 +166,7 @@ class LeaveEntitlementTest {
     @DisplayName("earned leave under an attendance rule starts the year at nothing - it is credited month by month")
     void earnedLeaveStartsAtZero() {
         employee("LE010", EmployeeStatus.PERMANENT, LocalDate.of(2022, 1, 1));
-        rule(LeaveRuleScope.COMPANY, LeaveRule.ANY, LeaveType.EARNED_LEAVE,
+        rule(RuleScope.COMPANY, LeaveRule.ANY, LeaveType.EARNED_LEAVE,
                 LeaveGrant.EARNED_BY_ATTENDANCE, null, LocalDate.of(2026, 1, 1));
 
         assertThat(quota("LE010", LeaveType.EARNED_LEAVE)).isEqualByComparingTo("0");
@@ -190,7 +190,7 @@ class LeaveEntitlementTest {
         return leaveBalanceService.getOrCreate(userId, YEAR, type).getQuota();
     }
 
-    private void rule(LeaveRuleScope scope, String scopeRef, LeaveType type, LeaveGrant grant,
+    private void rule(RuleScope scope, String scopeRef, LeaveType type, LeaveGrant grant,
                       String yearlyDays, LocalDate effectiveFrom) {
         leaveRuleRepository.save(LeaveRule.builder()
                 .company(company).scope(scope).scopeRef(scopeRef).leaveType(type).grantMethod(grant)

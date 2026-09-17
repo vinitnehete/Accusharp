@@ -2,7 +2,7 @@ package com.accusharp.hrms.entity;
 
 import com.accusharp.hrms.enums.LeaveGrant;
 import com.accusharp.hrms.enums.ExcessHandling;
-import com.accusharp.hrms.enums.LeaveRuleScope;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.LeaveType;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
@@ -19,9 +19,9 @@ import java.util.List;
  * Who gets a leave type, and how: one rule per leave type per population, from
  * an effective month onward.
  *
- * <p>A company-wide rule, overridden by one for an employment type - "day-wise
- * staff get no CL", "permanent staff earn EL from attendance". The most specific
- * rule in effect wins outright; see {@code LeaveRuleResolver}.
+ * <p>A company-wide rule, overridden by one for any narrower population -
+ * "day-wise staff get no CL", "directors get none", "this one person gets five".
+ * The most specific rule in effect wins outright; see {@code LeaveRuleResolver}.
  *
  * <h2>Nothing moves until a rule exists</h2>
  *
@@ -49,8 +49,13 @@ import java.util.List;
 @Builder
 public class LeaveRule {
 
-    /** The {@code scopeRef} of a company-wide rule. */
-    public static final String ANY = "ANY";
+    /**
+     * The {@code scopeRef} of a rule that names nothing. Rows written before
+     * leave rules shared {@link RuleScope} hold the literal {@code "ANY"}; the
+     * resolver ignores {@code scopeRef} for a scope that names nothing, so both
+     * keep matching.
+     */
+    public static final String ANY = RuleScope.ANY;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -64,7 +69,7 @@ public class LeaveRule {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
-    private LeaveRuleScope scope;
+    private RuleScope scope;
 
     @Column(name = "scope_ref", nullable = false, length = 50)
     private String scopeRef;
@@ -101,6 +106,19 @@ public class LeaveRule {
      */
     @Column(name = "days_per_statutory_day")
     private Integer daysPerStatutoryDay;
+
+    /** What each whole month on the books credits, for {@code MONTHLY_ACCRUAL}. */
+    @Column(name = "monthly_credit", precision = 4, scale = 1)
+    private BigDecimal monthlyCredit;
+
+    /**
+     * The most a year may accrue in total, across every month's credit. Null is
+     * no ceiling, which is what earned leave had before this column: the only
+     * limit was the carry-forward cap applied at year end, long after the
+     * balance had already grown.
+     */
+    @Column(name = "yearly_accrual_cap", precision = 5, scale = 1)
+    private BigDecimal yearlyAccrualCap;
 
     // ---- year end ------------------------------------------------------------
 

@@ -10,7 +10,7 @@ import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.ExcessHandling;
 import com.accusharp.hrms.enums.LeaveCreditKind;
 import com.accusharp.hrms.enums.LeaveGrant;
-import com.accusharp.hrms.enums.LeaveRuleScope;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
@@ -77,7 +77,7 @@ class LeaveYearCloseTest {
                 .accountEnabled(true).accountLocked(false).failedLoginAttempts(0)
                 .build());
         leaveRuleRepository.save(LeaveRule.builder()
-                .company(company).scope(LeaveRuleScope.COMPANY).scopeRef(LeaveRule.ANY)
+                .company(company).scope(RuleScope.COMPANY).scopeRef(LeaveRule.ANY)
                 .leaveType(LeaveType.EARNED_LEAVE).grantMethod(LeaveGrant.EARNED_BY_ATTENDANCE)
                 .carryForwardCap(new BigDecimal("30"))
                 .effectiveFrom(LocalDate.of(2026, 1, 1)).enabled(true)

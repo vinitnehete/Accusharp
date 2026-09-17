@@ -67,7 +67,8 @@ public class LeaveEntitlementService {
             return fallback;
         }
         return switch (rule.get().getGrantMethod()) {
-            case NOT_ENTITLED, EARNED_BY_ATTENDANCE -> zero();
+            // Accrued month by month, so the year opens at nothing.
+            case NOT_ENTITLED, EARNED_BY_ATTENDANCE, MONTHLY_ACCRUAL -> zero();
             case YEARLY_GRANT -> {
                 BigDecimal yearly = rule.get().getYearlyDays() == null ? BigDecimal.ZERO : rule.get().getYearlyDays();
                 yield joinedThisYear ? proRated(yearly, joined, startMonth) : yearly.setScale(1, RoundingMode.HALF_UP);

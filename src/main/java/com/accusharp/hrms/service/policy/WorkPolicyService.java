@@ -6,7 +6,6 @@ import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.WorkPolicy;
 import com.accusharp.hrms.enums.AttendanceTracking;
 import com.accusharp.hrms.enums.AuditOutcome;
-import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.RuleScope;
@@ -23,7 +22,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDate;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -40,6 +38,7 @@ public class WorkPolicyService {
     private final WorkPolicyRepository policyRepository;
     private final WorkPolicyResolver resolver;
     private final EmployeeService employeeService;
+    private final ScopeRefValidator scopeRefValidator;
     private final CompanyRepository companyRepository;
     private final TenantContext tenantContext;
     private final AuditService auditService;
@@ -69,10 +68,10 @@ public class WorkPolicyService {
     public WorkPolicyResponse create(WorkPolicyRequest request) {
         Long companyId = tenantContext.currentCompanyId().orElse(null);
         RuleScope scope = request.getScope();
-        String scopeRef = normaliseScopeRef(scope, request.getScopeRef());
+        String scopeRef = scopeRefValidator.normalise(scope, request.getScopeRef());
 
         assertCoherent(request);
-        assertScopeRefExists(scope, scopeRef);
+        scopeRefValidator.assertExists(scope, scopeRef);
 
         int nextVersion = policyRepository
                 .findFirstByCompanyIdAndScopeAndScopeRefOrderByVersionDesc(companyId, scope, scopeRef)
@@ -112,48 +111,6 @@ public class WorkPolicyService {
                     "Attendance cannot be the basis of pay for a population whose attendance is not tracked - "
                             + "choose FIXED_MONTHLY, or track their attendance");
         }
-    }
-
-    private void assertScopeRefExists(RuleScope scope, String scopeRef) {
-        if (!scope.requiresRef()) {
-            return;
-        }
-        if (scope == RuleScope.EMPLOYEE) {
-            employeeService.getEntityByUserId(scopeRef); // 404s cross-company, same as everywhere else
-            return;
-        }
-        if (scope == RuleScope.EMPLOYMENT_TYPE) {
-            try {
-                EmployeeStatus.valueOf(scopeRef);
-            } catch (IllegalArgumentException ex) {
-                throw new BusinessRuleException("scopeRef '" + scopeRef + "' is not an employment type - expected one of "
-                        + Arrays.toString(EmployeeStatus.values()));
-            }
-            return;
-        }
-        boolean matches = employeeService.getAllEntities().stream().anyMatch(employee -> switch (scope) {
-            case CATEGORY -> employee.getCategory() != null
-                    && scopeRef.equals(employee.getCategory().getCategoryCode());
-            case DEPARTMENT -> employee.getDepartment() != null
-                    && scopeRef.equals(employee.getDepartment().getDepartmentCode());
-            case DESIGNATION -> employee.getDesignation() != null
-                    && scopeRef.equals(employee.getDesignation().getDesignationCode());
-            default -> false;
-        });
-        if (!matches) {
-            throw new BusinessRuleException("no employee in this company has " + scope + " '" + scopeRef
-                    + "' - check the code, or the policy will silently never apply");
-        }
-    }
-
-    private String normaliseScopeRef(RuleScope scope, String scopeRef) {
-        if (!scope.requiresRef()) {
-            return RuleScope.ANY;
-        }
-        if (scopeRef == null || scopeRef.isBlank()) {
-            throw new BusinessRuleException("scopeRef is required for scope " + scope);
-        }
-        return scopeRef.trim();
     }
 
     /** What an employee no policy covers follows - the behaviour this table did not change. */

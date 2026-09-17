@@ -16,5 +16,9 @@ public interface LeaveCreditRepository extends JpaRepository<LeaveCredit, Long> 
 
     List<LeaveCredit> findAllByUserIdAndLeaveYearOrderByPeriodAsc(String userId, int leaveYear);
 
+    /** One year's accruals of one type - what a yearly accrual cap is measured against. */
+    List<LeaveCredit> findAllByUserIdAndLeaveTypeAndKindAndLeaveYear(
+            String userId, LeaveType leaveType, LeaveCreditKind kind, int leaveYear);
+
     boolean existsByUserIdIn(Collection<String> userIds);
 }

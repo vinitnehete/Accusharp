@@ -6,7 +6,7 @@ package com.accusharp.hrms.enums;
  * <p>The yearly quota here is only the fallback for a type no leave rule covers
  * - see {@code LeaveEntitlementService}. {@link #EARNED_LEAVE} falls back to
  * zero: it is earned month by month from attendance under a rule ({@code
- * EarnedLeaveAccrualService}), plus whatever the last year carried forward -
+ * LeaveAccrualService}), plus whatever the last year carried forward -
  * never granted up front.
  */
 public enum LeaveType {

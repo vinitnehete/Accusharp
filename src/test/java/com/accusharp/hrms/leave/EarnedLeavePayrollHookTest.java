@@ -11,7 +11,7 @@ import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.entity.ShiftSchedule;
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.LeaveGrant;
-import com.accusharp.hrms.enums.LeaveRuleScope;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.enums.RecordStatus;
@@ -177,7 +177,7 @@ class EarnedLeavePayrollHookTest {
     private void elRule() {
         // Shared rule (no company), matching the fixture's company-less employees.
         leaveRuleRepository.save(LeaveRule.builder()
-                .scope(LeaveRuleScope.COMPANY).scopeRef(LeaveRule.ANY)
+                .scope(RuleScope.COMPANY).scopeRef(LeaveRule.ANY)
                 .leaveType(LeaveType.EARNED_LEAVE).grantMethod(LeaveGrant.EARNED_BY_ATTENDANCE)
                 .carryForwardCap(new BigDecimal("30"))
                 .effectiveFrom(LocalDate.of(2026, 1, 1)).enabled(true)

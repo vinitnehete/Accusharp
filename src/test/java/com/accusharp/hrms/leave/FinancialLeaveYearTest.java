@@ -13,7 +13,7 @@ import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.ExcessHandling;
 import com.accusharp.hrms.enums.LeaveDuration;
 import com.accusharp.hrms.enums.LeaveGrant;
-import com.accusharp.hrms.enums.LeaveRuleScope;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
@@ -24,7 +24,7 @@ import com.accusharp.hrms.repository.LeaveBalanceRepository;
 import com.accusharp.hrms.repository.LeaveCreditRepository;
 import com.accusharp.hrms.repository.LeaveRequestRepository;
 import com.accusharp.hrms.repository.LeaveRuleRepository;
-import com.accusharp.hrms.service.leave.EarnedLeaveAccrualService;
+import com.accusharp.hrms.service.leave.LeaveAccrualService;
 import com.accusharp.hrms.service.leave.LeaveBalanceService;
 import com.accusharp.hrms.service.leave.LeaveService;
 import com.accusharp.hrms.service.leave.LeaveYearCloseService;
@@ -63,7 +63,7 @@ class FinancialLeaveYearTest {
 
     @Autowired private LeaveService leaveService;
     @Autowired private LeaveBalanceService leaveBalanceService;
-    @Autowired private EarnedLeaveAccrualService accrualService;
+    @Autowired private LeaveAccrualService accrualService;
     @Autowired private LeaveYearCloseService yearCloseService;
     @Autowired private LeaveBalanceRepository leaveBalanceRepository;
     @Autowired private LeaveCreditRepository leaveCreditRepository;
@@ -234,7 +234,7 @@ class FinancialLeaveYearTest {
     private void rule(LeaveType type, LeaveGrant grant, String yearlyDays, String cap,
                       ExcessHandling excess, LocalDate effectiveFrom) {
         leaveRuleRepository.save(LeaveRule.builder()
-                .company(company).scope(LeaveRuleScope.COMPANY).scopeRef(LeaveRule.ANY)
+                .company(company).scope(RuleScope.COMPANY).scopeRef(LeaveRule.ANY)
                 .leaveType(type).grantMethod(grant)
                 .yearlyDays(yearlyDays == null ? null : new BigDecimal(yearlyDays))
                 .carryForwardCap(cap == null ? null : new BigDecimal(cap))
