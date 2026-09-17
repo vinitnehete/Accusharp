@@ -1,6 +1,7 @@
 package com.accusharp.hrms.entity;
 
 import com.accusharp.hrms.enums.AttendanceTracking;
+import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.RuleScope;
 import com.fasterxml.jackson.annotation.JsonIgnore;
@@ -105,6 +106,15 @@ public class WorkPolicy {
     @Column(name = "payroll_mode", nullable = false, length = 20)
     private PayrollMode payrollMode;
 
+    /**
+     * Nullable, and null reads as {@link LeaveApprovalFlow#SUPERVISOR_THEN_HR} -
+     * so policies written before this column existed keep the two-step flow they
+     * were written under rather than silently changing who approves.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "leave_approval", length = 30)
+    private LeaveApprovalFlow leaveApproval;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -120,5 +130,9 @@ public class WorkPolicy {
 
     public boolean isFixedMonthly() {
         return payrollMode == PayrollMode.FIXED_MONTHLY;
+    }
+
+    public LeaveApprovalFlow leaveApprovalOrDefault() {
+        return leaveApproval == null ? LeaveApprovalFlow.SUPERVISOR_THEN_HR : leaveApproval;
     }
 }

@@ -2,6 +2,7 @@ package com.accusharp.hrms.service.policy;
 
 import com.accusharp.hrms.entity.Employee;
 import com.accusharp.hrms.entity.WorkPolicy;
+import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.repository.WorkPolicyRepository;
 import lombok.RequiredArgsConstructor;
@@ -65,6 +66,14 @@ public class WorkPolicyResolver {
     public Optional<WorkPolicy> policyFor(Employee employee, LocalDate date) {
         Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
         return resolve(loadCompanyPolicies(companyId, date), employee, date);
+    }
+
+    /** Who has to agree before this employee's leave is approved - the two-step flow unless a policy says otherwise. */
+    @Transactional(readOnly = true)
+    public LeaveApprovalFlow leaveApprovalFlow(Employee employee, LocalDate date) {
+        return policyFor(employee, date)
+                .map(WorkPolicy::leaveApprovalOrDefault)
+                .orElse(LeaveApprovalFlow.SUPERVISOR_THEN_HR);
     }
 
     /** Whether this employee goes through the attendance process at all on {@code date}. */

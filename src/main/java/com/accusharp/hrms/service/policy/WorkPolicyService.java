@@ -7,6 +7,7 @@ import com.accusharp.hrms.entity.WorkPolicy;
 import com.accusharp.hrms.enums.AttendanceTracking;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.EmployeeStatus;
+import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.exception.BusinessRuleException;
@@ -87,6 +88,7 @@ public class WorkPolicyService {
                 .enabled(request.getEnabled() == null || request.getEnabled())
                 .attendanceTracking(request.getAttendanceTracking())
                 .payrollMode(request.getPayrollMode())
+                .leaveApproval(request.getLeaveApproval())
                 .createdAt(Instant.now())
                 .createdBy(tenantContext.currentPrincipal().map(UserPrincipal::getUsername).orElse(null))
                 .notes(request.getNotes())
@@ -157,7 +159,8 @@ public class WorkPolicyService {
     /** What an employee no policy covers follows - the behaviour this table did not change. */
     private static WorkPolicyResponse defaults() {
         return new WorkPolicyResponse(null, null, null, 0, null, true,
-                AttendanceTracking.TRACKED, PayrollMode.ATTENDANCE_BASED,
-                "No work policy applies: attendance is tracked and pay comes from it.", null);
+                AttendanceTracking.TRACKED, PayrollMode.ATTENDANCE_BASED, LeaveApprovalFlow.SUPERVISOR_THEN_HR,
+                "No work policy applies: attendance is tracked, pay comes from it, and leave is endorsed by a "
+                        + "supervisor and approved by HR.", null);
     }
 }

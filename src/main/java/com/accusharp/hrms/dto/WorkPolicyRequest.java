@@ -1,6 +1,7 @@
 package com.accusharp.hrms.dto;
 
 import com.accusharp.hrms.enums.AttendanceTracking;
+import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.RuleScope;
 import jakarta.validation.constraints.NotNull;
@@ -29,6 +30,9 @@ public class WorkPolicyRequest {
 
     @NotNull
     private PayrollMode payrollMode;
+
+    /** Null keeps the two-step flow every company uses by default. */
+    private LeaveApprovalFlow leaveApproval;
 
     @NotNull
     private LocalDate effectiveFrom;

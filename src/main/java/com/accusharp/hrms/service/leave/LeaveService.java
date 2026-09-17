@@ -9,6 +9,7 @@ import com.accusharp.hrms.entity.LeaveRequest;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.LeaveDuration;
 import com.accusharp.hrms.enums.LeaveOrigin;
+import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.PermissionCode;
@@ -18,6 +19,7 @@ import com.accusharp.hrms.repository.LeaveRequestRepository;
 import com.accusharp.hrms.security.AuthorizationService;
 import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
+import com.accusharp.hrms.service.policy.WorkPolicyResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -48,6 +50,7 @@ public class LeaveService {
     private final LeaveCalculationService leaveCalculationService;
     private final EmployeeService employeeService;
     private final AuthorizationService authorizationService;
+    private final WorkPolicyResolver workPolicyResolver;
     private final AuditService auditService;
 
     @Transactional
@@ -75,6 +78,11 @@ public class LeaveService {
         assertBalanceAvailable(payload.getUserId(), payload.getLeaveType(),
                 leaveYearOf(employee, payload.getFromDate()), totalDays);
 
+        // Who has to agree, for this employee's population - the two-step flow
+        // unless a work policy says otherwise.
+        LeaveApprovalFlow flow = workPolicyResolver.leaveApprovalFlow(employee, payload.getFromDate());
+        boolean autoApproved = flow == LeaveApprovalFlow.AUTO_APPROVE;
+
         LeaveRequest request = LeaveRequest.builder()
                 .userId(payload.getUserId())
                 .leaveType(payload.getLeaveType())
@@ -83,15 +91,30 @@ public class LeaveService {
                 .duration(payload.getDuration())
                 .totalDays(totalDays)
                 .reason(payload.getReason())
-                .status(LeaveStatus.PENDING)
+                .status(autoApproved ? LeaveStatus.APPROVED : LeaveStatus.PENDING)
                 .origin(LeaveOrigin.SELF_SERVICE)
                 .supervisorId(employee.getSupervisor() == null ? null : employee.getSupervisor().getUserId())
                 .appliedAt(Instant.now())
                 .build();
 
-        log.info("leave.apply userId={} type={} from={} to={} days={}", payload.getUserId(),
-                payload.getLeaveType(), payload.getFromDate(), payload.getToDate(), totalDays);
-        return toResponse(leaveRequestRepository.save(request));
+        if (autoApproved) {
+            // Balance moves here for the same reason it moves on approval: this
+            // *is* the approval. Every check above has already run, so automatic
+            // approval is never a way around an empty balance or an overlap.
+            leaveBalanceService.consume(payload.getUserId(),
+                    leaveYearOf(employee, payload.getFromDate()), payload.getLeaveType(), totalDays);
+            request.setDecidedAt(Instant.now());
+            request.setApprovalComments("Approved automatically - this population's leave needs no approval");
+        }
+
+        log.info("leave.apply userId={} type={} from={} to={} days={} flow={}", payload.getUserId(),
+                payload.getLeaveType(), payload.getFromDate(), payload.getToDate(), totalDays, flow);
+        LeaveResponse response = toResponse(leaveRequestRepository.save(request));
+        if (autoApproved) {
+            auditService.record("LEAVE_AUTO_APPROVE", "LeaveRequest", String.valueOf(response.id()),
+                    AuditOutcome.SUCCESS, "userId=" + payload.getUserId() + " days=" + totalDays);
+        }
+        return response;
     }
 
     /**
@@ -163,6 +186,7 @@ public class LeaveService {
         LeaveRequest request = getEntity(id);
         assertTargetAccessible(request);
         assertStatus(request, LeaveStatus.PENDING);
+        assertEndorsementApplies(request);
         assertSupervisorOf(decision.getApproverId(), request.getUserId());
 
         request.setStatus(LeaveStatus.SUPERVISOR_APPROVED);
@@ -348,6 +372,21 @@ public class LeaveService {
         if (available.compareTo(totalDays) < 0) {
             throw new BusinessRuleException("Insufficient " + leaveType + " balance: available "
                     + available + ", requested " + totalDays);
+        }
+    }
+
+    /**
+     * An HR-only population has no endorsement step - typically because there is
+     * nobody above them to endorse, so a request waiting for one would wait
+     * forever. Refused here rather than silently accepted, so the flow a company
+     * configured is the flow it gets.
+     */
+    private void assertEndorsementApplies(LeaveRequest request) {
+        Employee employee = employeeService.getEntityByUserId(request.getUserId());
+        if (workPolicyResolver.leaveApprovalFlow(employee, request.getFromDate())
+                == LeaveApprovalFlow.HR_ONLY) {
+            throw new BusinessRuleException("This employee's leave is decided by HR directly - "
+                    + "there is no endorsement step to complete");
         }
     }
 
