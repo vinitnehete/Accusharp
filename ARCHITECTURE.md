@@ -777,9 +777,13 @@ two once both sit at `APPROVED` - the leave-side analog of `DailyAttendance`'s
 ### Leave rules, earned leave and year close
 
 Who gets which leave is a `LeaveRule` per leave type and population - company-wide,
-overridden per employment type, most specific wins (`LeaveRuleResolver`). A rule
-gives the type as a yearly grant (pro-rated for mid-year joiners), earned from
-attendance (EL only), or not at all. With no rule, a balance opens at the
+overridden by any narrower population down the same `RuleScope` chain every other
+rule engine here uses (one employee, then designation, category, department,
+employment type), most specific winning outright (`LeaveRuleResolver`). "Directors
+get no casual leave" and "this one person gets five days" are both rules. A rule
+gives the type as a yearly grant (pro-rated for mid-year joiners), a flat credit
+each month on the books, earned from attendance (EL only), or not at all. With no
+rule, a balance opens at the
 `LeaveType` default - CL 12, SL 8, EL 0 - exactly as before rules existed, and a
 balance row that already exists is never re-seeded, so hand-entered opening EL
 balances survive any rule configured afterwards. Contractor workers get none.
@@ -788,14 +792,25 @@ Two more postings move a balance's quota. Each is one row in the `leave_credit`
 ledger with its reason in words, and each is idempotent per period - reposting
 replaces the row and moves the balance by the difference:
 
-- **Monthly EL accrual** - `EarnedLeaveAccrualService`, called by `PayrollService`
-  as it locks the month, so the credit comes from attendance that can no longer
-  change. Days counted = working days minus LOP. A full month (employed all month,
-  no LOP) earns 1.5; otherwise the higher of the rule's step (20 days = 1,
-  10 = 0.5) or the legal floor of one day per 20 worked (OSH Code 2020 s.32, in
-  force since 21 November 2025), rounded up. The EL rule's effective month is the
-  go-live: nothing before it is ever credited. Regenerating payroll recomputes the
-  month's credit rather than adding a second one.
+- **Monthly accrual** - `LeaveAccrualService`, called by `PayrollService` as it
+  locks the month, so a credit computed from attendance comes from attendance that
+  can no longer change. Two kinds, one ledger:
+  - *Earned leave from attendance*: days counted = working days minus LOP. A full
+    month (employed all month, no LOP) earns 1.5; otherwise the higher of the
+    rule's step (20 days = 1, 10 = 0.5) or the legal floor of one day per 20
+    worked (OSH Code 2020 s.32, in force since 21 November 2025), rounded up.
+  - *A flat monthly credit* of any paid type - "one casual leave a month", which
+    is how most companies actually run CL and SL. Attendance is not consulted; a
+    part-month joiner credits nothing rather than a whole day.
+
+  `yearlyAccrualCap` bounds the year's total either way: the month that reaches it
+  credits the remainder, the months after it credit nothing, and because the
+  ledger is keyed per period a repost recomputes the same answer rather than
+  spending the headroom twice. Null is no ceiling, which is what earned leave had
+  before - the only limit was the carry-forward cap at year end, long after the
+  balance had grown. The rule's effective month is the go-live: nothing before it
+  is ever credited. Regenerating payroll recomputes the month's credit rather than
+  adding a second one.
 - **Year close** - `POST /api/leave-balances/close-year`, run by HR once December's
   payroll is done (December's EL is credited by that run, in January - which is
   why this is not an automatic 1 January rollover). Carries each balance into the

@@ -654,6 +654,25 @@ next to the original device reading, never by rewriting `device_logs`.
 
 ## 7. Leave
 
+### Leave rules (who gets what)
+
+A rule per leave type and population, in **Leave -> Rules**. The population is
+the same chain every other rule here uses - one employee, a designation, a
+category, a department, an employment type, or the whole company - and the most
+specific rule wins outright.
+
+| Given as | What it does |
+|---|---|
+| A yearly amount | The whole year's days up front, pro-rated for a mid-year joiner |
+| A few days each month | A flat credit for each whole month on the books, posted when that month's payroll runs |
+| Earned from attendance | Earned leave only: days counted are working days minus LOP, never below the legal floor |
+| Not entitled | None of that type, for that population |
+
+`yearlyAccrualCap` caps what a year may accrue in total, for either kind of
+monthly accrual - the month that reaches it credits the remainder and the rest
+credit nothing. Leave it blank for no ceiling. It is separate from the
+carry-forward cap, which is applied at year end to what is left unused.
+
 ### Balances
 
 Quotas are seeded on first read: casual 12, sick 8, LWP unlimited/unpaid.
