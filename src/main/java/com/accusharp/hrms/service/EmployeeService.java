@@ -910,10 +910,52 @@ public class EmployeeService {
                 .orElse(true);
     }
 
+    /**
+     * For privileged writes a permission unlocks - generating or correcting
+     * attendance, final leave approval, entering a leave directly: the target
+     * must be someone the caller <em>manages</em>. The permission says what may
+     * be done; this says to whom, and it is still decided by the fixed role:
+     * ADMIN/HR manage the whole company, a SUPERVISOR their direct reports, and
+     * anyone else nobody.
+     *
+     * <p>Unlike {@link #assertSelfOrManages}, a SUPERVISOR's own record is not
+     * included. A custom role handing a supervisor {@code ATTENDANCE_CORRECT} or
+     * {@code LEAVE_APPROVE} must not let them correct their own attendance or
+     * approve their own leave. ADMIN/HR, who could always do both, still can.
+     *
+     * <p>404 on failure and a no-op with no employee principal, both exactly as
+     * {@link #assertSelfOrManages}.
+     */
+    public void assertManages(String targetUserId) {
+        tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .ifPresent(principal -> {
+                    if (!manages(principal, targetUserId)) {
+                        throw NotFoundException.of("Employee", "userId " + targetUserId);
+                    }
+                });
+    }
+
+    /** {@link #getActiveEntities()} narrowed to the employees the caller manages - see {@link #assertManages}. */
+    @Transactional(readOnly = true)
+    public List<Employee> getActiveManagedEntities() {
+        List<Employee> active = getActiveEntities();
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> active.stream().filter(employee -> manages(principal, employee)).toList())
+                .orElse(active);
+    }
+
     private boolean isVisibleTo(UserPrincipal principal, String targetUserId) {
-        if (principal.getUsername().equals(targetUserId)) {
-            return true;
-        }
+        return principal.getUsername().equals(targetUserId) || manages(principal, targetUserId);
+    }
+
+    /** Same rule as {@link #isVisibleTo(UserPrincipal, String)}, for an employee already loaded. */
+    private boolean isVisibleTo(UserPrincipal principal, Employee target) {
+        return principal.getUsername().equals(target.getUserId()) || manages(principal, target);
+    }
+
+    private boolean manages(UserPrincipal principal, String targetUserId) {
         Role role = Role.valueOf(principal.getRole());
         if (role == Role.ADMIN || role == Role.HR) {
             return true;
@@ -921,11 +963,8 @@ public class EmployeeService {
         return role == Role.SUPERVISOR && supervises(principal.getUsername(), targetUserId);
     }
 
-    /** Same rule as {@link #isVisibleTo(UserPrincipal, String)}, for an employee already loaded. */
-    private boolean isVisibleTo(UserPrincipal principal, Employee target) {
-        if (principal.getUsername().equals(target.getUserId())) {
-            return true;
-        }
+    /** Same rule as {@link #manages(UserPrincipal, String)}, for an employee already loaded. */
+    private boolean manages(UserPrincipal principal, Employee target) {
         Role role = Role.valueOf(principal.getRole());
         if (role == Role.ADMIN || role == Role.HR) {
             return true;

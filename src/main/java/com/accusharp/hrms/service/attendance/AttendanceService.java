@@ -18,7 +18,7 @@ import com.accusharp.hrms.entity.ShiftSchedule;
 import com.accusharp.hrms.enums.AttendanceRecordStatus;
 import com.accusharp.hrms.enums.AttendanceStatus;
 import com.accusharp.hrms.enums.AuditOutcome;
-import com.accusharp.hrms.enums.Role;
+import com.accusharp.hrms.enums.PermissionCode;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.AttendancePolicyApplicationRepository;
@@ -27,6 +27,7 @@ import com.accusharp.hrms.repository.DailyAttendanceRepository;
 import com.accusharp.hrms.repository.DeviceLogRepository;
 import com.accusharp.hrms.repository.MonthlyAttendanceSummaryRepository;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
+import com.accusharp.hrms.security.AuthorizationService;
 import com.accusharp.hrms.service.AttendanceRuleService;
 import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
@@ -103,6 +104,7 @@ public class AttendanceService {
     private final LopCalculationService lopCalculationService;
     private final HolidayService holidayService;
     private final EmployeeService employeeService;
+    private final AuthorizationService authorizationService;
     private final AuditService auditService;
     private final AttendanceRuleService attendanceRuleService;
     private final AttendancePolicyResolver attendancePolicyResolver;
@@ -119,7 +121,7 @@ public class AttendanceService {
      */
     @Transactional
     public AttendanceGenerationResponse generate(AttendanceGenerationRequest request) {
-        assertHrOrAdmin(request.getGeneratedBy());
+        assertActorCan(request.getGeneratedBy(), PermissionCode.ATTENDANCE_GENERATE, "Generating attendance");
 
         YearMonth month = request.getMonth();
         List<Employee> employees = resolveEmployees(request.getUserIds());
@@ -527,12 +529,13 @@ public class AttendanceService {
     @Transactional
     public AttendanceRecordResponse correctDay(String userId, LocalDate date,
                                                AttendanceCorrectionRequest request) {
-        assertHrOrAdmin(request.getUpdatedBy());
+        assertActorCan(request.getUpdatedBy(), PermissionCode.ATTENDANCE_CORRECT, "Correcting attendance");
         // Tenant check on the record being WRITTEN to, not just the caller's own identity above -
         // found during a full security audit: this method previously never resolved the target
         // userId at all, so an HR/ADMIN at any company could correct another company's attendance
         // by userId, having only proven they hold HR/ADMIN *somewhere*.
         Employee employee = employeeService.getEntityByUserId(userId);
+        employeeService.assertManages(userId);
         Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
 
         DailyAttendance record = dailyAttendanceRepository.findByUserIdAndAttendanceDate(userId, date)
@@ -740,14 +743,15 @@ public class AttendanceService {
      * <p>Resolves {@code userId} through the tenant-checked
      * {@code EmployeeService} before touching anything - found missing during
      * a full security audit, alongside the identical gap in
-     * {@link #correctDay}. {@code assertHrOrAdmin(actorId)} only proves the
-     * <em>caller</em> holds HR/ADMIN somewhere; it says nothing about which
-     * company the records being locked/unlocked belong to.
+     * {@link #correctDay}. {@code assertActorCan} only proves the <em>caller</em>
+     * holds the permission; it says nothing about which company - or, for a
+     * supervisor, which team - the records being unlocked belong to.
      */
     @Transactional
     public int unlockMonth(String userId, YearMonth month, String actorId) {
-        assertHrOrAdmin(actorId);
+        assertActorCan(actorId, PermissionCode.ATTENDANCE_UNLOCK, "Unlocking attendance");
         employeeService.getEntityByUserId(userId);
+        employeeService.assertManages(userId);
         log.info("attendance.unlock userId={} month={} by={}", userId, month, actorId);
         int updated = setLocked(userId, month, false);
         auditService.record("ATTENDANCE_UNLOCK", "DailyAttendance", userId + " " + month,
@@ -1423,11 +1427,16 @@ public class AttendanceService {
                 record.getEarlyExitMinutes(), record.isInvalidPunch(), record.getStatus());
     }
 
+    /** Who a generation run covers - only ever employees the caller manages (see {@code EmployeeService#assertManages}). */
     private List<Employee> resolveEmployees(List<String> userIds) {
         if (userIds == null || userIds.isEmpty()) {
-            return employeeService.getActiveEntities();
+            return employeeService.getActiveManagedEntities();
         }
-        return userIds.stream().map(employeeService::getEntityByUserId).toList();
+        return userIds.stream().map(userId -> {
+            Employee employee = employeeService.getEntityByUserId(userId);
+            employeeService.assertManages(userId);
+            return employee;
+        }).toList();
     }
 
     private Map<LocalDate, DailyAttendance> indexByDate(List<DailyAttendance> records) {
@@ -1436,11 +1445,17 @@ public class AttendanceService {
         return index;
     }
 
-    private void assertHrOrAdmin(String actorId) {
+    /**
+     * The actor must hold the permission - through their role or a custom role,
+     * the same answer {@code @authz.can} gives at the controller. Asked by name
+     * rather than by role so a custom role granting it works past the gate too.
+     * Whose records they may touch is a separate, per-target check:
+     * {@code EmployeeService#assertManages}.
+     */
+    private void assertActorCan(String actorId, PermissionCode permission, String action) {
         Employee actor = employeeService.getEntityByUserId(actorId);
-        if (actor.getRole() != Role.HR && actor.getRole() != Role.ADMIN) {
-            throw new BusinessRuleException(
-                    "Generating or correcting attendance requires the HR or ADMIN role");
+        if (!authorizationService.employeeCan(actor, permission.name())) {
+            throw new BusinessRuleException(action + " requires the " + permission + " permission");
         }
     }
 

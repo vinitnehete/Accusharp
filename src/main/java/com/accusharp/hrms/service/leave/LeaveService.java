@@ -11,10 +11,12 @@ import com.accusharp.hrms.enums.LeaveDuration;
 import com.accusharp.hrms.enums.LeaveOrigin;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
+import com.accusharp.hrms.enums.PermissionCode;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.LeaveRequestRepository;
+import com.accusharp.hrms.security.AuthorizationService;
 import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.EmployeeService;
 import lombok.RequiredArgsConstructor;
@@ -46,6 +48,7 @@ public class LeaveService {
     private final LeaveBalanceService leaveBalanceService;
     private final LeaveCalculationService leaveCalculationService;
     private final EmployeeService employeeService;
+    private final AuthorizationService authorizationService;
     private final AuditService auditService;
 
     @Transactional
@@ -109,7 +112,8 @@ public class LeaveService {
     @Transactional
     public LeaveResponse hrDirectCreate(LeaveHrDirectRequest request) {
         Employee employee = employeeService.getEntityByUserId(request.getUserId()); // tenant check, same as assertTargetAccessible
-        assertHrOrAdmin(request.getApproverId());
+        assertActorCan(request.getApproverId(), PermissionCode.LEAVE_APPROVE, "Entering an approved leave");
+        employeeService.assertManages(request.getUserId());
 
         if (request.getFromDate().isAfter(request.getToDate())) {
             throw new BusinessRuleException("fromDate must be on or before toDate");
@@ -179,7 +183,8 @@ public class LeaveService {
         if (!request.getStatus().isOpen()) {
             throw new BusinessRuleException("Leave is already " + request.getStatus());
         }
-        assertHrOrAdmin(decision.getApproverId());
+        assertActorCan(decision.getApproverId(), PermissionCode.LEAVE_APPROVE, "Final leave approval");
+        employeeService.assertManages(request.getUserId());
 
         leaveBalanceService.consume(request.getUserId(), leaveYearOf(request.getUserId(), request.getFromDate()),
                 request.getLeaveType(), request.getTotalDays());
@@ -201,6 +206,7 @@ public class LeaveService {
     public LeaveResponse reject(Long id, LeaveDecisionRequest decision) {
         LeaveRequest request = getEntity(id);
         assertTargetAccessible(request);
+        employeeService.assertManages(request.getUserId());
         if (!request.getStatus().isOpen()) {
             throw new BusinessRuleException("Leave is already " + request.getStatus());
         }
@@ -219,6 +225,7 @@ public class LeaveService {
     public LeaveResponse cancel(Long id, LeaveDecisionRequest decision) {
         LeaveRequest request = getEntity(id);
         assertTargetAccessible(request);
+        employeeService.assertManages(request.getUserId());
         if (request.getStatus() == LeaveStatus.CANCELLED || request.getStatus() == LeaveStatus.REJECTED) {
             throw new BusinessRuleException("Leave is already " + request.getStatus());
         }
@@ -355,10 +362,16 @@ public class LeaveService {
         }
     }
 
-    private void assertHrOrAdmin(String approverId) {
+    /**
+     * The approver must hold the permission - through their role or a custom
+     * role - rather than be HR or ADMIN by name, so a custom role granting
+     * {@code LEAVE_APPROVE} works past the controller gate. Whose leave they may
+     * decide is checked separately: {@code EmployeeService#assertManages}.
+     */
+    private void assertActorCan(String approverId, PermissionCode permission, String action) {
         Employee approver = employeeService.getEntityByUserId(approverId);
-        if (approver.getRole() != Role.HR && approver.getRole() != Role.ADMIN) {
-            throw new BusinessRuleException("Final leave approval requires the HR or ADMIN role");
+        if (!authorizationService.employeeCan(approver, permission.name())) {
+            throw new BusinessRuleException(action + " requires the " + permission + " permission");
         }
     }
 

@@ -284,7 +284,7 @@ class AttendanceRegularisationTest {
 
         assertThatThrownBy(() -> attendanceService.correctDay(EMPLOYEE, MISSED_OUT_PUNCH, request))
                 .isInstanceOf(BusinessRuleException.class)
-                .hasMessageContaining("HR or ADMIN");
+                .hasMessageContaining("ATTENDANCE_CORRECT");
     }
 
     @Test
