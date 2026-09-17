@@ -11,7 +11,8 @@ service, which found and fixed four more cross-company gaps), **Phase 8**
 employee logins, admin-triggered password reset, full audit coverage, and
 audit log retention/export), **Phase 10** (dynamic role/permission
 management), **Phase 14** (reports and dashboard scoped to a supervisor's
-team) and **Phase 15** (custom roles effective end to end) of a multi-phase
+team), **Phase 15** (custom roles effective end to end) and **Phase 16**
+(data scope as a grantable permission) of a multi-phase
 security rollout. Read this
 alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
@@ -989,6 +990,46 @@ widen it (see "Not yet built").
 `AuthApiHttpTest.loginAndRefreshReturnEffectivePermissions`, and on the frontend
 `navConfig.test.js`, `access.test.js` and `AuthContext.test.jsx`.
 
+## Data scope as a grantable permission (Phase 16)
+
+Phase 15 left reach with the fixed role, which a director's organisation does
+not fit: their direct reports are team leads, and the people doing the work are
+a level further down, invisible to them. The answer is not a second kind of
+role but three more permissions.
+
+### `DataScope`
+
+`SCOPE_DIRECT_REPORTS`, `SCOPE_ALL_REPORTS`, `SCOPE_COMPANY` - ordered, each
+including the one before. `PermissionSeeder` grants them to the fixed roles
+exactly as those roles always behaved (COMPANY to ADMIN/HR, DIRECT_REPORTS to
+SUPERVISOR, none to EMPLOYEE), so nothing changes until somebody grants more,
+and a custom role carries anything wider. The role's own scope stays a floor
+under the granted one, so a database whose `role_permission` rows predate these
+codes still shows HR the company rather than nothing.
+
+`EmployeeService.scopeOf` resolves it - from the caller's effective permissions,
+or from an actor entity for the service-layer checks that take an actor id - and
+every visibility decision already funnelled through `assertManages`,
+`assertSelfOrManages` and `getVisibleEntities`, so the directory, reports, the
+dashboard, the roster planner, leave decisions and attendance corrections all
+follow at once. `ALL_REPORTS` is answered by walking **up** from the target to
+see whether the caller sits above it: one lookup per level, no recursive query,
+and cycles (already refused when a supervisor is assigned) cannot loop it.
+
+Two role checks that predated this are gone with it:
+`ShiftSchedulingService.assertMaySchedule` and `LeaveService.assertSupervisorOf`
+now ask whether the actor manages the target, so a director can roster and
+endorse two levels down.
+
+**Scope is reach, not power.** `SCOPE_COMPANY` lets a custom-role holder *see*
+the company; deciding leave still needs `LEAVE_APPROVE`, and correcting
+attendance still needs `ATTENDANCE_CORRECT`. And a team-scoped caller still
+never acts on their own record (Phase 15).
+
+**Proof:** `DirectorScopeHttpTest` (6 tests), plus the frontend's
+`access.test.js` and `navConfig.test.js`, where the Team screens now ask for a
+scope rather than a role name.
+
 ## Not yet built (next phases)
 
 - Platform-owner company onboarding flow beyond raw CRUD.
@@ -1015,10 +1056,9 @@ widen it (see "Not yet built").
   what its own creator (ADMIN) already holds, which today it can (only the
   platform-only codes are blocked, not a general no-privilege-escalation
   check).
-- Scope through a custom role: a custom role can grant a capability, but
-  whose records it reaches is still the fixed role's to decide (Phase 15),
-  so "this director sees every team below them" and "this payroll officer
-  sees the whole company" cannot be expressed yet.
+- A scope narrower than a whole subtree - "this department", "this site" -
+  which `DataScope` (Phase 16) has no value for; today the choices are the
+  caller alone, their direct reports, everyone below them, or the company.
 
 See the original security analysis in this repository's PR/session history
 for the full phased plan.

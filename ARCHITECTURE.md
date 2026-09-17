@@ -807,16 +807,24 @@ is the summary.
   of the employee's fixed `Role`, never a replacement for it. Platform-only
   permissions can never be granted through a custom role.
 
-  **A permission says what may be done; the fixed role still says to whom.**
-  Login and refresh return the session's effective permissions (base role plus
-  custom roles), which is what the UI's menus and route guards read, and the
+  **A permission says what may be done; a scope says to whom.** Login and
+  refresh return the session's effective permissions (base role plus custom
+  roles), which is what the UI's menus and route guards read, and the
   service-layer checks ask for the permission by name rather than for HR or
-  ADMIN - so a custom role works past the `@PreAuthorize` gate too. Whose
-  records may be touched stays with the fixed role: HR/ADMIN the company, a
-  `SUPERVISOR` their direct reports (never their own record, for the privileged
-  writes a custom role unlocks), anyone else nobody -
-  `EmployeeService.assertManages`. See `CustomRoleController`/
-  `CustomRoleService` and SECURITY.md's Phase 10 and 15 write-ups.
+  ADMIN - so a custom role works past the `@PreAuthorize` gate too.
+
+  Reach is its own trio of grants (`DataScope`): `SCOPE_DIRECT_REPORTS`,
+  `SCOPE_ALL_REPORTS` and `SCOPE_COMPANY`, seeded onto the fixed roles exactly
+  as they always behaved - COMPANY for ADMIN/HR, DIRECT_REPORTS for
+  `SUPERVISOR`, nothing for `EMPLOYEE` - and grantable through a custom role for
+  anything wider. `SCOPE_ALL_REPORTS` is what a director needs: everyone below
+  them in the reporting chain, not only their direct reports, resolved by
+  walking up from the target in `EmployeeService`. The directory, reports, the
+  dashboard, the roster planner, leave decisions and attendance corrections all
+  read that one answer (`assertManages` / `getVisibleEntities`), and a
+  privileged write never reaches the caller's own record unless they hold
+  company scope. See `CustomRoleController`/`CustomRoleService` and SECURITY.md's
+  Phase 10, 15 and 16 write-ups.
 
 ## Design decisions worth knowing
 
