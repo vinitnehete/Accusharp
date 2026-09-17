@@ -437,8 +437,8 @@ refused to run for them at all, since it demands generated attendance for every
 employee, so the only way through was to fabricate a month of attendance for a
 person who was never tracked.
 
-`WorkPolicy` answers two questions per population - is their attendance
-tracked, and where does their pay come from:
+`WorkPolicy` answers three questions per population - is their attendance
+tracked, where does their pay come from, and who approves their leave:
 
 ```
 WorkPolicy  (append-only, versioned, effective-dated)
@@ -449,7 +449,10 @@ WorkPolicyResolver     most specific scope wins, version in force on the date
         +--> AttendanceService.generate   NOT_TRACKED employees are skipped entirely
         |
         +--> PayrollService.build         FIXED_MONTHLY pays the structure for the
-                                          days employed, with no attendance at all
+        |                                 days employed, with no attendance at all
+        |
+        +--> LeaveService.apply           AUTO_APPROVE approves as it is applied for;
+                                          HR_ONLY refuses the endorsement step
 ```
 
 Deliberately the same shape as the attendance policy engine: the same
@@ -479,6 +482,16 @@ silently restate every payslip that population was ever paid from attendance.
 
 Paying from attendance nobody records is refused when the policy is written,
 not discovered on a payslip: `NOT_TRACKED` with `ATTENDANCE_BASED` is a 400.
+
+`leaveApproval` is the third axis, and for the same reason: a director has
+nobody above them to endorse their leave, so a two-step flow leaves the request
+waiting forever, and an owner is not asking their own HR for a day off.
+`AUTO_APPROVE` approves on application and spends the balance there - every
+check `apply` already made still runs first, so it is never a way around an
+empty balance or an overlapping leave. `HR_ONLY` refuses endorsement outright
+rather than accepting a step that means nothing. The column is nullable and null
+reads as `SUPERVISOR_THEN_HR`, so policies written before it existed keep the
+flow they were written under.
 
 ### Employment types are configurable
 

@@ -412,9 +412,10 @@ the date the shift started.
 
 ### 3.7 Work policies (only if some people are outside the process)
 
-Everybody is assumed to punch, be rostered, have attendance generated and be
-paid from it. An owner or a director usually does none of that, and payroll
-refuses to run without generated attendance - so say so, once:
+Everybody is assumed to punch, be rostered, have attendance generated, have
+leave endorsed then approved, and be paid from all of it. An owner or a director
+usually does none of that, and payroll refuses to run without generated
+attendance - so say so, once, in **Masters -> Work Policies**, or over the API:
 
 ```bash
 # This one person is not tracked, and is paid their salary every month
@@ -431,6 +432,7 @@ curl 'http://localhost:8080/api/work-policies/effective?userId=EMP007&date=2026-
 |---|---|
 | `attendanceTracking` | `TRACKED` (the default everybody is on) or `NOT_TRACKED` - generation skips them, so no day of theirs is ever marked absent |
 | `payrollMode` | `ATTENDANCE_BASED` (the default) or `FIXED_MONTHLY` - the salary structure for the days employed, whatever attendance says |
+| `leaveApproval` | `SUPERVISOR_THEN_HR` (the default), `HR_ONLY` (no endorsement step - for people with nobody above them) or `AUTO_APPROVE` (approved as it is applied for) |
 | `scope` | `EMPLOYEE`, `DESIGNATION`, `CATEGORY`, `DEPARTMENT`, `EMPLOYMENT_TYPE` or `COMPANY`. The most specific one wins outright |
 | `effectiveFrom` | A policy applies from this date on. Changing it appends a version; ending it appends one with `"enabled": false` |
 
@@ -439,6 +441,11 @@ prorated only for a mid-month joining or relieving date. Every deduction still
 applies - PF, ESIC, PT, MLWF, TDS - and earned leave still accrues. Pay cannot
 come from attendance nobody records: `NOT_TRACKED` with `ATTENDANCE_BASED` is
 refused when you write it.
+
+`AUTO_APPROVE` leave is approved the moment it is applied for, and the days come
+off the balance then - the balance and overlap checks still run, so it is never a
+way around an empty balance. `HR_ONLY` refuses the endorsement step rather than
+leaving a request waiting for an endorsement that will never come.
 
 Configure nothing and nothing changes: every employee stays tracked and paid
 from attendance, exactly as before this existed.
