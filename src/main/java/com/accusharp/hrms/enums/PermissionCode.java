@@ -120,5 +120,22 @@ public enum PermissionCode {
 
     /** Create/edit/delete custom roles, assign their permissions, assign them to employees. ADMIN only - not HR, same trust bar as AUDIT_READ. */
     ROLE_MANAGE,
-    ROLE_READ
+    ROLE_READ,
+
+    /**
+     * How far a holder can see and act - {@link DataScope}. Every other code
+     * here answers "what may be done"; these three answer "to whose records",
+     * and the two are deliberately separate: a custom role granting
+     * {@code LEAVE_APPROVE} should decide leave for the people its holder
+     * already reaches, not for the whole company by implication.
+     *
+     * <p>Seeded onto the fixed roles as they always behaved - COMPANY for
+     * ADMIN/HR, DIRECT_REPORTS for SUPERVISOR, nothing for EMPLOYEE - and
+     * grantable through a custom role for anything wider. {@code
+     * SCOPE_ALL_REPORTS} is the director's: everyone below them in the
+     * reporting chain, not just their direct reports.
+     */
+    SCOPE_DIRECT_REPORTS,
+    SCOPE_ALL_REPORTS,
+    SCOPE_COMPANY
 }

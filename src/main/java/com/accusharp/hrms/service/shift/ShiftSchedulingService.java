@@ -477,15 +477,12 @@ public class ShiftSchedulingService {
         if (actor == null || assignedBy.equals(userId)) {
             return;
         }
-        switch (actor.getRole()) {
-            case ADMIN, HR -> { /* full roster access */ }
-            case SUPERVISOR -> {
-                if (!employeeService.supervises(assignedBy, userId)) {
-                    throw new BusinessRuleException(
-                            "Supervisor " + assignedBy + " does not manage employee " + userId);
-                }
-            }
-            default -> throw new BusinessRuleException("Role " + actor.getRole() + " cannot assign shifts");
+        // Whoever the actor reaches: the company for ADMIN/HR, a supervisor's own
+        // team, every team below a director (DataScope.ALL_REPORTS, granted through
+        // a custom role), nobody for anyone else.
+        if (!employeeService.managesEmployee(actor, userId)) {
+            throw new BusinessRuleException(
+                    "Scheduler " + assignedBy + " does not manage employee " + userId);
         }
     }
 

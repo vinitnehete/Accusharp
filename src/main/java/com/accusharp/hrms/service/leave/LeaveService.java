@@ -12,7 +12,6 @@ import com.accusharp.hrms.enums.LeaveOrigin;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.PermissionCode;
-import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.LeaveRequestRepository;
@@ -352,13 +351,15 @@ public class LeaveService {
         }
     }
 
+    /**
+     * Endorsement is for whoever manages the employee: their supervisor, a
+     * director above that supervisor ({@code DataScope.ALL_REPORTS}), or HR and
+     * ADMIN, who reach the whole company.
+     */
     private void assertSupervisorOf(String approverId, String userId) {
         Employee approver = employeeService.getEntityByUserId(approverId);
-        if (approver.getRole() == Role.ADMIN || approver.getRole() == Role.HR) {
-            return;
-        }
-        if (!employeeService.supervises(approverId, userId)) {
-            throw new BusinessRuleException("Approver " + approverId + " does not supervise " + userId);
+        if (!employeeService.managesEmployee(approver, userId)) {
+            throw new BusinessRuleException("Approver " + approverId + " does not manage " + userId);
         }
     }
 

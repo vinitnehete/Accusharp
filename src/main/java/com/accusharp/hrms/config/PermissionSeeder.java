@@ -99,7 +99,9 @@ public class PermissionSeeder {
                 PermissionCode.PAYROLL_PROCESS, PermissionCode.PAYROLL_READ,
                 PermissionCode.SALARY_SLIP_READ,
                 PermissionCode.REPORT_READ,
-                PermissionCode.DASHBOARD_READ);
+                PermissionCode.DASHBOARD_READ,
+                // Scope, as a grant rather than a role name - see DataScope.
+                PermissionCode.SCOPE_COMPANY);
 
         grants.put(Role.HR.name(), companyAdminPermissions);
 
@@ -132,7 +134,10 @@ public class PermissionSeeder {
                 PermissionCode.PAYROLL_READ,
                 PermissionCode.SALARY_SLIP_READ,
                 PermissionCode.REPORT_READ,
-                PermissionCode.DASHBOARD_READ));
+                PermissionCode.DASHBOARD_READ,
+                // A supervisor's own team, exactly as before. A director's wider
+                // reach is SCOPE_ALL_REPORTS, granted through a custom role.
+                PermissionCode.SCOPE_DIRECT_REPORTS));
 
         grants.put(Role.EMPLOYEE.name(), EnumSet.of(
                 PermissionCode.COMPANY_READ,

@@ -14,6 +14,8 @@ import com.accusharp.hrms.enums.SalaryStructureChangeType;
 import com.accusharp.hrms.entity.SalaryRule;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PrincipalType;
+import com.accusharp.hrms.enums.DataScope;
+import com.accusharp.hrms.enums.PermissionCode;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
@@ -24,6 +26,7 @@ import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
 import com.accusharp.hrms.repository.SalaryRevisionRepository;
 import com.accusharp.hrms.repository.SalaryStructureRevisionRepository;
+import com.accusharp.hrms.security.AuthorizationService;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
@@ -71,6 +74,7 @@ public class EmployeeService {
     private final SalaryCalculationService salaryCalculationService;
     private final EmployeeMapper employeeMapper;
     private final TenantContext tenantContext;
+    private final AuthorizationService authorizationService;
     private final AuditService auditService;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
@@ -621,9 +625,13 @@ public class EmployeeService {
     private List<Employee> visibleToCaller(List<Employee> employees) {
         return tenantContext.currentPrincipal()
                 .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
-                .map(principal -> employees.stream()
-                        .filter(employee -> isVisibleTo(principal, employee))
-                        .toList())
+                .map(principal -> {
+                    // Resolved once for the batch - it costs a permission lookup.
+                    DataScope scope = scopeOf(principal);
+                    return employees.stream()
+                            .filter(employee -> isVisibleTo(principal, scope, employee))
+                            .toList();
+                })
                 .orElse(employees);
     }
 
@@ -701,14 +709,22 @@ public class EmployeeService {
     public List<Employee> plannerScope(String requestedSupervisorUserId, Long contractorId) {
         return tenantContext.currentPrincipal()
                 .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
-                .map(principal -> switch (Role.valueOf(principal.getRole())) {
-                    case ADMIN, HR -> teamOrCompany(requestedSupervisorUserId, contractorId);
-                    case SUPERVISOR -> teamOrCompany(principal.getUsername(), contractorId);
-                    // A plain EMPLOYEE gets a planner of exactly themselves, and
-                    // a contractor filter cannot widen that - they are never a
+                .map(principal -> switch (scopeOf(principal)) {
+                    case COMPANY -> teamOrCompany(requestedSupervisorUserId, contractorId);
+                    // The people this caller rosters: their direct reports, or -
+                    // for a director - every team below them. Their own row is
+                    // not in it, exactly as a supervisor's planner never was.
+                    case DIRECT_REPORTS, ALL_REPORTS -> {
+                        DataScope scope = scopeOf(principal);
+                        yield teamOrCompany(null, contractorId).stream()
+                                .filter(employee -> manages(principal, scope, employee))
+                                .toList();
+                    }
+                    // A caller with no team gets a planner of exactly themselves,
+                    // and a contractor filter cannot widen that - they are never a
                     // contractor's worker (those have no login at all), so the
                     // honest answer to "their contractor roster" is nothing.
-                    case EMPLOYEE -> contractorId == null
+                    case SELF -> contractorId == null
                             ? List.of(getEntityByUserId(principal.getUsername()))
                             : List.<Employee>of();
                 })
@@ -930,7 +946,7 @@ public class EmployeeService {
         tenantContext.currentPrincipal()
                 .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
                 .ifPresent(principal -> {
-                    if (!manages(principal, targetUserId)) {
+                    if (!manages(principal, scopeOf(principal), targetUserId)) {
                         throw NotFoundException.of("Employee", "userId " + targetUserId);
                     }
                 });
@@ -942,35 +958,112 @@ public class EmployeeService {
         List<Employee> active = getActiveEntities();
         return tenantContext.currentPrincipal()
                 .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
-                .map(principal -> active.stream().filter(employee -> manages(principal, employee)).toList())
+                .map(principal -> {
+                    DataScope scope = scopeOf(principal);
+                    return active.stream().filter(employee -> manages(principal, scope, employee)).toList();
+                })
                 .orElse(active);
     }
 
+    /**
+     * How far this caller can see and act, from the permissions they hold - the
+     * fixed role's grants plus any custom role (see {@link DataScope}). The role's
+     * own scope is a floor under it, so a deployment whose {@code role_permission}
+     * rows predate the scope codes behaves exactly as it always did.
+     */
+    private DataScope scopeOf(UserPrincipal principal) {
+        DataScope granted = DataScope.widest(authorizationService.effectivePermissions(principal));
+        DataScope byRole = DataScope.ofRole(Role.valueOf(principal.getRole()));
+        return granted.isAtLeast(byRole) ? granted : byRole;
+    }
+
+    /**
+     * The same question for an employee who is not the caller - the actor named
+     * on a request ({@code assignedBy}, {@code approverId}), which service-level
+     * tests supply with no security context at all.
+     */
+    @Transactional(readOnly = true)
+    public DataScope scopeOf(Employee actor) {
+        DataScope widest = DataScope.ofRole(actor.getRole());
+        for (DataScope scope : DataScope.values()) {
+            if (scope.isAtLeast(widest) && holdsScope(actor, scope)) {
+                widest = scope;
+            }
+        }
+        return widest;
+    }
+
+    /** True when {@code actor} may act on {@code targetUserId} - see {@link #assertManages}, resolved for an actor rather than the caller. */
+    @Transactional(readOnly = true)
+    public boolean managesEmployee(Employee actor, String targetUserId) {
+        return switch (scopeOf(actor)) {
+            case COMPANY -> true;
+            case ALL_REPORTS -> reportsUpTo(actor.getUserId(), getEntityByUserId(targetUserId));
+            case DIRECT_REPORTS -> supervises(actor.getUserId(), targetUserId);
+            case SELF -> false;
+        };
+    }
+
+    private boolean holdsScope(Employee actor, DataScope scope) {
+        return switch (scope) {
+            case SELF -> true;
+            case DIRECT_REPORTS -> authorizationService.employeeCan(actor, PermissionCode.SCOPE_DIRECT_REPORTS.name());
+            case ALL_REPORTS -> authorizationService.employeeCan(actor, PermissionCode.SCOPE_ALL_REPORTS.name());
+            case COMPANY -> authorizationService.employeeCan(actor, PermissionCode.SCOPE_COMPANY.name());
+        };
+    }
+
+    /**
+     * Whether {@code callerUserId} sits anywhere above {@code target} in the
+     * reporting chain - what {@link DataScope#ALL_REPORTS} means. Walks up from
+     * the target rather than down from the caller, so one lookup per level
+     * answers it however wide the organisation is. Cycles are already refused by
+     * {@link #validateSupervisorChain}; the visited set is belt and braces
+     * against data that predates it.
+     */
+    private boolean reportsUpTo(String callerUserId, Employee target) {
+        Set<Long> seen = new HashSet<>();
+        Employee current = target.getSupervisor();
+        while (current != null && (current.getId() == null || seen.add(current.getId()))) {
+            if (callerUserId.equals(current.getUserId())) {
+                return true;
+            }
+            current = current.getSupervisor();
+        }
+        return false;
+    }
+
     private boolean isVisibleTo(UserPrincipal principal, String targetUserId) {
-        return principal.getUsername().equals(targetUserId) || manages(principal, targetUserId);
+        return isVisibleTo(principal, scopeOf(principal), targetUserId);
     }
 
-    /** Same rule as {@link #isVisibleTo(UserPrincipal, String)}, for an employee already loaded. */
-    private boolean isVisibleTo(UserPrincipal principal, Employee target) {
-        return principal.getUsername().equals(target.getUserId()) || manages(principal, target);
+    private boolean isVisibleTo(UserPrincipal principal, DataScope scope, String targetUserId) {
+        return principal.getUsername().equals(targetUserId) || manages(principal, scope, targetUserId);
     }
 
-    private boolean manages(UserPrincipal principal, String targetUserId) {
-        Role role = Role.valueOf(principal.getRole());
-        if (role == Role.ADMIN || role == Role.HR) {
-            return true;
-        }
-        return role == Role.SUPERVISOR && supervises(principal.getUsername(), targetUserId);
+    /** Same rule, for an employee already loaded. */
+    private boolean isVisibleTo(UserPrincipal principal, DataScope scope, Employee target) {
+        return principal.getUsername().equals(target.getUserId()) || manages(principal, scope, target);
     }
 
-    /** Same rule as {@link #manages(UserPrincipal, String)}, for an employee already loaded. */
-    private boolean manages(UserPrincipal principal, Employee target) {
-        Role role = Role.valueOf(principal.getRole());
-        if (role == Role.ADMIN || role == Role.HR) {
-            return true;
-        }
-        return role == Role.SUPERVISOR && target.getSupervisor() != null
-                && principal.getUsername().equals(target.getSupervisor().getUserId());
+    private boolean manages(UserPrincipal principal, DataScope scope, String targetUserId) {
+        return switch (scope) {
+            case COMPANY -> true;
+            case ALL_REPORTS -> reportsUpTo(principal.getUsername(), getEntityByUserId(targetUserId));
+            case DIRECT_REPORTS -> supervises(principal.getUsername(), targetUserId);
+            case SELF -> false;
+        };
+    }
+
+    /** Same rule as {@link #manages(UserPrincipal, DataScope, String)}, for an employee already loaded. */
+    private boolean manages(UserPrincipal principal, DataScope scope, Employee target) {
+        return switch (scope) {
+            case COMPANY -> true;
+            case ALL_REPORTS -> reportsUpTo(principal.getUsername(), target);
+            case DIRECT_REPORTS -> target.getSupervisor() != null
+                    && principal.getUsername().equals(target.getSupervisor().getUserId());
+            case SELF -> false;
+        };
     }
 
     private void recalculate(Employee employee) {
