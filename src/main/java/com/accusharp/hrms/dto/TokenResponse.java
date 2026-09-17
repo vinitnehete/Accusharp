@@ -2,6 +2,8 @@ package com.accusharp.hrms.dto;
 
 import com.accusharp.hrms.enums.PrincipalType;
 
+import java.util.Set;
+
 /**
  * The login/refresh response body.
  *
@@ -15,6 +17,10 @@ import com.accusharp.hrms.enums.PrincipalType;
  * <p>The access token stays in the body on purpose: the SPA holds it in
  * memory only and sends it as an {@code Authorization} header, which is what
  * keeps every business endpoint immune to CSRF.
+ *
+ * <p>{@code permissions} is everything the session may do - the base role's
+ * grants plus any custom roles - so the UI decides what to show from the same
+ * answer the API enforces. {@code role} stays the base role alone.
  */
 public record TokenResponse(
         String accessToken,
@@ -23,6 +29,7 @@ public record TokenResponse(
         PrincipalType principalType,
         String username,
         String role,
-        boolean mustChangePassword
+        boolean mustChangePassword,
+        Set<String> permissions
 ) {
 }

@@ -145,6 +145,18 @@ class AuthApiHttpTest {
     }
 
     @Test
+    @DisplayName("login and refresh both return the permissions the session holds, so the UI never guesses them")
+    void loginAndRefreshReturnEffectivePermissions() {
+        Resp login = login(USER_ID, PASSWORD);
+        assertThat(permissions(login.body())).contains("LEAVE_APPLY", "ATTENDANCE_READ", "SALARY_SLIP_READ")
+                .doesNotContain("REPORT_READ", "PAYROLL_PROCESS", "ROLE_MANAGE");
+
+        Resp refreshed = sendWithRefreshCookie("/api/auth/refresh", login.refreshCookieValue());
+        assertThat(refreshed.status()).isEqualTo(200);
+        assertThat(permissions(refreshed.body())).containsExactlyInAnyOrderElementsOf(permissions(login.body()));
+    }
+
+    @Test
     @DisplayName("refresh rotates the token and the old refresh token cannot be replayed")
     void refreshRotatesAndOldTokenIsRejected() {
         Resp login = login(USER_ID, PASSWORD);
@@ -327,6 +339,12 @@ class AuthApiHttpTest {
             String firstAttribute = setCookie.split(";", 2)[0];
             return firstAttribute.substring(firstAttribute.indexOf('=') + 1);
         }
+    }
+
+    private java.util.List<String> permissions(JsonNode tokenResponse) {
+        java.util.List<String> codes = new java.util.ArrayList<>();
+        tokenResponse.get("permissions").forEach(code -> codes.add(code.asString()));
+        return codes;
     }
 
     private Resp login(String username, String password) {

@@ -13,6 +13,7 @@ import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.PlatformUserRepository;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
+import com.accusharp.hrms.security.AuthorizationService;
 import com.accusharp.hrms.security.JwtService;
 import com.accusharp.hrms.security.LoginRateLimiter;
 import com.accusharp.hrms.security.RefreshTokenService;
@@ -51,6 +52,7 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final AuditService auditService;
     private final LoginRateLimiter loginRateLimiter;
+    private final AuthorizationService authorizationService;
 
     @Value("${security.max-failed-login-attempts:5}")
     private int maxFailedAttempts;
@@ -305,7 +307,7 @@ public class AuthService {
         String refreshToken = refreshTokenService.issue(principal.getType(), principal.getUsername());
         TokenResponse response = new TokenResponse(accessToken, "Bearer",
                 jwtService.getAccessTokenExpirySeconds(), principal.getType(), principal.getUsername(),
-                principal.getRole(), mustChangePassword);
+                principal.getRole(), mustChangePassword, authorizationService.effectivePermissions(principal));
         return new IssuedTokens(response, refreshToken);
     }
 }

@@ -163,6 +163,38 @@ class CustomRoleHttpTest {
     }
 
     @Test
+    @DisplayName("a login returns custom-role permissions alongside the base role's, and stops once unassigned")
+    void loginPermissionsIncludeCustomRoles() {
+        String adminToken = onboardCompanyAndGetAdminToken("PERMCO", "permco.example");
+
+        Resp employee = send("POST", "/api/employees", """
+                {"userId": "PERMCO-EMP1", "employeeCode": "PC-EMP-1", "employeeName": "Plain Employee",
+                 "status": "PERMANENT", "role": "EMPLOYEE",
+                 "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0}""",
+                adminToken);
+        String password = employee.body().get("temporaryPassword").asString();
+
+        Resp before = loginResponse("PERMCO-EMP1", password);
+        assertThat(codes(before.body(), "permissions")).contains("LEAVE_APPLY").doesNotContain("REPORT_READ");
+        // The base role is still reported as-is: a custom role adds permissions, never a different role.
+        assertThat(before.body().get("role").asString()).isEqualTo("EMPLOYEE");
+
+        long roleId = send("POST", "/api/roles", "{\"name\": \"Report Viewer\"}", adminToken).body().get("id").asLong();
+        setPermissions(roleId, adminToken, "REPORT_READ", "DASHBOARD_READ");
+        send("POST", "/api/roles/" + roleId + "/employees/PERMCO-EMP1", null, adminToken);
+
+        assertThat(codes(loginResponse("PERMCO-EMP1", password).body(), "permissions"))
+                .contains("LEAVE_APPLY", "REPORT_READ", "DASHBOARD_READ");
+
+        send("DELETE", "/api/roles/" + roleId + "/employees/PERMCO-EMP1", null, adminToken);
+        assertThat(codes(loginResponse("PERMCO-EMP1", password).body(), "permissions"))
+                .contains("LEAVE_APPLY").doesNotContain("REPORT_READ", "DASHBOARD_READ");
+
+        assertThat(codes(loginResponse("owner1", PLATFORM_PASSWORD).body(), "permissions"))
+                .contains("COMPANY_CREATE", "AUDIT_READ").doesNotContain("LEAVE_APPLY");
+    }
+
+    @Test
     @DisplayName("a custom role can never be granted a platform-only permission")
     void platformOnlyPermissionIsRejected() {
         String adminToken = onboardCompanyAndGetAdminToken("GUARDCO", "guardco.example");
@@ -232,9 +264,20 @@ class CustomRoleHttpTest {
     }
 
     private List<String> codes(JsonNode role) {
+        return codes(role, "permissionCodes");
+    }
+
+    private List<String> codes(JsonNode node, String field) {
         List<String> codes = new ArrayList<>();
-        role.get("permissionCodes").forEach(code -> codes.add(code.asString()));
+        node.get(field).forEach(code -> codes.add(code.asString()));
         return codes;
+    }
+
+    private Resp loginResponse(String username, String password) {
+        Resp response = send("POST", "/api/auth/login",
+                "{\"username\": \"" + username + "\", \"password\": \"" + password + "\"}", null);
+        assertThat(response.status()).isEqualTo(200);
+        return response;
     }
 
     private String onboardCompanyAndGetAdminToken(String companyCode, String domain) {
