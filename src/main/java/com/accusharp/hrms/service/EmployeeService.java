@@ -941,8 +941,15 @@ public class EmployeeService {
         employee.setDateOfBirth(request.getDateOfBirth());
         employee.setGender(request.getGender());
         employee.setStatus(request.getStatus());
-        employee.setRecordStatus(request.getRecordStatus() == null ? RecordStatus.ACTIVE : request.getRecordStatus());
-        employee.setRole(request.getRole() == null ? Role.EMPLOYEE : request.getRole());
+        // Omitted keeps what the employee already has; the defaults only apply to a
+        // new record. Defaulting on update silently demoted a supervisor to EMPLOYEE
+        // (hiding their team) and reactivated a deactivated employee.
+        if (request.getRecordStatus() != null || employee.getRecordStatus() == null) {
+            employee.setRecordStatus(request.getRecordStatus() == null ? RecordStatus.ACTIVE : request.getRecordStatus());
+        }
+        if (request.getRole() != null || employee.getRole() == null) {
+            employee.setRole(request.getRole() == null ? Role.EMPLOYEE : request.getRole());
+        }
         employee.setEmail(request.getEmail());
         employee.setPhone(request.getPhone());
         employee.setUanNo(request.getUanNo());
