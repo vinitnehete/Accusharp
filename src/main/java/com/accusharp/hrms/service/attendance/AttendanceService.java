@@ -907,10 +907,9 @@ public class AttendanceService {
      *
      * <p>Deliberately skips the per-target {@code assertSelfOrManages} check
      * {@link #getDailyAttendance} performs on every call - the caller is
-     * expected to authorize the whole batch itself, once, up front (see
-     * {@code DashboardService}, and SECURITY.md's note that Dashboard/Report
-     * stay company-wide for SUPERVISOR/HR/ADMIN rather than self-service
-     * scoped per record).
+     * expected to authorize the whole batch itself, once, up front - {@code
+     * DashboardService} passes only {@code EmployeeService.getActiveVisibleEntities()},
+     * the employees the caller may see.
      */
     @Transactional(readOnly = true)
     public Map<String, AttendanceStatus> statusesOn(List<Employee> employees, LocalDate date) {

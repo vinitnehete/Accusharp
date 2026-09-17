@@ -584,28 +584,47 @@ public class EmployeeService {
     }
 
     /**
-     * Company-wide, no self-service restriction - used only by {@code
-     * ReportController.employeeReport()}, which (like every {@code
-     * REPORT_READ} endpoint) intentionally stays company-wide for
-     * SUPERVISOR/HR/ADMIN. See {@link #getVisible()} for the
-     * self-service-restricted list {@code EmployeeController} actually uses.
-     */
-    @Transactional(readOnly = true)
-    public List<EmployeeResponse> getAll() {
-        return employeeMapper.toResponses(getAllEntities());
-    }
-
-    /**
-     * The employee list a caller may browse directly - unlike {@link
-     * #getAll()}, restricted per SECURITY.md's "view only my own data": an
-     * EMPLOYEE sees only themselves, a SUPERVISOR sees themselves plus their
-     * direct reports, ADMIN/HR see the whole company.
+     * The employee list a caller may browse directly - both the directory and
+     * the employee report - restricted per SECURITY.md's "view only my own
+     * data": an EMPLOYEE sees only themselves, a SUPERVISOR sees themselves plus
+     * their direct reports, ADMIN/HR see the whole company.
      */
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getVisible() {
-        return employeeMapper.toResponses(getAllEntities().stream()
-                .filter(employee -> isSelfOrManages(employee.getUserId()))
-                .toList());
+        return employeeMapper.toResponses(getVisibleEntities());
+    }
+
+    /**
+     * {@link #getAllEntities()} narrowed to the employees the caller may see -
+     * the population every report reads. Reports used to be company-wide for
+     * anyone holding {@code REPORT_READ}, which let any SUPERVISOR pull the
+     * whole company's payroll through the API; now a report can never show a
+     * caller someone {@link #assertSelfOrManages} would not let them open.
+     * Deactivated employees stay included, so a closed period remains auditable.
+     */
+    @Transactional(readOnly = true)
+    public List<Employee> getVisibleEntities() {
+        return visibleToCaller(getAllEntities());
+    }
+
+    /** {@link #getActiveEntities()} narrowed the same way as {@link #getVisibleEntities()}. */
+    @Transactional(readOnly = true)
+    public List<Employee> getActiveVisibleEntities() {
+        return visibleToCaller(getActiveEntities());
+    }
+
+    /**
+     * The list form of {@link #isSelfOrManages}, checked against the entities
+     * already in hand rather than looking each one up again by userId. No-ops
+     * under the same conditions (no principal, a platform principal).
+     */
+    private List<Employee> visibleToCaller(List<Employee> employees) {
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> employees.stream()
+                        .filter(employee -> isVisibleTo(principal, employee))
+                        .toList())
+                .orElse(employees);
     }
 
     /**
@@ -900,6 +919,19 @@ public class EmployeeService {
             return true;
         }
         return role == Role.SUPERVISOR && supervises(principal.getUsername(), targetUserId);
+    }
+
+    /** Same rule as {@link #isVisibleTo(UserPrincipal, String)}, for an employee already loaded. */
+    private boolean isVisibleTo(UserPrincipal principal, Employee target) {
+        if (principal.getUsername().equals(target.getUserId())) {
+            return true;
+        }
+        Role role = Role.valueOf(principal.getRole());
+        if (role == Role.ADMIN || role == Role.HR) {
+            return true;
+        }
+        return role == Role.SUPERVISOR && target.getSupervisor() != null
+                && principal.getUsername().equals(target.getSupervisor().getUserId());
     }
 
     private void recalculate(Employee employee) {

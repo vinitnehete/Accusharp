@@ -33,12 +33,13 @@ import java.util.stream.Collectors;
  * Admin dashboard. Every figure is derived live from the owning module, so the
  * dashboard cannot drift from the underlying reports.
  *
- * <p>Every query here is scoped to the caller's own company - either by
- * building on {@code active} (already company-scoped via {@link
- * EmployeeService#getActiveEntities()}) or, for {@code Payroll}, by routing
- * through {@link PayrollService#getPeriod} instead of {@code
- * PayrollRepository} directly, the same choke-point pattern used everywhere
- * else in this app - see SECURITY_AUDIT.md's "list/report endpoints" finding.
+ * <p>Every figure is about the employees the caller may see - the whole
+ * company for HR/ADMIN, their own team for a SUPERVISOR - either by building
+ * on {@code active} ({@link EmployeeService#getActiveVisibleEntities()}) or,
+ * for {@code Payroll}, by routing through {@link PayrollService#getPeriodForCaller}
+ * instead of {@code PayrollRepository} directly, the same choke-point pattern
+ * used everywhere else in this app - see SECURITY_AUDIT.md's "list/report
+ * endpoints" finding.
  */
 @Service
 @RequiredArgsConstructor
@@ -58,13 +59,12 @@ public class DashboardService {
     @Transactional
     public ReportDtos.DashboardResponse getDashboard(LocalDate asOf) {
         LocalDate today = asOf == null ? LocalDate.now() : asOf;
-        List<Employee> active = employeeService.getActiveEntities();
-
-        // Same per-employee authorization getDailyAttendance enforces on every
-        // (employee, date) call it used to be reached through - done once per
-        // employee here instead of once per employee per date below, since the
-        // outcome depends only on the caller and the target, never the date.
-        active.forEach(employee -> employeeService.assertSelfOrManages(employee.getUserId()));
+        // Already narrowed to who the caller may see - the same authorization
+        // getDailyAttendance enforces per employee. It used to be the whole
+        // company followed by a check that the caller could see every one of
+        // them, which 404'd the dashboard for any SUPERVISOR in a company with
+        // anybody outside their team.
+        List<Employee> active = employeeService.getActiveVisibleEntities();
 
         // The 14-day trend and "present today" (today is always its last day)
         // share one batched attendance lookup per date instead of each
@@ -82,13 +82,13 @@ public class DashboardService {
 
     private ReportDtos.Cards buildCards(LocalDate today, List<Employee> active,
                                         Map<LocalDate, Map<String, AttendanceStatus>> statusesByDate) {
-        Set<String> companyUserIds = Set.copyOf(userIds(active));
+        Set<String> visibleUserIds = Set.copyOf(userIds(active));
 
         Set<String> onLeaveToday = leaveRequestRepository
                 .findAllByStatusInAndFromDateLessThanEqualAndToDateGreaterThanEqual(
                         List.of(LeaveStatus.APPROVED), today, today)
                 .stream().map(LeaveRequest::getUserId)
-                .filter(companyUserIds::contains)
+                .filter(visibleUserIds::contains)
                 .collect(Collectors.toSet());
 
         long presentToday = countPresent(active, statusesByDate.get(today));
@@ -106,11 +106,11 @@ public class DashboardService {
         long unscheduledTomorrow = active.size() - scheduledTomorrow.size();
 
         YearMonth thisMonth = YearMonth.from(today);
-        long payrollGenerated = payrollService.getPeriod(thisMonth.getMonthValue(), thisMonth.getYear()).size();
+        long payrollGenerated = payrollService.getPeriodForCaller(thisMonth.getMonthValue(), thisMonth.getYear()).size();
 
         long pendingLeave = leaveRequestRepository
                 .findAllByStatusIn(List.of(LeaveStatus.PENDING, LeaveStatus.SUPERVISOR_APPROVED)).stream()
-                .filter(request -> companyUserIds.contains(request.getUserId()))
+                .filter(request -> visibleUserIds.contains(request.getUserId()))
                 .count();
 
         return new ReportDtos.Cards(
@@ -121,13 +121,13 @@ public class DashboardService {
                 pendingLeave,
                 unscheduledTomorrow,
                 payrollGenerated,
-                upcomingBirthdays(today, companyUserIds),
-                upcomingAnniversaries(today, companyUserIds));
+                upcomingBirthdays(today, visibleUserIds),
+                upcomingAnniversaries(today, visibleUserIds));
     }
 
     private ReportDtos.Charts buildCharts(LocalDate today, List<Employee> active,
                                           Map<LocalDate, Map<String, AttendanceStatus>> statusesByDate) {
-        Set<String> companyUserIds = Set.copyOf(userIds(active));
+        Set<String> visibleUserIds = Set.copyOf(userIds(active));
 
         List<ReportDtos.PointLong> attendanceTrend = new ArrayList<>();
         for (int offset = ATTENDANCE_TREND_DAYS - 1; offset >= 0; offset--) {
@@ -149,7 +149,7 @@ public class DashboardService {
         List<ReportDtos.PointAmount> payrollCost = new ArrayList<>();
         for (int offset = PAYROLL_COST_MONTHS - 1; offset >= 0; offset--) {
             YearMonth period = YearMonth.from(today).minusMonths(offset);
-            BigDecimal cost = payrollService.getPeriod(period.getMonthValue(), period.getYear()).stream()
+            BigDecimal cost = payrollService.getPeriodForCaller(period.getMonthValue(), period.getYear()).stream()
                     .map(Payroll::getNetSalary)
                     .filter(java.util.Objects::nonNull)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -161,7 +161,7 @@ public class DashboardService {
         leaveRequestRepository.findAllByStatusInAndFromDateLessThanEqualAndToDateGreaterThanEqual(
                         List.of(LeaveStatus.APPROVED), today, yearStart)
                 .stream()
-                .filter(request -> companyUserIds.contains(request.getUserId()))
+                .filter(request -> visibleUserIds.contains(request.getUserId()))
                 .forEach(request -> leaveUsage.merge(request.getLeaveType().name(),
                         request.getTotalDays(), BigDecimal::add));
         List<ReportDtos.PointAmount> leaveUsagePoints = leaveUsage.entrySet().stream()
@@ -185,21 +185,21 @@ public class DashboardService {
                 .count();
     }
 
-    private List<ReportDtos.PersonEvent> upcomingBirthdays(LocalDate today, Set<String> companyUserIds) {
+    private List<ReportDtos.PersonEvent> upcomingBirthdays(LocalDate today, Set<String> visibleUserIds) {
         Month month = today.getMonth();
         return employeeRepository.findBirthdaysInMonth(month.getValue()).stream()
-                .filter(employee -> companyUserIds.contains(employee.getUserId()))
+                .filter(employee -> visibleUserIds.contains(employee.getUserId()))
                 .filter(employee -> employee.getDateOfBirth().getDayOfMonth() >= today.getDayOfMonth())
                 .map(employee -> new ReportDtos.PersonEvent(employee.getUserId(), employee.getEmployeeName(),
                         employee.getDateOfBirth().withYear(today.getYear()), null))
                 .toList();
     }
 
-    private List<ReportDtos.PersonEvent> upcomingAnniversaries(LocalDate today, Set<String> companyUserIds) {
+    private List<ReportDtos.PersonEvent> upcomingAnniversaries(LocalDate today, Set<String> visibleUserIds) {
         Month month = today.getMonth();
         LocalDate monthStart = today.withDayOfMonth(1);
         return employeeRepository.findWorkAnniversariesInMonth(month.getValue(), monthStart).stream()
-                .filter(employee -> companyUserIds.contains(employee.getUserId()))
+                .filter(employee -> visibleUserIds.contains(employee.getUserId()))
                 .filter(employee -> employee.getJoiningDate().getDayOfMonth() >= today.getDayOfMonth())
                 .map(employee -> new ReportDtos.PersonEvent(employee.getUserId(), employee.getEmployeeName(),
                         employee.getJoiningDate().withYear(today.getYear()),

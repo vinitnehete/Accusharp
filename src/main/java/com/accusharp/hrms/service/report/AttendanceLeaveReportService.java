@@ -167,7 +167,7 @@ public class AttendanceLeaveReportService {
         }
 
         Map<String, Payroll> payrolls = payrollService
-                .getPeriod(month.getMonthValue(), month.getYear()).stream()
+                .getPeriodForCaller(month.getMonthValue(), month.getYear()).stream()
                 .collect(Collectors.toMap(Payroll::getEmployeeId, Function.identity(), (a, b) -> a));
 
         return dailyAttendanceRepository

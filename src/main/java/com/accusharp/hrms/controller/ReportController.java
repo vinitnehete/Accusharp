@@ -44,7 +44,7 @@ public class ReportController {
 
     @GetMapping("/employees")
     public List<EmployeeResponse> employeeReport() {
-        return employeeService.getAll();
+        return employeeService.getVisible();
     }
 
     @GetMapping("/attendance/monthly")

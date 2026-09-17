@@ -74,7 +74,7 @@ public class PayrollAuditService {
         Map<String, Employee> byUserId = reportScope.byUserId(employees);
         ReportScope.MasterNames names = reportScope.names(employees);
 
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
                 .map(payroll -> toAuditRow(payroll, byUserId.get(payroll.getEmployeeId()), names))

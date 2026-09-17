@@ -196,39 +196,26 @@ public class PayrollService {
     }
 
     /**
-     * Scoped to the caller's own company - {@code Payroll} has no
-     * {@code company_id} column of its own (only a denormalized
-     * {@code companyName} string), so this filters by the caller's
-     * company's employee {@code userId}s instead, via {@link
-     * EmployeeService#getAllEntities()} rather than {@link
-     * EmployeeService#getActiveEntities()}: payroll history for a
-     * since-deactivated employee must stay visible to their own company's
-     * reports.
-     */
-    @Transactional(readOnly = true)
-    public List<Payroll> getPeriod(int month, int year) {
-        List<Payroll> period = payrollRepository.findAllByMonthAndYearAndStatus(month, year, PayrollStatus.GENERATED);
-        Set<String> companyUserIds = employeeService.getAllEntities().stream()
-                .map(Employee::getUserId)
-                .collect(Collectors.toSet());
-        return period.stream().filter(payroll -> companyUserIds.contains(payroll.getEmployeeId())).toList();
-    }
-
-    /**
-     * Same company scoping as {@link #getPeriod}, plus self-service
-     * restriction on top - for raw individual-record list/export endpoints
-     * ({@code PayrollController.getPeriod}, {@code SalarySlipService}'s
-     * period methods), not for {@code ReportService}'s aggregate reports,
-     * which deliberately stay company-wide for SUPERVISOR/HR/ADMIN (see
-     * SECURITY.md's self-service scoping note for why the two are treated
-     * differently) - so {@link #getPeriod} itself is intentionally left
-     * unrestricted and every {@code ReportService} caller keeps using it
-     * directly.
+     * A period's generated payroll, for exactly the employees the caller may
+     * see: HR/ADMIN the whole company, a SUPERVISOR their own team, an EMPLOYEE
+     * themselves (see {@link EmployeeService#getVisibleEntities()}).
+     *
+     * <p>{@code Payroll} has no {@code company_id} column of its own (only a
+     * denormalized {@code companyName} string), so it is filtered by those
+     * employees' {@code userId}s - deactivated employees included, since a
+     * paid period must stay auditable after someone leaves.
+     *
+     * <p>The only way to read a period. Reports and the dashboard used to read
+     * an unrestricted company-wide version, which handed any SUPERVISOR the
+     * whole company's payroll through the API.
      */
     @Transactional(readOnly = true)
     public List<Payroll> getPeriodForCaller(int month, int year) {
-        return getPeriod(month, year).stream()
-                .filter(payroll -> employeeService.isSelfOrManages(payroll.getEmployeeId()))
+        Set<String> visibleUserIds = employeeService.getVisibleEntities().stream()
+                .map(Employee::getUserId)
+                .collect(Collectors.toSet());
+        return payrollRepository.findAllByMonthAndYearAndStatus(month, year, PayrollStatus.GENERATED).stream()
+                .filter(payroll -> visibleUserIds.contains(payroll.getEmployeeId()))
                 .toList();
     }
 
