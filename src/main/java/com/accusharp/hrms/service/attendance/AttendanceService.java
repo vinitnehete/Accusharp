@@ -38,6 +38,7 @@ import com.accusharp.hrms.service.calculation.LopCalculationService;
 import com.accusharp.hrms.service.shift.DefaultRosterResolver;
 import com.accusharp.hrms.service.shift.ShiftService;
 import com.accusharp.hrms.service.policy.AttendancePolicyResolver;
+import com.accusharp.hrms.service.policy.WorkPolicyResolver;
 import com.accusharp.hrms.service.policy.MonthPolicyEvaluator;
 import com.accusharp.hrms.service.policy.ResolvedPolicy;
 import com.accusharp.hrms.service.leave.LeaveCalculationService;
@@ -108,6 +109,7 @@ public class AttendanceService {
     private final AuditService auditService;
     private final AttendanceRuleService attendanceRuleService;
     private final AttendancePolicyResolver attendancePolicyResolver;
+    private final WorkPolicyResolver workPolicyResolver;
     private final MonthPolicyEvaluator monthPolicyEvaluator;
     private final AttendancePolicyApplicationRepository policyApplicationRepository;
     private final AttendancePolicyOutcomeRepository policyOutcomeRepository;
@@ -124,7 +126,7 @@ public class AttendanceService {
         assertActorCan(request.getGeneratedBy(), PermissionCode.ATTENDANCE_GENERATE, "Generating attendance");
 
         YearMonth month = request.getMonth();
-        List<Employee> employees = resolveEmployees(request.getUserIds());
+        List<Employee> employees = tracked(resolveEmployees(request.getUserIds()), month);
         LocalDate first = month.atDay(1);
         LocalDate last = month.atEndOfMonth();
 
@@ -1427,7 +1429,13 @@ public class AttendanceService {
                 record.getEarlyExitMinutes(), record.isInvalidPunch(), record.getStatus());
     }
 
-    /** Who a generation run covers - only ever employees the caller manages (see {@code EmployeeService#assertManages}). */
+    /**
+     * Who a generation run covers - only ever employees the caller manages (see
+     * {@code EmployeeService#assertManages}), and only the ones whose work policy
+     * says they are tracked at all. A population paid a fixed monthly salary
+     * punches nothing and is rostered nothing, so generating a month of absences
+     * for them would be noise on every report and a deduction nobody meant.
+     */
     private List<Employee> resolveEmployees(List<String> userIds) {
         if (userIds == null || userIds.isEmpty()) {
             return employeeService.getActiveManagedEntities();
@@ -1437,6 +1445,12 @@ public class AttendanceService {
             employeeService.assertManages(userId);
             return employee;
         }).toList();
+    }
+
+    private List<Employee> tracked(List<Employee> employees, YearMonth month) {
+        return employees.stream()
+                .filter(employee -> workPolicyResolver.tracksAttendance(employee, month.atEndOfMonth()))
+                .toList();
     }
 
     private Map<LocalDate, DailyAttendance> indexByDate(List<DailyAttendance> records) {

@@ -12,7 +12,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.EnumMap;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -120,30 +119,9 @@ public class AttendancePolicyResolver {
         return resolve(loadCompanyRules(companyId, date), employee, date);
     }
 
-    /**
-     * Every scope that could name this employee, and what it would say. A rule
-     * matches when its {@code scopeRef} equals the employee's value for that
-     * scope; scopes the employee has no value for (no category assigned, say)
-     * are simply absent and match nothing.
-     */
+    /** @see ScopeRefs */
     private Map<RuleScope, String> scopeRefsOf(Employee employee) {
-        Map<RuleScope, String> refs = new HashMap<>();
-        refs.put(RuleScope.EMPLOYEE, employee.getUserId());
-        if (employee.getDesignation() != null) {
-            refs.put(RuleScope.DESIGNATION, employee.getDesignation().getDesignationCode());
-        }
-        if (employee.getCategory() != null) {
-            refs.put(RuleScope.CATEGORY, employee.getCategory().getCategoryCode());
-        }
-        if (employee.getDepartment() != null) {
-            refs.put(RuleScope.DEPARTMENT, employee.getDepartment().getDepartmentCode());
-        }
-        if (employee.getStatus() != null) {
-            refs.put(RuleScope.EMPLOYMENT_TYPE, employee.getStatus().name());
-        }
-        refs.put(RuleScope.COMPANY, RuleScope.ANY);
-        refs.put(RuleScope.GLOBAL, RuleScope.ANY);
-        return refs;
+        return ScopeRefs.of(employee);
     }
 
     private boolean matches(AttendancePolicyRule rule, Map<RuleScope, String> refs) {

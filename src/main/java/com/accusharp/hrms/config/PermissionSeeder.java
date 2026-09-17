@@ -101,7 +101,8 @@ public class PermissionSeeder {
                 PermissionCode.REPORT_READ,
                 PermissionCode.DASHBOARD_READ,
                 // Scope, as a grant rather than a role name - see DataScope.
-                PermissionCode.SCOPE_COMPANY);
+                PermissionCode.SCOPE_COMPANY,
+                PermissionCode.WORK_POLICY_READ, PermissionCode.WORK_POLICY_MANAGE);
 
         grants.put(Role.HR.name(), companyAdminPermissions);
 

@@ -2,6 +2,8 @@ package com.accusharp.hrms.entity;
 
 import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.PayBasis;
+import com.accusharp.hrms.enums.PayrollMode;
+import com.accusharp.hrms.enums.RuleScope;
 import com.accusharp.hrms.enums.PayrollStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -99,6 +101,25 @@ public class Payroll {
     @Enumerated(EnumType.STRING)
     @Column(name = "pay_basis", length = 30)
     private PayBasis payBasis;
+
+    /**
+     * Where this month's pay came from, and the {@code WorkPolicy} version that
+     * decided it - snapshotted for the same reason the rule percentages are: a
+     * policy is an editable row, and without this a company switching a
+     * population to fixed-monthly pay would silently restate every payslip that
+     * population was ever paid from attendance. Null on payrolls generated
+     * before work policies existed, which read as ATTENDANCE_BASED.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payroll_mode", length = 20)
+    private PayrollMode payrollMode;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "work_policy_scope", length = 20)
+    private RuleScope workPolicyScope;
+
+    @Column(name = "work_policy_version")
+    private Integer workPolicyVersion;
 
     /** The fixed monthly base this period was prorated against, for a per-attended-day type. */
     @Column(name = "payable_days_cap")

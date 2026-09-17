@@ -7,7 +7,9 @@ import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.entity.SalaryRevision;
 import com.accusharp.hrms.entity.SalaryRule;
+import com.accusharp.hrms.entity.WorkPolicy;
 import com.accusharp.hrms.enums.AuditOutcome;
+import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
@@ -21,6 +23,7 @@ import com.accusharp.hrms.service.calculation.DeductionCalculationService;
 import com.accusharp.hrms.service.calculation.LopCalculationService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import com.accusharp.hrms.service.leave.EarnedLeaveAccrualService;
+import com.accusharp.hrms.service.policy.WorkPolicyResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -37,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -78,6 +82,7 @@ public class PayrollService {
     private final PayBehaviourResolver payBehaviourResolver;
     private final AuditService auditService;
     private final EarnedLeaveAccrualService earnedLeaveAccrualService;
+    private final WorkPolicyResolver workPolicyResolver;
 
     /**
      * Generates the period once; a second call is a conflict.
@@ -308,11 +313,21 @@ public class PayrollService {
         SalaryRule rule = salaryRuleService.getActiveRuleForCompany(employee.getCompany());
         YearMonth period = YearMonth.of(request.getYear(), request.getMonth());
 
+        EmployedWindow window = employedWindow(employee, period);
+
+        // What process this employee actually follows. Nothing configured is the
+        // state every company starts in: tracked, and paid from that attendance.
+        Optional<WorkPolicy> workPolicy = workPolicyResolver.policyFor(employee, period.atEndOfMonth());
+        boolean fixedMonthly = workPolicy.map(WorkPolicy::isFixedMonthly).orElse(false);
+
         // Pay from the attendance HR generated and reviewed - never from a
         // fresh recompute, which would discard their corrections. Refuses
-        // outright if the period was never generated.
-        MonthlyAttendanceSummary attendance =
-                attendanceService.getGeneratedSummary(employee, period);
+        // outright if the period was never generated - unless this population is
+        // paid a fixed monthly salary, where attendance is neither consulted nor
+        // required and the month reads as employed throughout.
+        MonthlyAttendanceSummary attendance = fixedMonthly
+                ? employedMonth(employee, period, window)
+                : attendanceService.getGeneratedSummary(employee, period);
 
         // Locked immediately after reading it, not after the calculation below -
         // otherwise a correction landing in that window commits successfully
@@ -323,7 +338,9 @@ public class PayrollService {
         // this whole method's transaction rolls back and takes this lock write
         // with it - a failed generation never leaves a month locked with no
         // payroll to show for it.
-        attendanceService.lockMonth(employee, period);
+        if (!fixedMonthly) {
+            attendanceService.lockMonth(employee, period);
+        }
 
         // Earned leave is credited here, from the same locked attendance this
         // payroll pays from - the one moment those figures cannot move again.
@@ -349,22 +366,32 @@ public class PayrollService {
         snapshotEmployee(payroll, employee);
         snapshotRule(payroll, rule);
         snapshotBehaviour(payroll, behaviour);
+        payroll.setPayrollMode(fixedMonthly ? PayrollMode.FIXED_MONTHLY : PayrollMode.ATTENDANCE_BASED);
+        workPolicy.ifPresent(policy -> {
+            payroll.setWorkPolicyScope(policy.getScope());
+            payroll.setWorkPolicyVersion(policy.getVersion());
+        });
 
         // Base of the proration: the denominator every earning is divided by.
         // A per-attended-day type is paid against a fixed payable-day base;
         // a calendar-day type is salaried against the full month - week-offs
         // included, reduced only by whatever LOP the generated attendance found.
-        BigDecimal totalDays = dayWise
+        BigDecimal totalDays = dayWise && !fixedMonthly
                 ? BigDecimal.valueOf(behaviour.payableDaysCap())
                 : BigDecimal.valueOf(period.lengthOfMonth());
 
         BigDecimal presentDays = attendance.getPresentDays();
         BigDecimal paidLeaveDays = paidLeaveDays(attendance);
 
-        EmployedWindow window = employedWindow(employee, period);
         BigDecimal lopDays;
         BigDecimal payableDays;
-        if (!behaviour.lopApplies()) {
+        if (fixedMonthly) {
+            // The salary structure for the days employed: a full month pays in
+            // full, and only a mid-period joiner or leaver is prorated. There is
+            // nothing to be absent from, so there is no loss of pay either.
+            lopDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
+            payableDays = window.days().min(totalDays);
+        } else if (!behaviour.lopApplies()) {
             // Attendance is the pay: no LOP concept, you are paid what you worked.
             // Whether paid leave also earns a share of the fixed structure is now
             // its own flag rather than being implied by the same boolean - a
@@ -629,6 +656,36 @@ public class PayrollService {
      * data predating the field) is treated as employed for the whole period,
      * matching the previous behaviour for that case.
      */
+    /**
+     * The month as a fixed-monthly population lives it: employed throughout,
+     * nothing absent, no loss of pay. Built rather than read, and never stored -
+     * these employees have no attendance rows, which is the point of the policy.
+     * Earned leave still accrues from it, so a director's leave balance grows
+     * like everybody else's.
+     */
+    private MonthlyAttendanceSummary employedMonth(Employee employee, YearMonth period, EmployedWindow window) {
+        BigDecimal days = window.days();
+        BigDecimal zeroDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
+        BigDecimal zeroHours = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        return MonthlyAttendanceSummary.builder()
+                .userId(employee.getUserId())
+                .month(period.toString())
+                .workingDays(days.longValue())
+                .presentDays(days)
+                .absentDays(zeroDays)
+                .halfDays(0)
+                .leaveDays(zeroDays)
+                .holidayDays(0)
+                .weekOffDays(0)
+                .lateCount(0)
+                .earlyExitCount(0)
+                .invalidPunches(0)
+                .totalHours(zeroHours)
+                .overtimeHours(zeroHours)
+                .lopDays(zeroDays)
+                .build();
+    }
+
     private EmployedWindow employedWindow(Employee employee, YearMonth period) {
         LocalDate periodStart = period.atDay(1);
         LocalDate periodEnd = period.atEndOfMonth();

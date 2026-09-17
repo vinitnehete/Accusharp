@@ -137,5 +137,14 @@ public enum PermissionCode {
      */
     SCOPE_DIRECT_REPORTS,
     SCOPE_ALL_REPORTS,
-    SCOPE_COMPANY
+    SCOPE_COMPANY,
+
+    /**
+     * Who follows the attendance process and who is simply paid - see
+     * {@code WorkPolicy}. Separate from {@code ATTENDANCE_POLICY_*}: those shape
+     * what a tracked day is worth, this decides whether a population is tracked
+     * or paid a fixed salary at all, which is a payroll decision.
+     */
+    WORK_POLICY_READ,
+    WORK_POLICY_MANAGE
 }
