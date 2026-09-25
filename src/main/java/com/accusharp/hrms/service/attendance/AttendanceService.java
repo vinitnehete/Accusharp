@@ -870,6 +870,26 @@ public class AttendanceService {
     }
 
     /**
+     * Mandatory holidays between two dates that fell on a day the employee
+     * would otherwise have worked - a stored day flagged {@code holiday} but
+     * not {@code weekOff}. A holiday that lands on a weekly off took nothing
+     * away, so it is not counted.
+     *
+     * <p>Read off the stored rows, like every other figure payroll pays from,
+     * so a later edit to the holiday calendar cannot move a generated month.
+     * Counted whatever the day's status: a holiday is paid because it is a
+     * holiday, and working it is paid separately through overtime.
+     */
+    @Transactional(readOnly = true)
+    public long paidHolidayDays(String userId, LocalDate fromDate, LocalDate toDate) {
+        return dailyAttendanceRepository
+                .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, fromDate, toDate)
+                .stream()
+                .filter(day -> day.isHoliday() && !day.isWeekOff())
+                .count();
+    }
+
+    /**
      * Refreshes the cached summaries from the stored days. Employees with no
      * generated attendance are skipped rather than rebuilt from raw punches.
      */

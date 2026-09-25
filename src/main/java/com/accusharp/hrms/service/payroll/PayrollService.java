@@ -385,6 +385,9 @@ public class PayrollService {
 
         BigDecimal lopDays;
         BigDecimal payableDays;
+        // Mandatory holidays paid into payableDays below; stays zero for every
+        // model that already pays a holiday through the calendar month.
+        BigDecimal paidHolidayDays = BigDecimal.ZERO;
         if (fixedMonthly) {
             // The salary structure for the days employed: a full month pays in
             // full, and only a mid-period joiner or leaver is prorated. There is
@@ -397,9 +400,19 @@ public class PayrollService {
             // its own flag rather than being implied by the same boolean - a
             // company can have a per-attended-day type that does pay for leave.
             lopDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
-            payableDays = behaviour.paidLeaveAddsPayableDays()
-                    ? presentDays.add(paidLeaveDays).min(totalDays)
-                    : presentDays.min(totalDays);
+            // A mandatory holiday is a paid day, not a day off without pay. The
+            // other models already pay it (the salary covers the whole month and
+            // a holiday is never LOP); here nothing did, because a holiday is
+            // not a working day, so presentDays never counts it. Only the
+            // employed window counts - a leaver is not paid a holiday after
+            // relieving. presentDays itself is left alone; see
+            // monthlyOvertimeHours for how the holiday meets the cap.
+            paidHolidayDays = BigDecimal.valueOf(
+                    attendanceService.paidHolidayDays(employee.getUserId(), window.from(), window.to()));
+            BigDecimal attendedDays = behaviour.paidLeaveAddsPayableDays()
+                    ? presentDays.add(paidLeaveDays)
+                    : presentDays;
+            payableDays = attendedDays.add(paidHolidayDays).min(totalDays);
         } else {
             lopDays = attendance.getLopDays();
             // Capped by how many days of this period the employee was actually
@@ -437,7 +450,7 @@ public class PayrollService {
         // length, and now against that day's own OVERTIME policy rule).
         BigDecimal overtimeHours = behaviour.usesMonthlyOvertime()
                 ? monthlyOvertimeHours(attendance.getTotalHours(), presentDays, paidLeaveDays,
-                        rule, behaviour)
+                        paidHolidayDays, rule, behaviour)
                 : attendance.getOvertimeHours();
         payroll.setOvertimeHours(overtimeHours);
 
@@ -630,13 +643,21 @@ public class PayrollService {
      * almost never actually counted. Uncapped and additive is the only form
      * that reliably behaves like "if you have approved leave, it goes into
      * the OT hours" for every attendance mix, not just the sparse ones.
+     *
+     * <p>A paid holiday takes one of the cap's days, so the baseline caps
+     * present days at {@code cap - paidHolidayDays}. Without that, a worker
+     * present 26 days in a month with a holiday got the same 26-day base as
+     * one present 25 days plus the holiday, and the regular hours of one
+     * attended day were paid nowhere. Below the cap this changes nothing:
+     * {@code presentDays} is the smaller figure either way.
      */
     private BigDecimal monthlyOvertimeHours(BigDecimal totalHours, BigDecimal presentDays,
-                                            BigDecimal paidLeaveDays, SalaryRule rule,
-                                            PayBehaviour behaviour) {
+                                            BigDecimal paidLeaveDays, BigDecimal paidHolidayDays,
+                                            SalaryRule rule, PayBehaviour behaviour) {
         BigDecimal cap = BigDecimal.valueOf(behaviour.payableDaysCap() != null
                 ? behaviour.payableDaysCap() : rule.getDayWiseDaysInMonth());
-        BigDecimal baseHours = presentDays.min(cap).multiply(rule.getStandardHoursPerDay());
+        BigDecimal attendedDaysInBase = cap.subtract(paidHolidayDays).max(BigDecimal.ZERO);
+        BigDecimal baseHours = presentDays.min(attendedDaysInBase).multiply(rule.getStandardHoursPerDay());
         BigDecimal workedOvertime = totalHours.subtract(baseHours).max(BigDecimal.ZERO);
         // Whether leave earns its own hours is now a property of the employment
         // type rather than something every per-attended-day type must do.
