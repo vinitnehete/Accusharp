@@ -85,7 +85,7 @@ public class StatutoryReportService {
         List<Employee> employees = reportScope.employees(filter);
         Map<String, Employee> byUserId = reportScope.byUserId(employees);
 
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                 .filter(payroll -> signum(payroll.getPfDeduction()) > 0)
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
@@ -126,7 +126,7 @@ public class StatutoryReportService {
         List<Employee> employees = reportScope.employees(filter);
         Map<String, Employee> byUserId = reportScope.byUserId(employees);
 
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                 .filter(payroll -> signum(payroll.getEsic()) > 0)
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
@@ -163,7 +163,7 @@ public class StatutoryReportService {
         Map<String, Employee> byUserId = reportScope.byUserId(employees);
         ReportScope.MasterNames names = reportScope.names(employees);
 
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                 .filter(payroll -> signum(payroll.getProfessionalTax()) > 0)
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
@@ -203,7 +203,7 @@ public class StatutoryReportService {
         List<YearMonth> months = quarterMonths(financialYear, quarter);
         Map<String, List<Payroll>> byEmployee = new LinkedHashMap<>();
         for (YearMonth period : months) {
-            payrollService.getPeriod(period.getMonthValue(), period.getYear()).stream()
+            payrollService.getPeriodForCaller(period.getMonthValue(), period.getYear()).stream()
                     .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                     .forEach(payroll -> byEmployee
                             .computeIfAbsent(payroll.getEmployeeId(), key -> new ArrayList<>())

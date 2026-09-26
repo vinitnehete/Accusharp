@@ -44,7 +44,7 @@ public class ReportController {
 
     @GetMapping("/employees")
     public List<EmployeeResponse> employeeReport() {
-        return employeeService.getAll();
+        return employeeService.getVisible();
     }
 
     @GetMapping("/attendance/monthly")
@@ -75,6 +75,12 @@ public class ReportController {
     public List<ReportDtos.ExceptionRow> lop(
             @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month) {
         return reportService.lopReport(month);
+    }
+
+    @GetMapping("/attendance/week-off-worked")
+    public List<ReportDtos.ExceptionRow> weekOffWorked(
+            @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month) {
+        return reportService.weekOffWorkedReport(month);
     }
 
     @GetMapping("/leave-balances")

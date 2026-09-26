@@ -21,6 +21,15 @@ public interface ShiftScheduleRepository extends JpaRepository<ShiftSchedule, Lo
     List<ShiftSchedule> findAllByUserIdInAndShiftDateBetween(
             List<String> userIds, LocalDate fromDate, LocalDate toDate);
 
+    /**
+     * The rows the deleted monthly default-roster job wrote, from a date
+     * onward - see {@code LegacySystemRosterCleanup}. Matches on the stamp it
+     * put in {@code assignedBy}, so a row somebody actually assigned is never
+     * caught by it.
+     */
+    List<ShiftSchedule> findAllByAssignedByAndShiftDateGreaterThanEqual(
+            String assignedBy, LocalDate fromDate);
+
     long countByShiftId(Long shiftId);
 
     void deleteByUserIdAndShiftDateBetween(String userId, LocalDate fromDate, LocalDate toDate);

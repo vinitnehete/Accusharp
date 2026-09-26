@@ -74,7 +74,7 @@ public class PayrollAuditService {
         Map<String, Employee> byUserId = reportScope.byUserId(employees);
         ReportScope.MasterNames names = reportScope.names(employees);
 
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
                 .map(payroll -> toAuditRow(payroll, byUserId.get(payroll.getEmployeeId()), names))
@@ -163,8 +163,10 @@ public class PayrollAuditService {
      * re-decides.
      */
     private BigDecimal prorationBase(Payroll payroll) {
-        boolean dayWise = payroll.getEmploymentStatus() != null
-                && payroll.getEmploymentStatus().isPaidPerAttendedDay();
+        // The SNAPSHOT, not the live employment type - see Payroll.wasPaidPerAttendedDay().
+        // A company editing a type's pay basis must not change how an
+        // already-paid period is laid out and reconciled.
+        boolean dayWise = payroll.wasPaidPerAttendedDay();
         if (dayWise && payroll.getRuleDayWiseDaysInMonth() != null) {
             return BigDecimal.valueOf(payroll.getRuleDayWiseDaysInMonth()).setScale(DAY_SCALE, RoundingMode.HALF_UP);
         }
@@ -212,13 +214,18 @@ public class PayrollAuditService {
         Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
                 leaveCalculationService.approvedLeaveDaysInMonth(employeeId, period);
 
-        boolean dayWise = payroll.getEmploymentStatus() != null
-                && payroll.getEmploymentStatus().isPaidPerAttendedDay();
+        boolean dayWise = payroll.wasPaidPerAttendedDay();
         BigDecimal perDay = money(payroll.getPerDay(), MONEY_SCALE);
         BigDecimal perHour = money(payroll.getPerHour(), MONEY_SCALE);
         BigDecimal multiplier = payroll.getRuleOvertimeRateMultiplier() == null
                 ? BigDecimal.ONE : payroll.getRuleOvertimeRateMultiplier();
         boolean overtimePaid = payroll.getOtAllowance() != null && payroll.getOtAllowance().signum() > 0;
+        // The most base days a DAY_WISE run pays. Days past it are paid through
+        // the month's overtime (see PayrollService#monthlyOvertimeHours), so the
+        // table stops there too and adds up to the run.
+        BigDecimal dayWiseCap = payroll.getPayableDaysCap() != null
+                ? BigDecimal.valueOf(payroll.getPayableDaysCap())
+                : prorationBase(payroll);
 
         List<PayrollAuditDtos.DayWiseRow> days = new ArrayList<>();
         BigDecimal wageTotal = BigDecimal.ZERO;
@@ -231,6 +238,10 @@ public class PayrollAuditService {
             LeaveCalculationService.LeaveDay leave = leaveDays.get(date);
 
             BigDecimal paidFraction = paidFraction(date, record, leave, dayWise, window);
+            if (dayWise) {
+                paidFraction = paidFraction.min(dayWiseCap.subtract(paidDaysTotal).max(BigDecimal.ZERO))
+                        .setScale(DAY_SCALE, RoundingMode.HALF_UP);
+            }
             BigDecimal lopFraction = lopFraction(record, leave, dayWise);
             BigDecimal dayWage = perDay.multiply(paidFraction).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
 
@@ -310,8 +321,9 @@ public class PayrollAuditService {
      *
      * <ul>
      *   <li>DAY_WISE is paid per attended working day, so only the
-     *       attendance status counts: a weekly off, a holiday, or a day with
-     *       no record at all is worth nothing.</li>
+     *       attendance status counts: a weekly off, or a day with no record
+     *       at all is worth nothing. The one exception is a mandatory holiday
+     *       on a day they would have worked, which is paid in full.</li>
      *   <li>Everyone else is salaried against the full calendar month, so
      *       every day inside the employed window is paid except the LOP
      *       portion - weekly offs and holidays included, and so is a day the
@@ -332,6 +344,11 @@ public class PayrollAuditService {
                                     LeaveCalculationService.LeaveDay leave, boolean dayWise,
                                     EmployedWindow window) {
         if (dayWise) {
+            // A mandatory holiday on a day they would have worked is paid in
+            // full, as payroll pays it - see PayrollService.build.
+            if (record != null && record.isHoliday() && !record.isWeekOff() && window.covers(date)) {
+                return BigDecimal.ONE.setScale(DAY_SCALE);
+            }
             return record != null && record.isWorkingDay()
                     ? attendanceCalculationService.dayFraction(record.getStatus())
                             .setScale(DAY_SCALE, RoundingMode.HALF_UP)

@@ -9,8 +9,11 @@ report/dashboard scoping), **Phase 7** (a full re-audit of every remaining
 service, which found and fixed four more cross-company gaps), **Phase 8**
 ("view only my own data" self-service scoping), **Phase 9** (working
 employee logins, admin-triggered password reset, full audit coverage, and
-audit log retention/export), and **Phase 10** (dynamic role/permission
-management) of a multi-phase security rollout. Read this
+audit log retention/export), **Phase 10** (dynamic role/permission
+management), **Phase 14** (reports and dashboard scoped to a supervisor's
+team), **Phase 15** (custom roles effective end to end) and **Phase 16**
+(data scope as a grantable permission) of a multi-phase
+security rollout. Read this
 alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
 
@@ -110,6 +113,7 @@ grants are fixed at startup by `PermissionSeeder`, not editable at runtime.
 | `LEAVE_SUPERVISOR_APPROVE` | ✓ | ✓ | ✓ (own team, enforced in service) | - | - |
 | `LEAVE_APPROVE` (approve/reject/cancel) | ✓ | ✓ | - | - | - |
 | `LEAVE_BALANCE_MANAGE`, `SALARY_RULE_READ/MANAGE`, `PAYROLL_PROCESS` | ✓ | ✓ | - | - | - |
+| `WORK_POLICY_READ/MANAGE` (who is tracked, who is paid a fixed salary) | ✓ | ✓ | - | - | - |
 | `PAYROLL_READ`, `REPORT_READ`, `DASHBOARD_READ` | ✓ | ✓ | ✓ | - | - |
 | `SALARY_SLIP_READ` | ✓ | ✓ | ✓ | ✓ | - |
 
@@ -481,7 +485,8 @@ product decision. Confirmed shape:
   deliberately excluded**: these stay company-wide for SUPERVISOR/HR/ADMIN
   exactly as before - they're aggregate reports, not individual-record
   access, and restricting them wasn't part of what this phase was asked to
-  fix.
+  fix. **Superseded by Phase 14**: reports and the dashboard are now scoped
+  the same way.
 
 ### The mechanism: one pair of methods on `EmployeeService`
 
@@ -779,6 +784,253 @@ app is ready to invest in delivery infrastructure it currently has none of.
 
 **Proof:** `EmployeeSalaryStructureHttpTest.bulkImportCsvFormatReturnsCredentialsSheet`.
 
+## Per-population attendance policy (Phase 12)
+
+Two new permission codes, `ATTENDANCE_POLICY_READ` and
+`ATTENDANCE_POLICY_MANAGE`, granted to HR and ADMIN alongside
+`ATTENDANCE_RULE_*` and to nobody else.
+
+**Deliberately separate from `ATTENDANCE_RULE_*`** rather than folded into it.
+Those three thresholds apply company-wide and are visible in one screen; a
+policy rule can dock a named category half a day each and is a strictly larger
+blast radius. Granting the smaller should not silently grant the larger.
+
+### Tenancy
+
+`AttendancePolicyRule` carries a nullable `company`, the same shared-catalog
+shape `Shift`, `Category`, `Department` and `Designation` have used since
+Phase 6:
+
+- **Read**: a company sees its own rules plus the shared `company = null` rows.
+- **Write**: only its own. A company can never create, edit or delete a shared
+  row, and a platform caller writes only shared rows.
+- **Cross-company access returns 404, not 403** - the same shape an unknown id
+  returns, so the response never confirms another company's rule exists. Same
+  reasoning as every other tenant check since Phase 3.
+- `GET /effective?userId=` resolves the target through
+  `EmployeeService.getEntityByUserId`, the same choke point every cross-company
+  check uses, so naming another company's employee 404s exactly as an unknown
+  one would.
+
+Unlike `Shift`, the shared catalog here is **seeded empty**. A seeded global
+rule would change what every existing tenant is paid on the deploy that
+introduced it.
+
+### Two guards that are about money, not access control
+
+- **Back-dating into a paid month is refused.** A rule version whose
+  `effectiveFrom` reaches back to a locked attendance day is rejected with the
+  months and employee count named. This is narrower than refusing recompute
+  generally, and it is sufficient: because versions resolve by attendance date,
+  a forward-dated rule provably cannot change a past month. Without it, merely
+  *running a report* would re-price a locked month, since `ReportService` calls
+  `syncSummaries`, which persists.
+- **A rule that has ever been in force cannot be deleted**, only superseded by a
+  disabled version - a day it priced may already be on a payslip, and the trace
+  rows explaining that day point at its id. Only a version whose `effectiveFrom`
+  is still in the future is deletable, because it has priced nothing.
+
+### Input handling
+
+Rule parameters arrive as JSON and are bound to a per-`RuleType` record and
+bean-validated before anything is written - never read as a loose map, and
+never evaluated. `FAIL_ON_UNKNOWN_PROPERTIES` is on, so a misspelt field is a
+400 naming it rather than a rule silently running on a zero grace. A stored blob
+that will not bind fails generation by name rather than being skipped: silently
+dropping a rule would change pay by omission.
+
+Every mutation is audited through `AuditService`
+(`ATTENDANCE_POLICY_RULE_CREATE`, `ATTENDANCE_POLICY_RULE_DELETE`) with the
+rule label, effective date and full parameters in the detail.
+
+**Proof:** `AttendancePolicyHttpTest` - 15 tests covering the employee-token
+refusal, cross-company read and delete, the back-dating guard, the
+delete-only-if-future rule, and every validation message above.
+
+## Configurable employment types (Phase 13)
+
+Two new permission codes, `EMPLOYMENT_TYPE_READ` and `EMPLOYMENT_TYPE_MANAGE`,
+granted to **HR and ADMIN only**.
+
+Deliberately *not* granted to SUPERVISOR or EMPLOYEE, unlike the master-data
+reads (`CATEGORY_READ`, `DEPARTMENT_READ`, `DESIGNATION_READ`) it sits next to
+in the catalog. Those are labels; an employment type is the rule deciding
+whether somebody is paid per attended day or per calendar day, and how their
+overtime is computed. It belongs with `SALARY_RULE_READ`.
+
+### Tenancy
+
+`EmploymentType` carries a nullable `company` — the Phase 6 shared-catalog
+shape. A company reads its own rows plus the shared ones, writes only its own,
+and can never edit a shared row: an in-place edit to a shared type's pay basis
+would silently change what every company using it pays, the same class of gap
+Phase 6 closed for `Shift`. Cross-company access returns 404, not 403.
+
+`EmployeeService` resolves `employmentTypeId` through
+`EmploymentTypeService.getById`, so an employee can never be assigned another
+company's private type — the same choke-point inheritance
+department/designation/category already rely on, with no change to the
+assignment code itself.
+
+### Guards specific to money
+
+- **A `PER_ATTENDED_DAY` type may not also apply LOP.** Attendance already
+  decides what such an employee is paid, so loss of pay would deduct the same
+  absence a second time. Refused on write.
+- **A type in use cannot be deleted**, only deactivated. It is referenced by
+  employee rows and, through the payroll snapshot, by every payslip computed
+  under it.
+- **`Payroll` snapshots the pay basis it was computed with.** Without it, a
+  company editing a type would change how already-paid periods are laid out and
+  reconciled in the registers, breaking the immutable-payroll-history guarantee
+  even though no money moved.
+
+### The safety property
+
+`Employee.employmentType` is nullable and `Employee.status` is untouched. An
+employee with no type falls back to the legacy `EmployeeStatus` semantics
+exactly, so deploying this to a running client changes nothing until somebody
+deliberately assigns a type. Every mutation is audited
+(`EMPLOYMENT_TYPE_CREATE` / `_UPDATE` / `_DELETE` / `_SEED`) with the full
+behaviour in the detail.
+
+**Proof:** `EmploymentTypeHttpTest` (8 tests) and
+`EmploymentTypePayrollTest.noEmploymentTypeFallsBackToTheLegacyEnum`.
+
+## Reports scoped to a supervisor's team, and two silent state changes (Phase 14)
+
+### Reports and the dashboard follow self-service scoping
+
+Phase 8 left `REPORT_READ` and `DASHBOARD_READ` company-wide, and every
+`SUPERVISOR` holds both. The UI hid the Reports menu from supervisors, but the
+API did not: any supervisor could pull the whole company's payroll register,
+bank advice, PF ECR, ESI return, PT register and TDS figures. The product
+decision is now that a supervisor sees their own team's reports only.
+
+- **One population.** `EmployeeService.getVisibleEntities()` /
+  `getActiveVisibleEntities()` are the company's employees narrowed by the same
+  rule as `assertSelfOrManages` - HR/ADMIN everyone, a SUPERVISOR themselves
+  plus direct reports, an EMPLOYEE themselves - checked against the loaded
+  entities rather than one lookup per row. `ReportScope`, `ReportService`,
+  `ReportController.employeeReport` and `DashboardService` all read from it, so
+  totals (by department, the audit summary, bank advice control totals) are
+  computed over the team, not filtered after the fact.
+- **One way to read a period.** The unrestricted `PayrollService.getPeriod` is
+  gone; `getPeriodForCaller` is the only period read, used by every report, the
+  dashboard, `PayrollController` and the salary slip exports.
+- **The dashboard opened for supervisors again.** `DashboardService` used to
+  load the whole company and then `assertSelfOrManages` every employee, which
+  threw a 404 for any supervisor in a company with anyone outside their team.
+- Deactivated employees stay in HR's payroll reports, as before.
+
+**Proof:** `SupervisorReportScopingHttpTest` (6 tests).
+
+### Custom role permissions: saving an overlapping list returned 409
+
+`CustomRoleService.setPermissions` deleted every grant and inserted the new
+list. Hibernate inserts an IDENTITY row as soon as it is saved but holds
+deletes until flush, so re-inserting a permission the role already had hit
+`uk_custom_role_permission` - ticking every box, or saving an unchanged list,
+failed with "Request violates a database constraint". It now removes only the
+unticked grants and inserts only the new ones.
+
+**Proof:** `CustomRoleHttpTest.savingAnOverlappingPermissionListReplacesItExactly`.
+
+### An update that omitted a field reset it
+
+`EmployeeService.apply` defaulted `role` to EMPLOYEE and `recordStatus` to
+ACTIVE on update as well as create, so a `PUT /api/employees/{id}` without them
+silently demoted a supervisor (hiding their team) or reactivated a deactivated
+employee. Omitted now keeps the current value; the defaults apply only to a new
+record.
+
+**Proof:** `EmployeeUpdateHttpTest` (4 tests).
+
+## Custom roles that work end to end (Phase 15)
+
+Phase 10 made custom roles grant permissions, and `@authz.can` honoured them -
+but nothing else did. The UI decided what to show from a hardcoded role ->
+permission table, and several services, having let the request past the gate,
+then asked for the HR or ADMIN role by name. An employee given a custom role saw
+no new menu, and a supervisor given `LEAVE_APPROVE` was told that "final leave
+approval requires the HR or ADMIN role".
+
+### One answer, asked three ways
+
+`AuthorizationService` now answers the same question for the gate
+(`can`), for a login (`effectivePermissions`) and for a service-layer check
+about an actor who is not the caller (`employeeCan`) - base role grants from
+`PermissionRegistry` plus, for an employee, their custom roles, read fresh.
+
+- **Login and refresh return `permissions`.** `TokenResponse` carries the
+  session's effective permission codes; the SPA's `can()` reads them instead of
+  its own copy of the grant table, and the sidebar and route guards share one
+  set of rules (`constants/access.js`). A permission list from an older server
+  is absent rather than wrong, so the UI falls back to the fixed role's grants.
+- **Capability checks ask for the permission.** `AttendanceService` (generate /
+  correct / unlock) and `LeaveService` (final approval, HR-direct entry) no
+  longer test for HR or ADMIN by name.
+
+### Whose records: `EmployeeService.assertManages`
+
+A permission alone must not decide *whose* attendance may be corrected or whose
+leave approved, so every one of those writes now resolves its target through
+`assertManages`: HR/ADMIN the whole company, a SUPERVISOR their direct reports,
+anyone else nobody - and, unlike `assertSelfOrManages`, **not the caller's own
+record** for a team-scoped caller. A custom role handing a supervisor
+`ATTENDANCE_CORRECT` or `LEAVE_APPROVE` must not let them correct their own
+attendance or approve, reject or cancel their own leave. ADMIN/HR, who could
+always do both, are unchanged. A generation run with no `userIds` covers the
+managed population rather than the whole company.
+
+Scope is deliberately still the fixed role's to decide; a custom role cannot
+widen it (see "Not yet built").
+
+**Proof:** `CustomRoleCapabilityHttpTest` (8 tests),
+`CustomRoleHttpTest.loginPermissionsIncludeCustomRoles`,
+`AuthApiHttpTest.loginAndRefreshReturnEffectivePermissions`, and on the frontend
+`navConfig.test.js`, `access.test.js` and `AuthContext.test.jsx`.
+
+## Data scope as a grantable permission (Phase 16)
+
+Phase 15 left reach with the fixed role, which a director's organisation does
+not fit: their direct reports are team leads, and the people doing the work are
+a level further down, invisible to them. The answer is not a second kind of
+role but three more permissions.
+
+### `DataScope`
+
+`SCOPE_DIRECT_REPORTS`, `SCOPE_ALL_REPORTS`, `SCOPE_COMPANY` - ordered, each
+including the one before. `PermissionSeeder` grants them to the fixed roles
+exactly as those roles always behaved (COMPANY to ADMIN/HR, DIRECT_REPORTS to
+SUPERVISOR, none to EMPLOYEE), so nothing changes until somebody grants more,
+and a custom role carries anything wider. The role's own scope stays a floor
+under the granted one, so a database whose `role_permission` rows predate these
+codes still shows HR the company rather than nothing.
+
+`EmployeeService.scopeOf` resolves it - from the caller's effective permissions,
+or from an actor entity for the service-layer checks that take an actor id - and
+every visibility decision already funnelled through `assertManages`,
+`assertSelfOrManages` and `getVisibleEntities`, so the directory, reports, the
+dashboard, the roster planner, leave decisions and attendance corrections all
+follow at once. `ALL_REPORTS` is answered by walking **up** from the target to
+see whether the caller sits above it: one lookup per level, no recursive query,
+and cycles (already refused when a supervisor is assigned) cannot loop it.
+
+Two role checks that predated this are gone with it:
+`ShiftSchedulingService.assertMaySchedule` and `LeaveService.assertSupervisorOf`
+now ask whether the actor manages the target, so a director can roster and
+endorse two levels down.
+
+**Scope is reach, not power.** `SCOPE_COMPANY` lets a custom-role holder *see*
+the company; deciding leave still needs `LEAVE_APPROVE`, and correcting
+attendance still needs `ATTENDANCE_CORRECT`. And a team-scoped caller still
+never acts on their own record (Phase 15).
+
+**Proof:** `DirectorScopeHttpTest` (6 tests), plus the frontend's
+`access.test.js` and `navConfig.test.js`, where the Team screens now ask for a
+scope rather than a role name.
+
 ## Not yet built (next phases)
 
 - Platform-owner company onboarding flow beyond raw CRUD.
@@ -801,12 +1053,13 @@ app is ready to invest in delivery infrastructure it currently has none of.
   bulk credentials file entirely, at the cost of needing a delivery channel
   (email/SMS) to actually get the link to each employee, which this app
   does not have.
-- A UI for assigning/removing an employee's custom roles and browsing
-  what a role grants (Phase 10 shipped the API only, see
-  `CustomRoleController`) - and a decision on whether a custom role should
-  be able to grant *more* than what its own creator (ADMIN) already holds,
-  which today it can (Phase 10 blocks only the platform-only codes, not a
-  general no-privilege-escalation check).
+- A decision on whether a custom role should be able to grant *more* than
+  what its own creator (ADMIN) already holds, which today it can (only the
+  platform-only codes are blocked, not a general no-privilege-escalation
+  check).
+- A scope narrower than a whole subtree - "this department", "this site" -
+  which `DataScope` (Phase 16) has no value for; today the choices are the
+  caller alone, their direct reports, everyone below them, or the company.
 
 See the original security analysis in this repository's PR/session history
 for the full phased plan.

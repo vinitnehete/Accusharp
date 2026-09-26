@@ -241,6 +241,8 @@ class PayrollAuditReportTest {
         attendance.setMonth(PERIOD);
         attendance.setUserIds(List.of(EMPLOYEE));
         attendance.setGeneratedBy(HR);
+        // Partial-roster fixture - see AttendanceGenerationRequest#includeUnrostered.
+        attendance.setIncludeUnrostered(false);
         attendanceService.generate(attendance);
 
         PayrollRequest request = new PayrollRequest();
@@ -479,6 +481,8 @@ class PayrollAuditReportTest {
         attendance.setMonth(PERIOD);
         attendance.setUserIds(List.of(EMPLOYEE));
         attendance.setGeneratedBy(HR);
+        // Partial-roster fixture - see AttendanceGenerationRequest#includeUnrostered.
+        attendance.setIncludeUnrostered(false);
         attendanceService.generate(attendance);
 
         PayrollRequest request = new PayrollRequest();

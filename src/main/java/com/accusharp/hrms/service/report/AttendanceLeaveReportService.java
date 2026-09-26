@@ -167,7 +167,7 @@ public class AttendanceLeaveReportService {
         }
 
         Map<String, Payroll> payrolls = payrollService
-                .getPeriod(month.getMonthValue(), month.getYear()).stream()
+                .getPeriodForCaller(month.getMonthValue(), month.getYear()).stream()
                 .collect(Collectors.toMap(Payroll::getEmployeeId, Function.identity(), (a, b) -> a));
 
         return dailyAttendanceRepository
@@ -180,7 +180,7 @@ public class AttendanceLeaveReportService {
                     Payroll payroll = payrolls.get(record.getUserId());
                     boolean pricedPerDay = payroll != null
                             && (payroll.getEmploymentStatus() == null
-                                || !payroll.getEmploymentStatus().isPaidPerAttendedDay());
+                                || !payroll.wasPaidPerAttendedDay());
 
                     BigDecimal perHour = pricedPerDay ? payroll.getPerHour() : null;
                     BigDecimal multiplier = pricedPerDay ? payroll.getRuleOvertimeRateMultiplier() : null;

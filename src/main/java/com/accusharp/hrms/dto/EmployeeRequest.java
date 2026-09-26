@@ -12,7 +12,9 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.util.Set;
 
 /**
  * Only the fields a client may set. grossSalaryWage is always derived
@@ -48,6 +50,16 @@ public class EmployeeRequest {
 
     /** Optional employee grade/category - Worker, Supervisor, Manager, Director, etc. */
     private Long categoryId;
+
+    /**
+     * Optional configurable employment type, deciding how this employee is paid
+     * - see {@code EmploymentType}.
+     *
+     * <p>Null keeps the legacy behaviour derived from {@code status}
+     * (PERMANENT/DAY_WISE/CONTRACT/INTERN), which is what every existing
+     * employee uses. Set it only when the company has defined its own types.
+     */
+    private Long employmentTypeId;
 
     /** Employee.userId of the supervisor; null only for top management. */
     private String supervisorUserId;
@@ -102,6 +114,15 @@ public class EmployeeRequest {
     private BigDecimal otherAllowance;
 
     private boolean overtimeEligible;
+
+    /**
+     * Which days of the week this employee does not work.
+     *
+     * <p>Null means "leave it as it is" - an unconfigured permanent employee
+     * keeps falling back to Sunday, and anyone else keeps having no weekly off. An empty set is the explicit statement that this employee
+     * has no weekly off; see {@code Employee.effectiveWeekOffDays()}.
+     */
+    private Set<DayOfWeek> weekOffDays;
 
     // ---- optional structure override - provide all four or none, see class Javadoc ----
 

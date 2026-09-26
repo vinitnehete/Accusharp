@@ -14,6 +14,8 @@ import com.accusharp.hrms.enums.SalaryStructureChangeType;
 import com.accusharp.hrms.entity.SalaryRule;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PrincipalType;
+import com.accusharp.hrms.enums.DataScope;
+import com.accusharp.hrms.enums.PermissionCode;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.exception.BusinessRuleException;
@@ -24,10 +26,10 @@ import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
 import com.accusharp.hrms.repository.SalaryRevisionRepository;
 import com.accusharp.hrms.repository.SalaryStructureRevisionRepository;
+import com.accusharp.hrms.security.AuthorizationService;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
-import com.accusharp.hrms.service.shift.DefaultRosterService;
 import com.accusharp.hrms.util.TemporaryPasswordGenerator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -67,14 +69,15 @@ public class EmployeeService {
     private final DepartmentService departmentService;
     private final DesignationService designationService;
     private final CategoryService categoryService;
+    private final EmploymentTypeService employmentTypeService;
     private final SalaryRuleService salaryRuleService;
     private final SalaryCalculationService salaryCalculationService;
     private final EmployeeMapper employeeMapper;
     private final TenantContext tenantContext;
+    private final AuthorizationService authorizationService;
     private final AuditService auditService;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
-    private final DefaultRosterService defaultRosterService;
     private final SalaryRevisionRepository salaryRevisionRepository;
     private final SalaryStructureRevisionRepository salaryStructureRevisionRepository;
 
@@ -106,8 +109,6 @@ public class EmployeeService {
         EmployeeResponse response = employeeMapper.toResponse(saved);
         auditService.record("EMPLOYEE_CREATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
                 "role=" + response.role());
-        // Permanent employees default onto the GENERAL shift for every day - see DefaultRosterService.
-        defaultRosterService.ensureForEmployee(saved);
         return new EmployeeCreationResponse(response, temporaryPassword);
     }
 
@@ -123,7 +124,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeCreationResponse resetPassword(Long id) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         String temporaryPassword = TemporaryPasswordGenerator.generate();
         employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
         employee.setMustChangePassword(true);
@@ -153,7 +154,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse unlockAccount(Long id) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         boolean wasLocked = employee.isAccountLocked();
         employee.setAccountLocked(false);
         employee.setFailedLoginAttempts(0);
@@ -165,7 +166,7 @@ public class EmployeeService {
 
     @Transactional
     public EmployeeResponse update(Long id, EmployeeRequest request) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
 
         employeeRepository.findByUserId(request.getUserId())
                 .filter(other -> !other.getId().equals(id))
@@ -185,8 +186,6 @@ public class EmployeeService {
         EmployeeResponse response = employeeMapper.toResponse(saved);
         auditService.record("EMPLOYEE_UPDATE", "Employee", response.userId(), AuditOutcome.SUCCESS,
                 "role=" + response.role());
-        // Covers status changing to PERMANENT or a re-activation - a no-op otherwise.
-        defaultRosterService.ensureForEmployee(saved);
         return response;
     }
 
@@ -213,7 +212,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse updateSalaryStructure(Long id, SalaryStructureRequest request, String revisedBy) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         // Snapshotted before anything is written: the employee row is about to
         // be overwritten in place, and without this the previous components are
         // simply gone. See SalaryStructureRevision's Javadoc.
@@ -256,7 +255,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse regenerateSalaryStructure(Long id, String revisedBy) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         // Going back onto the company rule discards a hand-set structure just as
         // surely as setting one does, so it is recorded the same way.
         StructureSnapshot before = StructureSnapshot.of(employee);
@@ -308,7 +307,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse reviseSalary(Long id, SalaryRevisionRequest request, String revisedBy) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         BigDecimal previousGross = salaryCalculationService.scaled(employee.getGrossSalary());
 
         if (employee.isSalaryStructureOverridden()) {
@@ -561,21 +560,21 @@ public class EmployeeService {
     /** Every structure change for this employee, newest first - the components' audit trail. */
     @Transactional(readOnly = true)
     public List<SalaryStructureRevision> getSalaryStructureRevisions(Long id) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         return salaryStructureRevisionRepository.findByEmployeeIdOrderByCreatedAtDesc(employee.getUserId());
     }
 
     /** Every revision for this employee, newest effective date first - the audit trail. */
     @Transactional(readOnly = true)
     public List<SalaryRevision> getSalaryRevisions(Long id) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         assertSelfOrManages(employee.getUserId());
         return salaryRevisionRepository.findByEmployeeIdOrderByEffectiveDateDescCreatedAtDesc(employee.getUserId());
     }
 
     @Transactional(readOnly = true)
     public EmployeeResponse getById(Long id) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         assertSelfOrManages(employee.getUserId());
         return employeeMapper.toResponse(employee);
     }
@@ -583,33 +582,57 @@ public class EmployeeService {
     @Transactional(readOnly = true)
     public EmployeeResponse getByUserId(String userId) {
         Employee employee = getEntityByUserId(userId);
+        assertNotContractorWorker(employee);
         assertSelfOrManages(employee.getUserId());
         return employeeMapper.toResponse(employee);
     }
 
     /**
-     * Company-wide, no self-service restriction - used only by {@code
-     * ReportController.employeeReport()}, which (like every {@code
-     * REPORT_READ} endpoint) intentionally stays company-wide for
-     * SUPERVISOR/HR/ADMIN. See {@link #getVisible()} for the
-     * self-service-restricted list {@code EmployeeController} actually uses.
-     */
-    @Transactional(readOnly = true)
-    public List<EmployeeResponse> getAll() {
-        return employeeMapper.toResponses(getAllEntities());
-    }
-
-    /**
-     * The employee list a caller may browse directly - unlike {@link
-     * #getAll()}, restricted per SECURITY.md's "view only my own data": an
-     * EMPLOYEE sees only themselves, a SUPERVISOR sees themselves plus their
-     * direct reports, ADMIN/HR see the whole company.
+     * The employee list a caller may browse directly - both the directory and
+     * the employee report - restricted per SECURITY.md's "view only my own
+     * data": an EMPLOYEE sees only themselves, a SUPERVISOR sees themselves plus
+     * their direct reports, ADMIN/HR see the whole company.
      */
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getVisible() {
-        return employeeMapper.toResponses(getAllEntities().stream()
-                .filter(employee -> isSelfOrManages(employee.getUserId()))
-                .toList());
+        return employeeMapper.toResponses(getVisibleEntities());
+    }
+
+    /**
+     * {@link #getAllEntities()} narrowed to the employees the caller may see -
+     * the population every report reads. Reports used to be company-wide for
+     * anyone holding {@code REPORT_READ}, which let any SUPERVISOR pull the
+     * whole company's payroll through the API; now a report can never show a
+     * caller someone {@link #assertSelfOrManages} would not let them open.
+     * Deactivated employees stay included, so a closed period remains auditable.
+     */
+    @Transactional(readOnly = true)
+    public List<Employee> getVisibleEntities() {
+        return visibleToCaller(getAllEntities());
+    }
+
+    /** {@link #getActiveEntities()} narrowed the same way as {@link #getVisibleEntities()}. */
+    @Transactional(readOnly = true)
+    public List<Employee> getActiveVisibleEntities() {
+        return visibleToCaller(getActiveEntities());
+    }
+
+    /**
+     * The list form of {@link #isSelfOrManages}, checked against the entities
+     * already in hand rather than looking each one up again by userId. No-ops
+     * under the same conditions (no principal, a platform principal).
+     */
+    private List<Employee> visibleToCaller(List<Employee> employees) {
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> {
+                    // Resolved once for the batch - it costs a permission lookup.
+                    DataScope scope = scopeOf(principal);
+                    return employees.stream()
+                            .filter(employee -> isVisibleTo(principal, scope, employee))
+                            .toList();
+                })
+                .orElse(employees);
     }
 
     /**
@@ -623,8 +646,10 @@ public class EmployeeService {
     @Transactional(readOnly = true)
     public List<Employee> getAllEntities() {
         return tenantContext.currentCompanyId()
-                .map(employeeRepository::findByCompanyId)
-                .orElseGet(employeeRepository::findAll);
+                .map(employeeRepository::findByCompanyIdAndContractorIsNull)
+                .orElseGet(() -> employeeRepository.findAll().stream()
+                        .filter(employee -> !employee.isContractorWorker())
+                        .toList());
     }
 
     /**
@@ -638,7 +663,15 @@ public class EmployeeService {
     public List<EmployeeResponse> getTeamOf(String supervisorUserId) {
         getEntityByUserId(supervisorUserId);
         assertSelfOrManages(supervisorUserId);
-        return employeeMapper.toResponses(employeeRepository.findBySupervisorUserId(supervisorUserId));
+        return employeeMapper.toResponses(employeeRepository.findBySupervisorUserId(supervisorUserId).stream()
+                // A supervisor really does supervise the contractor's workers
+                // assigned to them, but this is the company team view and
+                // EmployeeResponse is the company shape (salary structure and
+                // all). Their contractor workforce is listed, with the
+                // contractor's name against each name, under the contractor
+                // module - see ContractorEmployeeService.
+                .filter(employee -> !employee.isContractorWorker())
+                .toList());
     }
 
     /**
@@ -654,20 +687,60 @@ public class EmployeeService {
      */
     @Transactional(readOnly = true)
     public List<Employee> plannerScope(String requestedSupervisorUserId) {
-        return tenantContext.currentPrincipal()
-                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
-                .map(principal -> switch (Role.valueOf(principal.getRole())) {
-                    case ADMIN, HR -> teamOrCompany(requestedSupervisorUserId);
-                    case SUPERVISOR -> teamOrCompany(principal.getUsername());
-                    case EMPLOYEE -> List.of(getEntityByUserId(principal.getUsername()));
-                })
-                .orElseGet(() -> teamOrCompany(requestedSupervisorUserId));
+        return plannerScope(requestedSupervisorUserId, null);
     }
 
-    private List<Employee> teamOrCompany(String supervisorUserId) {
-        return supervisorUserId == null
+    /**
+     * As above, narrowed to one contractor's workforce when
+     * {@code contractorId} is given.
+     *
+     * <p>The two populations are never merged: with no contractor the planner
+     * is the company's own staff (contractor workers excluded, per
+     * {@link #getActiveEntities()}), and with one it is that contractor's
+     * workers alone. Rostering both from one grid was the thing this feature
+     * was asked not to do - the shift <em>catalog</em> is shared, the roster
+     * screens are not.
+     *
+     * <p>Every other rule above still applies on top: a SUPERVISOR still only
+     * ever sees their own reports, which for a contractor means the workers
+     * that contractor deployed under <em>them</em>.
+     */
+    @Transactional(readOnly = true)
+    public List<Employee> plannerScope(String requestedSupervisorUserId, Long contractorId) {
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> switch (scopeOf(principal)) {
+                    case COMPANY -> teamOrCompany(requestedSupervisorUserId, contractorId);
+                    // The people this caller rosters: their direct reports, or -
+                    // for a director - every team below them. Their own row is
+                    // not in it, exactly as a supervisor's planner never was.
+                    case DIRECT_REPORTS, ALL_REPORTS -> {
+                        DataScope scope = scopeOf(principal);
+                        yield teamOrCompany(null, contractorId).stream()
+                                .filter(employee -> manages(principal, scope, employee))
+                                .toList();
+                    }
+                    // A caller with no team gets a planner of exactly themselves,
+                    // and a contractor filter cannot widen that - they are never a
+                    // contractor's worker (those have no login at all), so the
+                    // honest answer to "their contractor roster" is nothing.
+                    case SELF -> contractorId == null
+                            ? List.of(getEntityByUserId(principal.getUsername()))
+                            : List.<Employee>of();
+                })
+                .orElseGet(() -> teamOrCompany(requestedSupervisorUserId, contractorId));
+    }
+
+    private List<Employee> teamOrCompany(String supervisorUserId, Long contractorId) {
+        List<Employee> base = contractorId == null
                 ? getActiveEntities()
-                : getActiveEntities().stream()
+                : getActiveEntitiesIncludingContractorWorkers().stream()
+                        .filter(employee -> employee.isContractorWorker()
+                                && contractorId.equals(employee.getContractor().getId()))
+                        .toList();
+        return supervisorUserId == null
+                ? base
+                : base.stream()
                         .filter(employee -> employee.getSupervisor() != null
                                 && supervisorUserId.equals(employee.getSupervisor().getUserId()))
                         .toList();
@@ -676,7 +749,14 @@ public class EmployeeService {
     @Transactional
     public EmployeeResponse assignSupervisor(String userId, String supervisorUserId) {
         Employee employee = getEntityByUserId(userId);
+        // A contractor's worker is reassigned through ContractorEmployeeService,
+        // which additionally enforces that their supervisor is one of this
+        // company's own employees - a rule this endpoint has no way to apply.
+        assertNotContractorWorker(employee);
         Employee supervisor = supervisorUserId == null ? null : getEntityByUserId(supervisorUserId);
+        if (supervisor != null) {
+            assertNotContractorWorker(supervisor);
+        }
         validateSupervisorChain(employee, supervisor);
         employee.setSupervisor(supervisor);
         return employeeMapper.toResponse(employeeRepository.save(employee));
@@ -693,7 +773,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse deactivate(Long id) {
-        Employee employee = getEntityById(id);
+        Employee employee = getCompanyEmployeeById(id);
         employee.setRecordStatus(RecordStatus.INACTIVE);
         employee.setAccountEnabled(false);
         if (employee.getRelievingDate() == null) {
@@ -702,6 +782,32 @@ public class EmployeeService {
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
         auditService.record("EMPLOYEE_DEACTIVATE", "Employee", response.userId(), AuditOutcome.SUCCESS, null);
         return response;
+    }
+
+    /**
+     * {@link #getEntityById} plus "and it is one of the company's own
+     * employees" - every mutating path in this service resolves through here.
+     *
+     * <p>{@link #getEntityById} itself stays permissive because attendance,
+     * shift scheduling and the contractor module all resolve a contractor's
+     * worker through it and must keep working. What must not happen is a
+     * contractor's worker reaching the <em>employee</em> endpoints: a
+     * {@code PUT /api/employees/{id}} would write an {@code EmployeeRequest}
+     * over them, giving a person this company does not pay a gross salary, a
+     * derived salary structure and possibly an ADMIN role. Reported as not
+     * found rather than forbidden, same as another company's id - see
+     * {@link #assertAccessible}.
+     */
+    private Employee getCompanyEmployeeById(Long id) {
+        Employee employee = getEntityById(id);
+        assertNotContractorWorker(employee);
+        return employee;
+    }
+
+    private void assertNotContractorWorker(Employee employee) {
+        if (employee.isContractorWorker()) {
+            throw NotFoundException.of("Employee", "userId " + employee.getUserId());
+        }
     }
 
     @Transactional(readOnly = true)
@@ -753,6 +859,29 @@ public class EmployeeService {
     @Transactional(readOnly = true)
     public List<Employee> getActiveEntities() {
         return tenantContext.currentCompanyId()
+                .map(companyId -> employeeRepository
+                        .findByRecordStatusAndCompanyIdAndContractorIsNull(RecordStatus.ACTIVE, companyId))
+                .orElseGet(() -> employeeRepository.findByRecordStatusAndContractorIsNull(RecordStatus.ACTIVE));
+    }
+
+    /**
+     * The company's own active staff <em>plus</em> every contractor's active
+     * workers - the one population that is genuinely both.
+     *
+     * <p>Exists for exactly one caller,
+     * {@code ShiftSchedulingService#applyHolidayOverride}. A public holiday
+     * closes the site for everyone standing on it, so marking the month's
+     * holidays as week-offs across the roster has to reach the contractor's
+     * workers too; leaving them out would roster them onto a day the plant is
+     * shut and then bill their absence to their contractor.
+     *
+     * <p>Everything else that used to say "every employee of this company"
+     * means the payroll population and must keep using
+     * {@link #getActiveEntities()} - see {@link Employee#getContractor()}.
+     */
+    @Transactional(readOnly = true)
+    public List<Employee> getActiveEntitiesIncludingContractorWorkers() {
+        return tenantContext.currentCompanyId()
                 .map(companyId -> employeeRepository.findByRecordStatusAndCompanyId(RecordStatus.ACTIVE, companyId))
                 .orElseGet(() -> employeeRepository.findByRecordStatus(RecordStatus.ACTIVE));
     }
@@ -797,15 +926,144 @@ public class EmployeeService {
                 .orElse(true);
     }
 
+    /**
+     * For privileged writes a permission unlocks - generating or correcting
+     * attendance, final leave approval, entering a leave directly: the target
+     * must be someone the caller <em>manages</em>. The permission says what may
+     * be done; this says to whom, and it is still decided by the fixed role:
+     * ADMIN/HR manage the whole company, a SUPERVISOR their direct reports, and
+     * anyone else nobody.
+     *
+     * <p>Unlike {@link #assertSelfOrManages}, a SUPERVISOR's own record is not
+     * included. A custom role handing a supervisor {@code ATTENDANCE_CORRECT} or
+     * {@code LEAVE_APPROVE} must not let them correct their own attendance or
+     * approve their own leave. ADMIN/HR, who could always do both, still can.
+     *
+     * <p>404 on failure and a no-op with no employee principal, both exactly as
+     * {@link #assertSelfOrManages}.
+     */
+    public void assertManages(String targetUserId) {
+        tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .ifPresent(principal -> {
+                    if (!manages(principal, scopeOf(principal), targetUserId)) {
+                        throw NotFoundException.of("Employee", "userId " + targetUserId);
+                    }
+                });
+    }
+
+    /** {@link #getActiveEntities()} narrowed to the employees the caller manages - see {@link #assertManages}. */
+    @Transactional(readOnly = true)
+    public List<Employee> getActiveManagedEntities() {
+        List<Employee> active = getActiveEntities();
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> {
+                    DataScope scope = scopeOf(principal);
+                    return active.stream().filter(employee -> manages(principal, scope, employee)).toList();
+                })
+                .orElse(active);
+    }
+
+    /**
+     * How far this caller can see and act, from the permissions they hold - the
+     * fixed role's grants plus any custom role (see {@link DataScope}). The role's
+     * own scope is a floor under it, so a deployment whose {@code role_permission}
+     * rows predate the scope codes behaves exactly as it always did.
+     */
+    private DataScope scopeOf(UserPrincipal principal) {
+        DataScope granted = DataScope.widest(authorizationService.effectivePermissions(principal));
+        DataScope byRole = DataScope.ofRole(Role.valueOf(principal.getRole()));
+        return granted.isAtLeast(byRole) ? granted : byRole;
+    }
+
+    /**
+     * The same question for an employee who is not the caller - the actor named
+     * on a request ({@code assignedBy}, {@code approverId}), which service-level
+     * tests supply with no security context at all.
+     */
+    @Transactional(readOnly = true)
+    public DataScope scopeOf(Employee actor) {
+        DataScope widest = DataScope.ofRole(actor.getRole());
+        for (DataScope scope : DataScope.values()) {
+            if (scope.isAtLeast(widest) && holdsScope(actor, scope)) {
+                widest = scope;
+            }
+        }
+        return widest;
+    }
+
+    /** True when {@code actor} may act on {@code targetUserId} - see {@link #assertManages}, resolved for an actor rather than the caller. */
+    @Transactional(readOnly = true)
+    public boolean managesEmployee(Employee actor, String targetUserId) {
+        return switch (scopeOf(actor)) {
+            case COMPANY -> true;
+            case ALL_REPORTS -> reportsUpTo(actor.getUserId(), getEntityByUserId(targetUserId));
+            case DIRECT_REPORTS -> supervises(actor.getUserId(), targetUserId);
+            case SELF -> false;
+        };
+    }
+
+    private boolean holdsScope(Employee actor, DataScope scope) {
+        return switch (scope) {
+            case SELF -> true;
+            case DIRECT_REPORTS -> authorizationService.employeeCan(actor, PermissionCode.SCOPE_DIRECT_REPORTS.name());
+            case ALL_REPORTS -> authorizationService.employeeCan(actor, PermissionCode.SCOPE_ALL_REPORTS.name());
+            case COMPANY -> authorizationService.employeeCan(actor, PermissionCode.SCOPE_COMPANY.name());
+        };
+    }
+
+    /**
+     * Whether {@code callerUserId} sits anywhere above {@code target} in the
+     * reporting chain - what {@link DataScope#ALL_REPORTS} means. Walks up from
+     * the target rather than down from the caller, so one lookup per level
+     * answers it however wide the organisation is. Cycles are already refused by
+     * {@link #validateSupervisorChain}; the visited set is belt and braces
+     * against data that predates it.
+     */
+    private boolean reportsUpTo(String callerUserId, Employee target) {
+        Set<Long> seen = new HashSet<>();
+        Employee current = target.getSupervisor();
+        while (current != null && (current.getId() == null || seen.add(current.getId()))) {
+            if (callerUserId.equals(current.getUserId())) {
+                return true;
+            }
+            current = current.getSupervisor();
+        }
+        return false;
+    }
+
     private boolean isVisibleTo(UserPrincipal principal, String targetUserId) {
-        if (principal.getUsername().equals(targetUserId)) {
-            return true;
-        }
-        Role role = Role.valueOf(principal.getRole());
-        if (role == Role.ADMIN || role == Role.HR) {
-            return true;
-        }
-        return role == Role.SUPERVISOR && supervises(principal.getUsername(), targetUserId);
+        return isVisibleTo(principal, scopeOf(principal), targetUserId);
+    }
+
+    private boolean isVisibleTo(UserPrincipal principal, DataScope scope, String targetUserId) {
+        return principal.getUsername().equals(targetUserId) || manages(principal, scope, targetUserId);
+    }
+
+    /** Same rule, for an employee already loaded. */
+    private boolean isVisibleTo(UserPrincipal principal, DataScope scope, Employee target) {
+        return principal.getUsername().equals(target.getUserId()) || manages(principal, scope, target);
+    }
+
+    private boolean manages(UserPrincipal principal, DataScope scope, String targetUserId) {
+        return switch (scope) {
+            case COMPANY -> true;
+            case ALL_REPORTS -> reportsUpTo(principal.getUsername(), getEntityByUserId(targetUserId));
+            case DIRECT_REPORTS -> supervises(principal.getUsername(), targetUserId);
+            case SELF -> false;
+        };
+    }
+
+    /** Same rule as {@link #manages(UserPrincipal, DataScope, String)}, for an employee already loaded. */
+    private boolean manages(UserPrincipal principal, DataScope scope, Employee target) {
+        return switch (scope) {
+            case COMPANY -> true;
+            case ALL_REPORTS -> reportsUpTo(principal.getUsername(), target);
+            case DIRECT_REPORTS -> target.getSupervisor() != null
+                    && principal.getUsername().equals(target.getSupervisor().getUserId());
+            case SELF -> false;
+        };
     }
 
     private void recalculate(Employee employee) {
@@ -825,9 +1083,21 @@ public class EmployeeService {
                 : designationService.getById(request.getDesignationId()));
         employee.setCategory(request.getCategoryId() == null ? null
                 : categoryService.getById(request.getCategoryId()));
+        // Resolved through EmploymentTypeService.getById, so it inherits the
+        // tenant check for free and an employee can never be put on another
+        // company's private type - the same choke-point inheritance
+        // department/designation/category already rely on (SECURITY.md Phase 6).
+        employee.setEmploymentType(request.getEmploymentTypeId() == null ? null
+                : employmentTypeService.getById(request.getEmploymentTypeId()));
 
         Employee supervisor = request.getSupervisorUserId() == null ? null
                 : getEntityByUserId(request.getSupervisorUserId());
+        if (supervisor != null) {
+            // A contractor's worker has no login and no authority to approve
+            // anything, so a company employee reporting to one would be a
+            // reporting line nobody can act on.
+            assertNotContractorWorker(supervisor);
+        }
         validateSupervisorChain(employee, supervisor);
         employee.setSupervisor(supervisor);
 
@@ -835,8 +1105,15 @@ public class EmployeeService {
         employee.setDateOfBirth(request.getDateOfBirth());
         employee.setGender(request.getGender());
         employee.setStatus(request.getStatus());
-        employee.setRecordStatus(request.getRecordStatus() == null ? RecordStatus.ACTIVE : request.getRecordStatus());
-        employee.setRole(request.getRole() == null ? Role.EMPLOYEE : request.getRole());
+        // Omitted keeps what the employee already has; the defaults only apply to a
+        // new record. Defaulting on update silently demoted a supervisor to EMPLOYEE
+        // (hiding their team) and reactivated a deactivated employee.
+        if (request.getRecordStatus() != null || employee.getRecordStatus() == null) {
+            employee.setRecordStatus(request.getRecordStatus() == null ? RecordStatus.ACTIVE : request.getRecordStatus());
+        }
+        if (request.getRole() != null || employee.getRole() == null) {
+            employee.setRole(request.getRole() == null ? Role.EMPLOYEE : request.getRole());
+        }
         employee.setEmail(request.getEmail());
         employee.setPhone(request.getPhone());
         employee.setUanNo(request.getUanNo());
@@ -848,6 +1125,14 @@ public class EmployeeService {
         employee.setMedicalAllowance(request.getMedicalAllowance());
         employee.setOtherAllowance(request.getOtherAllowance());
         employee.setOvertimeEligible(request.isOvertimeEligible());
+        // Null leaves whatever is already there, so a caller that does not know
+        // about this field yet - an old integration, a bulk sheet without the
+        // column - cannot blank out a week-off somebody configured. Clearing it
+        // is done by sending an empty set, which is the explicit "no weekly
+        // off" statement rather than the absence of one.
+        if (request.getWeekOffDays() != null) {
+            employee.setWeekOffDays(request.getWeekOffDays());
+        }
         applyStructureOverride(employee, request);
     }
 

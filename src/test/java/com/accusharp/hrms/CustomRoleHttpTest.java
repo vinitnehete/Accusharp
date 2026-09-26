@@ -27,6 +27,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -123,6 +127,74 @@ class CustomRoleHttpTest {
     }
 
     @Test
+    @DisplayName("saving a permission list that overlaps the current one replaces it exactly - ticking every box must not 409")
+    void savingAnOverlappingPermissionListReplacesItExactly() {
+        String adminToken = onboardCompanyAndGetAdminToken("OVERCO", "overco.example");
+
+        Resp employee = send("POST", "/api/employees", """
+                {"userId": "OVERCO-EMP1", "employeeCode": "OC-EMP-1", "employeeName": "Team Lead",
+                 "status": "PERMANENT", "role": "EMPLOYEE",
+                 "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0}""",
+                adminToken);
+        String employeeToken = login("OVERCO-EMP1", employee.body().get("temporaryPassword").asString());
+
+        long roleId = send("POST", "/api/roles", "{\"name\": \"Team Lead\"}", adminToken).body().get("id").asLong();
+        assertThat(send("POST", "/api/roles/" + roleId + "/employees/OVERCO-EMP1", null, adminToken).status())
+                .isEqualTo(204);
+
+        assertThat(setPermissions(roleId, adminToken, "REPORT_READ").status()).isEqualTo(200);
+
+        // Keeps REPORT_READ and adds more - exactly what ticking every box sends.
+        Resp widened = setPermissions(roleId, adminToken, "REPORT_READ", "DASHBOARD_READ", "PAYROLL_READ");
+        assertThat(widened.status()).isEqualTo(200);
+        assertThat(codes(widened.body())).containsExactlyInAnyOrder("REPORT_READ", "DASHBOARD_READ", "PAYROLL_READ");
+
+        // Saving the very same list again changes nothing and is not a conflict.
+        Resp unchanged = setPermissions(roleId, adminToken, "REPORT_READ", "DASHBOARD_READ", "PAYROLL_READ");
+        assertThat(unchanged.status()).isEqualTo(200);
+        assertThat(codes(unchanged.body())).containsExactlyInAnyOrder("REPORT_READ", "DASHBOARD_READ", "PAYROLL_READ");
+
+        // Narrowing drops what was unticked - in the response, in storage, and in effect.
+        Resp narrowed = setPermissions(roleId, adminToken, "DASHBOARD_READ");
+        assertThat(narrowed.status()).isEqualTo(200);
+        assertThat(codes(narrowed.body())).containsExactly("DASHBOARD_READ");
+        assertThat(codes(send("GET", "/api/roles/" + roleId, null, adminToken).body())).containsExactly("DASHBOARD_READ");
+        assertThat(send("GET", "/api/reports/employees", null, employeeToken).status()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("a login returns custom-role permissions alongside the base role's, and stops once unassigned")
+    void loginPermissionsIncludeCustomRoles() {
+        String adminToken = onboardCompanyAndGetAdminToken("PERMCO", "permco.example");
+
+        Resp employee = send("POST", "/api/employees", """
+                {"userId": "PERMCO-EMP1", "employeeCode": "PC-EMP-1", "employeeName": "Plain Employee",
+                 "status": "PERMANENT", "role": "EMPLOYEE",
+                 "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0}""",
+                adminToken);
+        String password = employee.body().get("temporaryPassword").asString();
+
+        Resp before = loginResponse("PERMCO-EMP1", password);
+        assertThat(codes(before.body(), "permissions")).contains("LEAVE_APPLY").doesNotContain("REPORT_READ");
+        // The base role is still reported as-is: a custom role adds permissions, never a different role.
+        assertThat(before.body().get("role").asString()).isEqualTo("EMPLOYEE");
+
+        long roleId = send("POST", "/api/roles", "{\"name\": \"Report Viewer\"}", adminToken).body().get("id").asLong();
+        setPermissions(roleId, adminToken, "REPORT_READ", "DASHBOARD_READ");
+        send("POST", "/api/roles/" + roleId + "/employees/PERMCO-EMP1", null, adminToken);
+
+        assertThat(codes(loginResponse("PERMCO-EMP1", password).body(), "permissions"))
+                .contains("LEAVE_APPLY", "REPORT_READ", "DASHBOARD_READ");
+
+        send("DELETE", "/api/roles/" + roleId + "/employees/PERMCO-EMP1", null, adminToken);
+        assertThat(codes(loginResponse("PERMCO-EMP1", password).body(), "permissions"))
+                .contains("LEAVE_APPLY").doesNotContain("REPORT_READ", "DASHBOARD_READ");
+
+        assertThat(codes(loginResponse("owner1", PLATFORM_PASSWORD).body(), "permissions"))
+                .contains("COMPANY_CREATE", "AUDIT_READ").doesNotContain("LEAVE_APPLY");
+    }
+
+    @Test
     @DisplayName("a custom role can never be granted a platform-only permission")
     void platformOnlyPermissionIsRejected() {
         String adminToken = onboardCompanyAndGetAdminToken("GUARDCO", "guardco.example");
@@ -182,6 +254,30 @@ class CustomRoleHttpTest {
     // ---- helpers -----------------------------------------------------------
 
     private record Resp(int status, JsonNode body) {
+    }
+
+    private Resp setPermissions(long roleId, String token, String... codes) {
+        String json = Arrays.stream(codes)
+                .map(code -> "\"" + code + "\"")
+                .collect(Collectors.joining(", ", "{\"permissionCodes\": [", "]}"));
+        return send("PUT", "/api/roles/" + roleId + "/permissions", json, token);
+    }
+
+    private List<String> codes(JsonNode role) {
+        return codes(role, "permissionCodes");
+    }
+
+    private List<String> codes(JsonNode node, String field) {
+        List<String> codes = new ArrayList<>();
+        node.get(field).forEach(code -> codes.add(code.asString()));
+        return codes;
+    }
+
+    private Resp loginResponse(String username, String password) {
+        Resp response = send("POST", "/api/auth/login",
+                "{\"username\": \"" + username + "\", \"password\": \"" + password + "\"}", null);
+        assertThat(response.status()).isEqualTo(200);
+        return response;
     }
 
     private String onboardCompanyAndGetAdminToken(String companyCode, String domain) {

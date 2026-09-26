@@ -17,10 +17,16 @@ raw punches + roster  ->  one day  ->  a month  ->  reviewed & corrected  ->  lo
 
 Two ideas carry the whole design:
 
-1. **The roster is the source of expectation.** A day the employee was not
-   scheduled on is not an attendance day at all - not present, not absent,
-   simply not a day. This is why *absent* can only ever mean "expected to work
-   and did not".
+1. **The roster is the source of expectation.** A day the employee was
+   scheduled on is interpreted through that shift - its window, grace, break
+   and length - and this is why *absent* can mean "expected to work and did
+   not" rather than merely "no punches".
+
+   A day with **no roster row at all** is still an attendance day, but a blank
+   one: `shift_code` null, no punch times, no hours, status `ABSENT`. A missing
+   roster row is an HR oversight, not a statement that nothing was expected -
+   and treating it as one produced a blank month HR could not review and a
+   payroll that saw zero working days and paid it in full. See section 3.1.
 2. **Attendance is a stored artifact, not a live view.** It is generated once,
    reviewed by a human, corrected where the device got it wrong, then frozen.
    Payroll reads the frozen record, never the raw punches.
@@ -270,6 +276,67 @@ consequence in section 4: those hours count towards total and overtime hours,
 while the day itself does **not** add to `presentDays`, because it was never an
 expected working day. The employee is paid overtime for it, not a day's wage.
 
+### 3.1 A day with no shift
+
+Everything above needs a shift: the window, the grace period, the break, the
+paid length a day is scored against. A day with no roster row has none of them,
+so nothing can be *calculated* for it - but it still becomes a row:
+
+| Field | Value |
+|---|---|
+| `shift_code` | null |
+| `first_in` / `last_out` | the day's punches if any, otherwise null |
+| `working_hours`, `break_hours`, `overtime_hours` | 0 |
+| `late_minutes`, `early_exit_minutes` | 0 |
+| `invalid_punch` | false - the device worked, the roster is what is missing |
+| `week_off` | false - nothing said this day was off |
+| `holiday` | from the company calendar, same as any other day |
+| `status` | `ON_LEAVE` if on approved leave, else `HOLIDAY` if a mandatory holiday, else `ABSENT` |
+
+Three things follow, and each is deliberate:
+
+- **It is a working day, so it is loss of pay.** That is the point. Before this
+  existed an employee nobody rostered generated no rows at all: HR opened the
+  month and saw a blank sheet with nothing to review, and payroll - which
+  derives LOP from `workingDays - presentDays - paidLeave` - saw zero working
+  days and paid the month in full. The gap now shows up in the figure HR
+  reviews instead of being invisible in it.
+- **A holiday and an approved leave still read as themselves.** Neither is a
+  working day, so invariant 4 holds through this path too: a missing roster row
+  can never turn a holiday into LOP.
+- **The employment window bounds it.** Nothing is written before `joiningDate`
+  or after `relievingDate`. Nobody is absent before they were hired.
+
+**Punches are kept, not scored.** Someone who badged in on a day HR forgot to
+schedule keeps their `first_in` and `last_out` on the row, and the day is still
+`ABSENT`: with no shift there is no threshold that could call it present, and
+inventing hours from a missing roster row would be a guess that changes pay.
+The times are the evidence that says *the roster* is what needs fixing.
+
+**Turning it off.** `includeUnrostered: false` on the generate request restores
+the older behaviour, where an unrostered day is not an attendance day at all.
+That is the right setting for a company that rosters deliberately sparsely -
+casual or contract staff scheduled only on the days they actually work - where
+an unrostered day genuinely means "not a working day". Note that such staff are
+usually paid per attended day anyway (`lopApplies() == false`), for whom the
+filled days add visibility without changing pay.
+
+**Correcting one.** The row is correctable like any other, with one restriction:
+because the recompute path needs a shift, an unrostered day can only be fixed by
+forcing a status (`{"status": "PRESENT", "remarks": "...", "updatedBy": "..."}`).
+Supplying punch times alone is refused with a message that says to assign the
+shift and regenerate. Supplied times are still stored alongside a forced status.
+
+The real fix is almost always the roster, not the day: assign the shift and
+regenerate, and the whole month recomputes properly.
+
+**The preview does not do this.** `GET /{userId}/monthly` on a month nobody has
+generated yet returns a preview built from the roster (section 5), and an
+unrostered month previews as empty rather than as thirty absences. That is
+deliberate: a preview persists nothing and is often read for a month that has
+not happened yet, where presenting a wall of `ABSENT` would be alarming and
+wrong. Generation is the step that decides a day exists.
+
 ---
 
 ## 4. Stage three: rolling up a month
@@ -280,9 +347,10 @@ expected working day. The employee is paid overtime for it, not a day's wage.
 workingDays = rostered days that are neither a weekly off nor a mandatory holiday
 ```
 
-Optional holidays stay working days. Days with no roster row are not counted at
-all, so skipping a holiday during bulk assignment removes it from the month
-entirely.
+Optional holidays stay working days. Days with no roster row are counted, as
+blank `ABSENT` days (section 3.1) - unless the run passed
+`includeUnrostered: false`, in which case they are not counted at all and
+skipping a holiday during bulk assignment removes it from the month entirely.
 
 ```
 presentDays  = sum of day values, counting only days in workingDays
@@ -340,8 +408,11 @@ months later. A UI badge is `locked ? "LOCKED" : recordStatus`.
 
 ```
 POST /api/attendance/generate
-{ "month": "2026-06", "userIds": ["SE10012"], "overwriteManual": false }
+{ "month": "2026-06", "userIds": ["SE10012"], "overwriteManual": false,
+  "includeUnrostered": true }
 ```
+
+`includeUnrostered` defaults to `true` - see section 3.1.
 
 `generatedBy` is not a request field to set - it is always the authenticated
 caller (from the bearer token), never client-supplied. See [SECURITY.md](SECURITY.md)
@@ -359,6 +430,15 @@ up. Two rules govern a rerun:
 | `GENERATED` | Recomputes it from punches |
 | `MANUAL` | **Preserves it**, counted in `manualPreserved` |
 | `locked` | **Skips it**, counted in `lockedSkipped` |
+
+Both rules apply to unrostered days too: a blank `ABSENT` day someone corrected
+to `PRESENT` survives the next run exactly like any other `MANUAL` row.
+
+The response reports `unrosteredDaysGenerated` - the subset of `daysGenerated`
+that had no shift behind them - separately from the total, and
+`employeesWithoutRoster` still lists everyone with no roster at all for the
+period. A non-zero count on either means the roster, not the attendance, is
+what needs fixing.
 
 `overwriteManual: true` discards corrections deliberately. There is no way to do
 it by accident.
@@ -570,6 +650,9 @@ until someone read the numbers. Generate a month and look at it before paying it
 | Night day reads morning punches | The shift does not actually cross midnight | `GET /api/shifts` — is `crossesMidnight` true? |
 | Correction vanished | Regenerated with `overwriteManual: true` | `recordStatus` will read `GENERATED` |
 | Payroll returns 400 | Attendance not generated for the period | `POST /api/attendance/generate` |
+| One category is half-days everywhere | A `LATE_ARRIVAL` rule with too small a grace | `GET /api/attendance-policy/effective?userId=&date=` |
+| A policy rule seems to do nothing | Its scope reference matches no employee, or a more specific rule is disabled | Same endpoint - it names the rule that won and the ones it beat |
+| LOP moved with no absence | A month-scoped penalty | `policy_lop_days` on the summary, and `attendance_policy_outcome` |
 | Correction returns 400 "locked" | Payroll already ran | Unlock, correct, regenerate |
 
 Start with `GET /api/attendance/{userId}/records?month=yyyy-MM`. It shows every
@@ -578,7 +661,204 @@ which is almost always enough to see what happened.
 
 ---
 
-## 11. Invariants
+## 11. The attendance policy engine
+
+Sections 2 to 4 describe one policy for everybody: grace on the shift, the
+day/half-day cutoffs on `attendance_rule`, and late minutes recorded and then
+ignored. Most companies do not work that way. Workers and managers are held to
+different standards, and the second company to use this system asks for rules
+the first has never needed.
+
+So policy is configurable per **population**, on top of everything above.
+
+### The model in one line
+
+```
+a typed rule + who it applies to + when it took effect  ->  resolved per employee per day
+```
+
+Two ideas carry it, and both are borrowed from designs already in this repo:
+
+1. **The catalog is closed.** A rule is an enum constant plus a small typed,
+   validated parameter set - never a formula in a database column. Attendance
+   policy decides salary; an eval-able string cannot be tested, cannot be
+   migrated, and cannot be explained to an employee disputing a deduction.
+   Adding a rule *type* is a code change. Adding a *rule* is a form.
+2. **A version is never edited, only succeeded.** Rules are append-only and
+   resolved **as of the attendance date**, the same way `salary_revision`
+   records how a wage got where it is. An August day is priced by the rule that
+   was in force in August, whatever HR does in September.
+
+### The rules
+
+| Type | Scope | Decides |
+|---|---|---|
+| `MISSING_PUNCH` | day | A lone punch that looks like an entry becomes a half day instead of `INVALID_PUNCH` |
+| `SHORT_HOURS` | day | The full/half-day cutoffs, as percentages **or absolute minutes**, per population |
+| `LATE_ARRIVAL` | day | Grace, and what a late arrival costs |
+| `DAY_OFF_WORK` | day | Whether working a weekly off earns overtime or a comp-off credit |
+| `OVERTIME` | day | Who earns overtime, after how long, rounded to what block |
+| `EARLY_EXIT_BUDGET` | **month** | A monthly budget of early-exit minutes, then a penalty per occurrence |
+| `LATE_MARK_ACCUMULATION` | **month** | Nth late mark in a month costs a fraction of a day |
+
+Five effects exist and no others: override the status, adjust overtime, credit
+comp-off, add LOP days, or nothing.
+
+### Who a rule applies to
+
+```
+EMPLOYEE > DESIGNATION > CATEGORY > DEPARTMENT > EMPLOYMENT TYPE > COMPANY > GLOBAL
+```
+
+**Most specific wins outright.** Scopes are never merged: a `CATEGORY` rule
+replaces the `COMPANY` rule whole rather than inheriting its unset fields,
+because a policy assembled from three rows is one nobody actually wrote.
+
+A rule with `enabled = false` is an **answer, not an absence**. "Managers are
+not tracked for lateness" is a disabled `LATE_ARRIVAL` at `CATEGORY=MANAGER`:
+resolution picks it, finds it disabled, and applies nothing - the company rule
+does *not* then take over. That is the only opt-out, deliberately.
+
+### Day scope and month scope are not the same thing
+
+This is the crux, and getting it wrong corrupts salaries quietly.
+
+**Day rules** are pure functions of one day. They run inside
+`AttendanceCalculationService.calculateDay` - the same method a hand-corrected
+day goes through, so a correction cannot obey different rules from a device
+reading. Regenerating one day alone gives the same answer as regenerating the
+month.
+
+**Month rules are stateful and order-dependent.** A budget spent day by day
+cannot be evaluated during generation: regenerating day 12 alone would spend
+minutes the rest of the month has already spent, and the same month would score
+differently depending on which days had been touched since. So they are not
+evaluated during generation at all. They are a **replay** over the month's
+stored days in date order, from a zero accumulator, at summary-rebuild time -
+recomputed from scratch every time, never incremented.
+
+That is also why a `MANUAL` or locked day **counts toward a budget** while being
+untouchable by day rules. A day HR corrected with an eighteen-minute early exit
+is still an eighteen-minute early exit. It is safe because a month rule's only
+output is a summary figure - it cannot write to a day even in principle.
+
+### Where the numbers land
+
+`emp_monthly_attendance_summary` gains `policy_lop_days` beside `lop_days`.
+`lop_days` keeps its meaning - the total payroll reads - and the new column says
+how much of it somebody chose. It is clamped: policy can never push LOP past the
+days the employee was expected to work.
+
+Every applied rule leaves a trace. `attendance_policy_application` holds one row
+per day per rule that changed something; `attendance_policy_outcome` holds the
+month-level ones. Both carry the rule, its version, its scope, the before and
+after, and a rendered sentence:
+
+```
+HALF_DAY: in 09:16, 1 min beyond a 15 min grace on a 09:00 shift,
+rule LATE_ARRIVAL v1 scoped CATEGORY=STAFF
+```
+
+The sentence is stored, not derived on read - the same reason `payroll`
+snapshots `rule_pf_percent` instead of joining to `salary_rule`. Six months
+later the rule has been superseded four times and the answer still has to work.
+
+### Worked example: three late minutes, two different bills
+
+`SE10012`, category `STAFF`, September 2026, GENERAL 09:00-18:00.
+
+```
+POST /api/attendance-policy/rules
+{"scope":"CATEGORY","scopeRef":"STAFF","ruleType":"LATE_ARRIVAL",
+ "effectiveFrom":"2026-09-01","enabled":true,
+ "params":{"graceMinutes":15,"penaltyStatus":"HALF_DAY"}}
+```
+
+| Date | In | Out | Late | Status |
+|---|---|---|---|---|
+| 1 Sep | 09:14 | 18:05 | 0 | `PRESENT` |
+| 2 Sep | 09:15 | 18:05 | **0** | `PRESENT` |
+| 3 Sep | 09:16 | 18:30 | **1** | **`HALF_DAY`** |
+| 4 Sep | 09:22 | 18:30 | 7 | `HALF_DAY` |
+
+2 September is the boundary. `lateMinutes = max(0, firstIn - (start + grace))`,
+so arriving at exactly 09:15 on a 15-minute grace is **not** late - the grace is
+inclusive, matching the formula section 3 already uses rather than
+reinterpreting it. One minute later costs half a day.
+
+```
+workingDays 4 | presentDays 3.0 | lopDays 1.0 | policyLopDays 0.0
+```
+
+Now add the monthly accumulation rule:
+
+```
+{"ruleType":"LATE_MARK_ACCUMULATION",
+ "params":{"minimumLateMinutes":1,"occurrencesPerPenalty":3,"penaltyLopDays":0.5}}
+```
+
+Days 1 and 2 are late against the *shift's* own zero grace, so they are marks.
+Days 3 and 4 were **already docked** by `LATE_ARRIVAL` and are excluded - nobody
+is charged twice for one late arrival. Two marks is short of three, so:
+
+```
+policyLopDays 0.0 | lopDays 1.0     (unchanged)
+```
+
+Without that exclusion the same four days would have cost 1.5 days instead of
+1.0, and the extra half day would have been for lateness already paid for.
+
+### The single most damaging misconfiguration
+
+Section 2's is `overtime_window_minutes = 0`. This engine's is worse, for one
+specific reason:
+
+> **`LATE_ARRIVAL` with `penaltyStatus: ABSENT` and a small grace, at `COMPANY`
+> scope.** A five-minute grace and an absent penalty turns everybody who arrives
+> at 09:06 into a full unpaid day - on a day they worked in full. One bad
+> morning of traffic is a company-wide day of loss of pay.
+>
+> It is worse than the overtime-window bug because that one produced
+> `INVALID_PUNCH`, which is visibly wrong and shows up as `invalidPunches` in
+> the summary. This produces `ABSENT`, which is exactly what a genuinely absent
+> day looks like. Nothing in the month's figures says anything went wrong. The
+> only signal is that `presentDays` fell - and that is the number people expect
+> a policy to move.
+
+`grace_minutes` on the shift does **not** protect you: once a `LATE_ARRIVAL`
+rule resolves, it measures lateness against its own grace, not the shift's.
+
+### Check it before you save it
+
+```
+POST /api/attendance-policy/preview
+{"month":"2026-09","rules":[ ...the rules you are about to save... ]}
+```
+
+Re-evaluates a real past month under a proposed rule set and returns the diff -
+days changed with reasons, LOP delta and overtime delta per employee, and a
+company-wide total - **without writing a single row**. It also warns about the
+`ABSENT` penalty above, about a rule set that changes nothing (usually a typo'd
+scope reference), and about a LOP delta large enough to want a second opinion.
+
+Section 9's lesson was that both failures were configuration, not code, and both
+were invisible until someone read the numbers. This is how to read them before
+they are numbers anybody has been paid.
+
+### Nothing is on by default
+
+`attendance_policy_rule` ships **empty**, and the `GLOBAL` scope is seeded with
+nothing - deliberately unlike `attendance_rule`, which seeds the values every
+company was already using. A company that configures no rules produces
+byte-identical attendance and payroll to what it produced before this engine
+existed: resolution returns empty, the evaluators short-circuit before touching
+the day, no trace rows are written, and `policy_lop_days` stays `0.0`. That is
+covered by `AttendancePolicyEngineTest.noRulesConfiguredChangesNothing`, and by
+every other test in the suite, all of which are unconfigured companies.
+
+---
+
+## 12. Invariants
 
 Things the system guarantees, each covered by a test:
 
@@ -586,7 +866,9 @@ Things the system guarantees, each covered by a test:
 2. A punch inside a shift's contractual span is **never discarded** - the
    complementary half, and the one whose absence made a night shift's exit
    vanish while invariant 1 still held.
-3. A day the employee was not rostered on is not an attendance day.
+3. A day the employee was not rostered on is a blank `ABSENT` day, never a
+   missing one - and never outside their joining/relieving window. With
+   `includeUnrostered: false` it is not an attendance day at all.
 4. A weekly off or mandatory holiday can never become loss of pay.
 5. A lone punch is `INVALID_PUNCH`, never `ABSENT`.
 6. A regeneration preserves `MANUAL` rows unless explicitly told otherwise.
@@ -594,10 +876,19 @@ Things the system guarantees, each covered by a test:
 8. A read never writes.
 9. Payroll cannot run against attendance that was never generated.
 10. A night shift belongs to the date it started on, across month and year ends.
-11. Hand-corrected days obey identical calculation rules to device-read days.
+11. Hand-corrected days obey identical calculation rules to device-read days -
+    including attendance policy.
 12. Regenerating an unchanged roster produces identical rows.
+13. A company with no policy rules produces byte-identical output to what it
+    produced before the policy engine existed.
+14. A policy rule may only ever lower a day's value, except `MISSING_PUNCH`,
+    which exists to rescue a day the device broke.
+15. A policy rule is resolved by the attendance date, never by today - so a rule
+    written in September cannot re-price August.
+16. Loss of pay can never exceed the days the employee was expected to work.
+17. A day already docked for lateness is not also counted as a late mark.
 
-## 12. Not covered
+## 13. Not covered
 
 - **No rest-gap *enforcement*** between consecutive shift assignments - an
   unworkable pair is logged and audited (`SHIFT_SCHEDULE_REST_GAP`), never

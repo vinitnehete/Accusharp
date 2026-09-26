@@ -679,10 +679,9 @@ curl "http://localhost:8080/api/reports/attendance/overtime?month=2026-09" -H "A
 
 Reports only aggregate what attendance and payroll already recorded - they never
 recalculate, so a report can never disagree with a payslip. Reports require
-`HR`, `ADMIN` or `SUPERVISOR` (never plain `EMPLOYEE`), and - unlike almost
-everything else in this walkthrough - stay company-wide even for a
-`SUPERVISOR` token, deliberately: these are aggregate reports, not individual
-records.
+`HR`, `ADMIN` or `SUPERVISOR` (never plain `EMPLOYEE`). `HR` and `ADMIN` see the
+whole company; a `SUPERVISOR` token sees only its own team - themselves and
+their direct reports - in every row and every total.
 
 Attendance reports take `month=yyyy-MM`; payroll reports take separate `month`
 and `year` numbers.

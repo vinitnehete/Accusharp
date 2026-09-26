@@ -41,7 +41,12 @@ public class PermissionRegistry {
     }
 
     public boolean hasPermission(RoleScope scope, String roleName, String permissionCode) {
-        return grantsByKey.getOrDefault(key(scope, roleName), Set.of()).contains(permissionCode);
+        return grantsFor(scope, roleName).contains(permissionCode);
+    }
+
+    /** Every permission code the role holds on its own, before any custom role. */
+    public Set<String> grantsFor(RoleScope scope, String roleName) {
+        return grantsByKey.getOrDefault(key(scope, roleName), Set.of());
     }
 
     private String key(RoleScope scope, String roleName) {

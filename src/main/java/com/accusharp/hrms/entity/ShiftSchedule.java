@@ -48,4 +48,19 @@ public class ShiftSchedule {
 
     @Column(name = "assigned_by", length = 50)
     private String assignedBy;
+
+    /**
+     * True on a day nobody assigned - derived at read time from the employee's
+     * fixed shift and configured weekly off by {@code DefaultRosterResolver},
+     * and never written to this table.
+     *
+     * <p>Transient on purpose. The whole point of deriving these days is that
+     * they have no stored existence: they cannot run out, cannot drift from the
+     * employee's current week-off, and cost nothing per employee per day. The
+     * flag exists so a caller that needs to tell them apart - the planner grid
+     * shades them, {@code ShiftService#delete} must not count them as in-use -
+     * can do so without inferring it from a null id.
+     */
+    @Transient
+    private boolean defaulted;
 }

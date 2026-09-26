@@ -45,7 +45,7 @@ public class ReportService {
 
     // ---- attendance --------------------------------------------------------
 
-    /** Monthly attendance across the company, resynced from the stored days. */
+    /** Monthly attendance for every employee the caller may see, resynced from the stored days. */
     @Transactional
     public List<ReportDtos.MonthlyAttendanceRow> monthlyAttendanceReport(YearMonth month) {
         attendanceService.syncSummaries(month);
@@ -91,6 +91,34 @@ public class ReportService {
                 summary -> summary.getOvertimeHours() + " overtime hour(s)");
     }
 
+    /**
+     * Who worked their weekly off, and who punched in on it with no shift
+     * assigned. Read from figures snapshotted onto each stored day at
+     * generation, so changing someone's weekly off later cannot rewrite a past
+     * month's report.
+     */
+    @Transactional
+    public List<ReportDtos.ExceptionRow> weekOffWorkedReport(YearMonth month) {
+        return exceptionReport(month,
+                summary -> summary.getWeekOffWorkedDays() > 0 || summary.getWeekOffUnrosteredPunchDays() > 0,
+                ReportService::describeWeekOffWork);
+    }
+
+    private static String describeWeekOffWork(MonthlyAttendanceSummary summary) {
+        StringBuilder detail = new StringBuilder();
+        if (summary.getWeekOffWorkedDays() > 0) {
+            detail.append(summary.getWeekOffWorkedDays()).append(" day(s) worked on a weekly off");
+        }
+        if (summary.getWeekOffUnrosteredPunchDays() > 0) {
+            if (!detail.isEmpty()) {
+                detail.append("; ");
+            }
+            detail.append(summary.getWeekOffUnrosteredPunchDays())
+                    .append(" day(s) punched on a weekly off with no shift assigned");
+        }
+        return detail.toString();
+    }
+
     // ---- leave -------------------------------------------------------------
 
     @Transactional(readOnly = true)
@@ -125,7 +153,7 @@ public class ReportService {
     public List<ReportDtos.PayrollRow> payrollReport(int month, int year) {
         Map<String, Employee> employees = activeEmployeesByUserId();
         Map<Long, String> departmentNames = departmentNamesFor(employees.values());
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
                 .map(payroll -> new ReportDtos.PayrollRow(
                         payroll.getEmployeeId(),
@@ -152,7 +180,7 @@ public class ReportService {
 
     @Transactional(readOnly = true)
     public List<ReportDtos.StatutoryRow> pfReport(int month, int year) {
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> payroll.getPfDeduction() != null && payroll.getPfDeduction().signum() > 0)
                 .map(payroll -> new ReportDtos.StatutoryRow(payroll.getEmployeeId(), payroll.getEmployeeName(),
                         payroll.getEarnPf(), payroll.getPfDeduction()))
@@ -161,7 +189,7 @@ public class ReportService {
 
     @Transactional(readOnly = true)
     public List<ReportDtos.StatutoryRow> professionalTaxReport(int month, int year) {
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> payroll.getProfessionalTax() != null
                         && payroll.getProfessionalTax().signum() > 0)
                 .map(payroll -> new ReportDtos.StatutoryRow(payroll.getEmployeeId(), payroll.getEmployeeName(),
@@ -171,7 +199,7 @@ public class ReportService {
 
     @Transactional(readOnly = true)
     public List<ReportDtos.StatutoryRow> esicReport(int month, int year) {
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> payroll.getEsic() != null && payroll.getEsic().signum() > 0)
                 .map(payroll -> new ReportDtos.StatutoryRow(payroll.getEmployeeId(), payroll.getEmployeeName(),
                         payroll.getEarnGrossSalary(), payroll.getEsic()))
@@ -183,7 +211,7 @@ public class ReportService {
     private List<ReportDtos.PayrollCostGroup> groupPayroll(int month, int year,
                                                            Function<Payroll, String> classifier) {
         Map<String, List<Payroll>> grouped = new LinkedHashMap<>();
-        payrollService.getPeriod(month, year)
+        payrollService.getPeriodForCaller(month, year)
                 .forEach(payroll -> grouped.computeIfAbsent(classifier.apply(payroll),
                         key -> new java.util.ArrayList<>()).add(payroll));
 
@@ -218,14 +246,14 @@ public class ReportService {
 
     private Map<String, Employee> activeEmployeesByUserId() {
         Map<String, Employee> byUserId = new LinkedHashMap<>();
-        employeeService.getActiveEntities().forEach(employee -> byUserId.put(employee.getUserId(), employee));
+        employeeService.getActiveVisibleEntities().forEach(employee -> byUserId.put(employee.getUserId(), employee));
         return byUserId;
     }
 
     /**
      * One query for every distinct department touched by this batch of
      * employees, instead of one lazy load per row - {@code
-     * employeeService.getActiveEntities()} doesn't {@code JOIN FETCH}
+     * employeeService.getActiveVisibleEntities()} doesn't {@code JOIN FETCH}
      * department, so calling {@code employee.getDepartment().getDepartmentName()}
      * directly per row triggered an extra SELECT per distinct department in
      * the result (flagged in the audit's performance review). Calling {@code

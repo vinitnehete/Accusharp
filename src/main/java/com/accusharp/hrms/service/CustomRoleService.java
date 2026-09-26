@@ -105,14 +105,29 @@ public class CustomRoleService {
                         .orElseThrow(() -> new BusinessRuleException("Unknown permission code " + code)))
                 .toList();
 
-        customRolePermissionRepository.deleteByCustomRoleId(id);
+        // Only what changed is written. Deleting every grant and inserting the new
+        // list broke any save that kept a permission the role already had (ticking
+        // every box, or saving an unchanged list): Hibernate inserts an IDENTITY row
+        // as soon as it is saved but holds deletes until flush, so the re-inserted
+        // grant hit uk_custom_role_permission while its old row still existed.
+        List<CustomRolePermission> current = customRolePermissionRepository.findByCustomRoleId(id);
+        Set<String> currentCodes = current.stream()
+                .map(grant -> grant.getPermission().getCode())
+                .collect(Collectors.toSet());
+        customRolePermissionRepository.deleteAll(current.stream()
+                .filter(grant -> !codes.contains(grant.getPermission().getCode()))
+                .toList());
         customRolePermissionRepository.saveAll(permissions.stream()
+                .filter(permission -> !currentCodes.contains(permission.getCode()))
                 .map(permission -> CustomRolePermission.builder().customRole(role).permission(permission).build())
                 .toList());
 
         auditService.record("CUSTOM_ROLE_SET_PERMISSIONS", "CustomRole", role.getName(),
                 AuditOutcome.SUCCESS, "permissions=" + codes);
-        return toResponse(role);
+        // Built from the saved list rather than role.getGrantedPermissions(): the
+        // removals above are not flushed yet, so lazily loading that collection now
+        // could still return the grants just taken away.
+        return toResponse(role, permissions.stream().map(Permission::getCode).collect(Collectors.toSet()));
     }
 
     @Transactional
@@ -170,9 +185,12 @@ public class CustomRoleService {
     }
 
     private CustomRoleResponse toResponse(CustomRole role) {
-        Set<String> codes = role.getGrantedPermissions().stream()
+        return toResponse(role, role.getGrantedPermissions().stream()
                 .map(grant -> grant.getPermission().getCode())
-                .collect(Collectors.toSet());
+                .collect(Collectors.toSet()));
+    }
+
+    private CustomRoleResponse toResponse(CustomRole role, Set<String> codes) {
         return new CustomRoleResponse(role.getId(), role.getName(), role.getDescription(), codes);
     }
 }

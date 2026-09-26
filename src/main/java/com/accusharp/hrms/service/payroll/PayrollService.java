@@ -7,7 +7,9 @@ import com.accusharp.hrms.entity.MonthlyAttendanceSummary;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.entity.SalaryRevision;
 import com.accusharp.hrms.entity.SalaryRule;
+import com.accusharp.hrms.entity.WorkPolicy;
 import com.accusharp.hrms.enums.AuditOutcome;
+import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
@@ -20,6 +22,8 @@ import com.accusharp.hrms.service.attendance.AttendanceService;
 import com.accusharp.hrms.service.calculation.DeductionCalculationService;
 import com.accusharp.hrms.service.calculation.LopCalculationService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import com.accusharp.hrms.service.leave.LeaveAccrualService;
+import com.accusharp.hrms.service.policy.WorkPolicyResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -36,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -74,7 +79,10 @@ public class PayrollService {
     private final SalaryCalculationService salaryCalculationService;
     private final DeductionCalculationService deductionCalculationService;
     private final LopCalculationService lopCalculationService;
+    private final PayBehaviourResolver payBehaviourResolver;
     private final AuditService auditService;
+    private final LeaveAccrualService leaveAccrualService;
+    private final WorkPolicyResolver workPolicyResolver;
 
     /**
      * Generates the period once; a second call is a conflict.
@@ -193,39 +201,26 @@ public class PayrollService {
     }
 
     /**
-     * Scoped to the caller's own company - {@code Payroll} has no
-     * {@code company_id} column of its own (only a denormalized
-     * {@code companyName} string), so this filters by the caller's
-     * company's employee {@code userId}s instead, via {@link
-     * EmployeeService#getAllEntities()} rather than {@link
-     * EmployeeService#getActiveEntities()}: payroll history for a
-     * since-deactivated employee must stay visible to their own company's
-     * reports.
-     */
-    @Transactional(readOnly = true)
-    public List<Payroll> getPeriod(int month, int year) {
-        List<Payroll> period = payrollRepository.findAllByMonthAndYearAndStatus(month, year, PayrollStatus.GENERATED);
-        Set<String> companyUserIds = employeeService.getAllEntities().stream()
-                .map(Employee::getUserId)
-                .collect(Collectors.toSet());
-        return period.stream().filter(payroll -> companyUserIds.contains(payroll.getEmployeeId())).toList();
-    }
-
-    /**
-     * Same company scoping as {@link #getPeriod}, plus self-service
-     * restriction on top - for raw individual-record list/export endpoints
-     * ({@code PayrollController.getPeriod}, {@code SalarySlipService}'s
-     * period methods), not for {@code ReportService}'s aggregate reports,
-     * which deliberately stay company-wide for SUPERVISOR/HR/ADMIN (see
-     * SECURITY.md's self-service scoping note for why the two are treated
-     * differently) - so {@link #getPeriod} itself is intentionally left
-     * unrestricted and every {@code ReportService} caller keeps using it
-     * directly.
+     * A period's generated payroll, for exactly the employees the caller may
+     * see: HR/ADMIN the whole company, a SUPERVISOR their own team, an EMPLOYEE
+     * themselves (see {@link EmployeeService#getVisibleEntities()}).
+     *
+     * <p>{@code Payroll} has no {@code company_id} column of its own (only a
+     * denormalized {@code companyName} string), so it is filtered by those
+     * employees' {@code userId}s - deactivated employees included, since a
+     * paid period must stay auditable after someone leaves.
+     *
+     * <p>The only way to read a period. Reports and the dashboard used to read
+     * an unrestricted company-wide version, which handed any SUPERVISOR the
+     * whole company's payroll through the API.
      */
     @Transactional(readOnly = true)
     public List<Payroll> getPeriodForCaller(int month, int year) {
-        return getPeriod(month, year).stream()
-                .filter(payroll -> employeeService.isSelfOrManages(payroll.getEmployeeId()))
+        Set<String> visibleUserIds = employeeService.getVisibleEntities().stream()
+                .map(Employee::getUserId)
+                .collect(Collectors.toSet());
+        return payrollRepository.findAllByMonthAndYearAndStatus(month, year, PayrollStatus.GENERATED).stream()
+                .filter(payroll -> visibleUserIds.contains(payroll.getEmployeeId()))
                 .toList();
     }
 
@@ -318,11 +313,21 @@ public class PayrollService {
         SalaryRule rule = salaryRuleService.getActiveRuleForCompany(employee.getCompany());
         YearMonth period = YearMonth.of(request.getYear(), request.getMonth());
 
+        EmployedWindow window = employedWindow(employee, period);
+
+        // What process this employee actually follows. Nothing configured is the
+        // state every company starts in: tracked, and paid from that attendance.
+        Optional<WorkPolicy> workPolicy = workPolicyResolver.policyFor(employee, period.atEndOfMonth());
+        boolean fixedMonthly = workPolicy.map(WorkPolicy::isFixedMonthly).orElse(false);
+
         // Pay from the attendance HR generated and reviewed - never from a
         // fresh recompute, which would discard their corrections. Refuses
-        // outright if the period was never generated.
-        MonthlyAttendanceSummary attendance =
-                attendanceService.getGeneratedSummary(employee, period);
+        // outright if the period was never generated - unless this population is
+        // paid a fixed monthly salary, where attendance is neither consulted nor
+        // required and the month reads as employed throughout.
+        MonthlyAttendanceSummary attendance = fixedMonthly
+                ? employedMonth(employee, period, window)
+                : attendanceService.getGeneratedSummary(employee, period);
 
         // Locked immediately after reading it, not after the calculation below -
         // otherwise a correction landing in that window commits successfully
@@ -333,7 +338,15 @@ public class PayrollService {
         // this whole method's transaction rolls back and takes this lock write
         // with it - a failed generation never leaves a month locked with no
         // payroll to show for it.
-        attendanceService.lockMonth(employee, period);
+        if (!fixedMonthly) {
+            attendanceService.lockMonth(employee, period);
+        }
+
+        // Earned leave is credited here, from the same locked attendance this
+        // payroll pays from - the one moment those figures cannot move again.
+        // Idempotent per month, so a regeneration adjusts the credit rather than
+        // adding a second one; a company with no EL rule posts nothing.
+        leaveAccrualService.accrueMonth(employee, period, attendance);
 
         Payroll payroll = new Payroll();
         payroll.setEmployeeId(employee.getUserId());
@@ -342,34 +355,64 @@ public class PayrollService {
         payroll.setRevision(revision);
         payroll.setStatus(PayrollStatus.GENERATED);
 
+        // How this employee is paid, from their employment type if they have one
+        // and otherwise from the legacy EmployeeStatus semantics - see
+        // PayBehaviourResolver. Every `dayWise` branch below used to read
+        // `employee.getStatus().isPaidPerAttendedDay()` directly; each is now a
+        // named field, so a company can change one without changing the others.
+        PayBehaviour behaviour = payBehaviourResolver.resolve(employee, rule);
+        boolean dayWise = behaviour.isPaidPerAttendedDay();
+
         snapshotEmployee(payroll, employee);
         snapshotRule(payroll, rule);
-
-        boolean dayWise = employee.getStatus().isPaidPerAttendedDay();
+        snapshotBehaviour(payroll, behaviour);
+        payroll.setPayrollMode(fixedMonthly ? PayrollMode.FIXED_MONTHLY : PayrollMode.ATTENDANCE_BASED);
+        workPolicy.ifPresent(policy -> {
+            payroll.setWorkPolicyScope(policy.getScope());
+            payroll.setWorkPolicyVersion(policy.getVersion());
+        });
 
         // Base of the proration: the denominator every earning is divided by.
-        // DAY_WISE is paid per attended day against a fixed payable-day base;
-        // everyone else is salaried against the full calendar month - week-offs
+        // A per-attended-day type is paid against a fixed payable-day base;
+        // a calendar-day type is salaried against the full month - week-offs
         // included, reduced only by whatever LOP the generated attendance found.
-        BigDecimal totalDays = dayWise
-                ? BigDecimal.valueOf(rule.getDayWiseDaysInMonth())
+        BigDecimal totalDays = dayWise && !fixedMonthly
+                ? BigDecimal.valueOf(behaviour.payableDaysCap())
                 : BigDecimal.valueOf(period.lengthOfMonth());
 
         BigDecimal presentDays = attendance.getPresentDays();
         BigDecimal paidLeaveDays = paidLeaveDays(attendance);
 
-        EmployedWindow window = employedWindow(employee, period);
         BigDecimal lopDays;
         BigDecimal payableDays;
-        if (dayWise) {
-            // Attendance is the pay: no LOP concept, you are paid what you worked.
-            // Paid leave does not add to payableDays - a day-wise worker earns
-            // basicDA/hra/conveyance/education/medical/other only for days
-            // actually present (capped at dayWiseDaysInMonth), not for approved
-            // leave on top of that. Leave still earns its own overtime credit -
-            // see monthlyOvertimeHours - just not a share of the fixed structure.
+        // Mandatory holidays paid into payableDays below; stays zero for every
+        // model that already pays a holiday through the calendar month.
+        BigDecimal paidHolidayDays = BigDecimal.ZERO;
+        if (fixedMonthly) {
+            // The salary structure for the days employed: a full month pays in
+            // full, and only a mid-period joiner or leaver is prorated. There is
+            // nothing to be absent from, so there is no loss of pay either.
             lopDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
-            payableDays = presentDays.min(totalDays);
+            payableDays = window.days().min(totalDays);
+        } else if (!behaviour.lopApplies()) {
+            // Attendance is the pay: no LOP concept, you are paid what you worked.
+            // Whether paid leave also earns a share of the fixed structure is now
+            // its own flag rather than being implied by the same boolean - a
+            // company can have a per-attended-day type that does pay for leave.
+            lopDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
+            // A mandatory holiday is a paid day, not a day off without pay. The
+            // other models already pay it (the salary covers the whole month and
+            // a holiday is never LOP); here nothing did, because a holiday is
+            // not a working day, so presentDays never counts it. Only the
+            // employed window counts - a leaver is not paid a holiday after
+            // relieving. presentDays itself is left alone; see
+            // monthlyOvertimeHours for how the holiday meets the cap.
+            paidHolidayDays = BigDecimal.valueOf(
+                    attendanceService.paidHolidayDays(employee.getUserId(), window.from(), window.to()));
+            BigDecimal attendedDays = behaviour.paidLeaveAddsPayableDays()
+                    ? presentDays.add(paidLeaveDays)
+                    : presentDays;
+            payableDays = attendedDays.add(paidHolidayDays).min(totalDays);
         } else {
             lopDays = attendance.getLopDays();
             // Capped by how many days of this period the employee was actually
@@ -400,13 +443,14 @@ public class PayrollService {
         payroll.setLopDays(lopDays);
         payroll.setPayableDays(payableDays);
         payroll.setTotalHours(attendance.getTotalHours());
-        // DAY_WISE has no fixed daily shift to measure each day's overtime
-        // against - only a monthly expectation the month's total hours are
-        // compared to. Everyone else keeps the attendance engine's
-        // daily-summed value (each day measured against that day's own
-        // shift length).
-        BigDecimal overtimeHours = dayWise
-                ? monthlyOvertimeHours(attendance.getTotalHours(), presentDays, paidLeaveDays, rule)
+        // A per-attended-day type has no fixed daily shift to measure each day's
+        // overtime against - only a monthly expectation the month's total hours
+        // are compared to. A calendar-day type keeps the attendance engine's
+        // daily-summed value (each day measured against that day's own shift
+        // length, and now against that day's own OVERTIME policy rule).
+        BigDecimal overtimeHours = behaviour.usesMonthlyOvertime()
+                ? monthlyOvertimeHours(attendance.getTotalHours(), presentDays, paidLeaveDays,
+                        paidHolidayDays, rule, behaviour)
                 : attendance.getOvertimeHours();
         payroll.setOvertimeHours(overtimeHours);
 
@@ -416,7 +460,7 @@ public class PayrollService {
         // resolveGrossSalarySegments's Javadoc for why overridden employees and
         // dayWise (no calendar-month proration to begin with) skip this and keep
         // the single current-structure calculation used everywhere else.
-        if (!dayWise && !employee.isSalaryStructureOverridden()) {
+        if (behaviour.segmentedRevisionEarnings() && !employee.isSalaryStructureOverridden()) {
             setSegmentedGrossEarnings(payroll, employee, rule, window, totalDays, payableDays);
         } else {
             payroll.setEarnBasicDA(salaryCalculationService.prorate(employee.getBasicDA(), totalDays, payableDays));
@@ -599,13 +643,27 @@ public class PayrollService {
      * almost never actually counted. Uncapped and additive is the only form
      * that reliably behaves like "if you have approved leave, it goes into
      * the OT hours" for every attendance mix, not just the sparse ones.
+     *
+     * <p>A paid holiday takes one of the cap's days, so the baseline caps
+     * present days at {@code cap - paidHolidayDays}. Without that, a worker
+     * present 26 days in a month with a holiday got the same 26-day base as
+     * one present 25 days plus the holiday, and the regular hours of one
+     * attended day were paid nowhere. Below the cap this changes nothing:
+     * {@code presentDays} is the smaller figure either way.
      */
     private BigDecimal monthlyOvertimeHours(BigDecimal totalHours, BigDecimal presentDays,
-                                            BigDecimal paidLeaveDays, SalaryRule rule) {
-        BigDecimal baseHours = presentDays.min(BigDecimal.valueOf(rule.getDayWiseDaysInMonth()))
-                .multiply(rule.getStandardHoursPerDay());
+                                            BigDecimal paidLeaveDays, BigDecimal paidHolidayDays,
+                                            SalaryRule rule, PayBehaviour behaviour) {
+        BigDecimal cap = BigDecimal.valueOf(behaviour.payableDaysCap() != null
+                ? behaviour.payableDaysCap() : rule.getDayWiseDaysInMonth());
+        BigDecimal attendedDaysInBase = cap.subtract(paidHolidayDays).max(BigDecimal.ZERO);
+        BigDecimal baseHours = presentDays.min(attendedDaysInBase).multiply(rule.getStandardHoursPerDay());
         BigDecimal workedOvertime = totalHours.subtract(baseHours).max(BigDecimal.ZERO);
-        BigDecimal leaveOvertime = paidLeaveDays.multiply(rule.getStandardHoursPerDay());
+        // Whether leave earns its own hours is now a property of the employment
+        // type rather than something every per-attended-day type must do.
+        BigDecimal leaveOvertime = behaviour.paidLeaveEarnsOvertime()
+                ? paidLeaveDays.multiply(rule.getStandardHoursPerDay())
+                : BigDecimal.ZERO;
         return workedOvertime.add(leaveOvertime).setScale(SCALE, RoundingMode.HALF_UP);
     }
 
@@ -613,12 +671,45 @@ public class PayrollService {
      * How many days of this calendar period the employee was actually on the
      * books - the intersection of the period with [{@code joiningDate},
      * {@code relievingDate}]. A joiner/leaver never has attendance/roster
-     * data for the days outside that window (see {@code DefaultRosterService}),
+     * data for the days outside that window (see {@code DefaultRosterResolver}),
      * so this is what keeps proration from treating those invisible days as
      * fully worked. An employee with no {@code joiningDate} on record (legacy
      * data predating the field) is treated as employed for the whole period,
      * matching the previous behaviour for that case.
      */
+    /**
+     * The month as a fixed-monthly population lives it: employed throughout,
+     * nothing absent, no loss of pay. Built rather than read, and never stored -
+     * these employees have no attendance rows, which is the point of the policy.
+     * Earned leave still accrues from it, so a director's leave balance grows
+     * like everybody else's - counting every day they were on the books as
+     * worked, since nobody recorded which days they did. That is never less
+     * than the law requires, and a rule's {@code yearlyAccrualCap} is how a
+     * company holds it to a figure of its own.
+     */
+    private MonthlyAttendanceSummary employedMonth(Employee employee, YearMonth period, EmployedWindow window) {
+        BigDecimal days = window.days();
+        BigDecimal zeroDays = BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP);
+        BigDecimal zeroHours = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        return MonthlyAttendanceSummary.builder()
+                .userId(employee.getUserId())
+                .month(period.toString())
+                .workingDays(days.longValue())
+                .presentDays(days)
+                .absentDays(zeroDays)
+                .halfDays(0)
+                .leaveDays(zeroDays)
+                .holidayDays(0)
+                .weekOffDays(0)
+                .lateCount(0)
+                .earlyExitCount(0)
+                .invalidPunches(0)
+                .totalHours(zeroHours)
+                .overtimeHours(zeroHours)
+                .lopDays(zeroDays)
+                .build();
+    }
+
     private EmployedWindow employedWindow(Employee employee, YearMonth period) {
         LocalDate periodStart = period.atDay(1);
         LocalDate periodEnd = period.atEndOfMonth();
@@ -700,6 +791,18 @@ public class PayrollService {
                 .subtract(attendance.getLopDays())
                 .max(BigDecimal.ZERO);
         return implied.min(attendance.getLeaveDays()).setScale(1, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Freezes how this period was paid, not just who it was paid to. See
+     * {@link Payroll#getPayBasis()} - an employment type is an editable row now,
+     * so the reports must read what was true when the payroll ran rather than
+     * what is true today.
+     */
+    private void snapshotBehaviour(Payroll payroll, PayBehaviour behaviour) {
+        payroll.setEmploymentTypeCode(behaviour.typeCode());
+        payroll.setPayBasis(behaviour.payBasis());
+        payroll.setPayableDaysCap(behaviour.payableDaysCap());
     }
 
     private void snapshotEmployee(Payroll payroll, Employee employee) {

@@ -71,7 +71,7 @@ public class PayrollRegisterService {
         ReportScope.MasterNames names = reportScope.names(employees);
         String period = PayrollAuditService.periodLabel(YearMonth.of(year, month));
 
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
                 .map(payroll -> {
@@ -136,18 +136,18 @@ public class PayrollRegisterService {
     /**
      * Every employee's slip totals for the period in one list.
      *
-     * <p>Distinct from {@code SalarySlipService.getSlipsForPeriod}, which is
-     * self-service scoped for the individual-slip endpoints: this is a
-     * report, so it stays company-wide for SUPERVISOR/HR/ADMIN like the rest
-     * of {@code /api/reports} - see {@code PayrollService.getPeriodForCaller}
-     * for why the two scopes differ.
+     * <p>Distinct from {@code SalarySlipService.getSlipsForPeriod}, which
+     * renders the individual slips: this is the totals-only register. Both
+     * cover the same people - the whole company for HR/ADMIN, a SUPERVISOR's
+     * own team - through {@link ReportScope} and {@code
+     * PayrollService.getPeriodForCaller}.
      */
     @Transactional(readOnly = true)
     public List<ReportDtos.PayslipRegisterRow> payslipRegister(int month, int year, ReportFilter filter) {
         Map<String, Employee> byUserId = reportScope.byUserId(reportScope.employees(filter));
         String period = PayrollAuditService.periodLabel(YearMonth.of(year, month));
 
-        return payrollService.getPeriod(month, year).stream()
+        return payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
                 .map(payroll -> new ReportDtos.PayslipRegisterRow(
@@ -308,7 +308,7 @@ public class PayrollRegisterService {
         ReportScope.MasterNames names = reportScope.names(employees);
         String period = PayrollAuditService.periodLabel(YearMonth.of(year, month));
 
-        List<ReportDtos.BankTransferRow> rows = payrollService.getPeriod(month, year).stream()
+        List<ReportDtos.BankTransferRow> rows = payrollService.getPeriodForCaller(month, year).stream()
                 .filter(payroll -> byUserId.containsKey(payroll.getEmployeeId()))
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
                 .map(payroll -> {
@@ -480,8 +480,8 @@ public class PayrollRegisterService {
     // ---- helpers ------------------------------------------------------------
 
     private BigDecimal prorationBase(Payroll payroll, YearMonth period) {
-        boolean dayWise = payroll.getEmploymentStatus() != null
-                && payroll.getEmploymentStatus().isPaidPerAttendedDay();
+        // The snapshot - see Payroll.wasPaidPerAttendedDay().
+        boolean dayWise = payroll.wasPaidPerAttendedDay();
         if (dayWise && payroll.getRuleDayWiseDaysInMonth() != null) {
             return BigDecimal.valueOf(payroll.getRuleDayWiseDaysInMonth()).setScale(DAY_SCALE, RoundingMode.HALF_UP);
         }

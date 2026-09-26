@@ -12,6 +12,12 @@ import java.util.List;
  * {@code lockedSkipped} are reported rather than hidden, so an admin can see at
  * a glance that a rerun did not quietly undo their corrections.
  *
+ * <p>{@code unrosteredDaysGenerated} is the subset of {@code daysGenerated}
+ * that had no roster row behind them - days written blank and {@code ABSENT}
+ * because nobody scheduled them. It is reported separately because those days
+ * become loss of pay while telling HR nothing about why: a non-zero count means
+ * the roster, not the attendance, is what needs fixing.
+ *
  * <p>{@code changes} is populated only on a dry run - the point of a dry run is
  * to see which days a real run would move, and by how much, before it moves
  * them. A real run reports counts; the stored rows are its record.
@@ -20,6 +26,7 @@ public record AttendanceGenerationResponse(
         YearMonth month,
         int employeesProcessed,
         int daysGenerated,
+        int unrosteredDaysGenerated,
         int manualPreserved,
         int lockedSkipped,
         List<String> employeesWithoutRoster,

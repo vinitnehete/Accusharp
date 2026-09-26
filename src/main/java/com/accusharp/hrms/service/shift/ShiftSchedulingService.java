@@ -58,6 +58,7 @@ public class ShiftSchedulingService {
     private final TenantContext tenantContext;
     private final AuditService auditService;
     private final AttendanceCalculationService attendanceCalculationService;
+    private final DefaultRosterResolver defaultRosterResolver;
 
     // ---- single assignment -------------------------------------------------
 
@@ -287,9 +288,15 @@ public class ShiftSchedulingService {
         if (holidays.isEmpty()) {
             return 0;
         }
-        Set<String> scopedUserIds = companyId == null ? null : employeeService.getActiveEntities().stream()
-                .map(Employee::getUserId)
-                .collect(Collectors.toSet());
+        // Contractor workers included, unlike everywhere else this method's
+        // company scoping is copied from: a public holiday shuts the site for
+        // everyone standing on it. Leaving them out would keep them rostered
+        // onto a day the plant is closed and then bill the absence to their
+        // contractor - see EmployeeService#getActiveEntitiesIncludingContractorWorkers.
+        Set<String> scopedUserIds = companyId == null ? null
+                : employeeService.getActiveEntitiesIncludingContractorWorkers().stream()
+                        .map(Employee::getUserId)
+                        .collect(Collectors.toSet());
 
         List<ShiftSchedule> affected = shiftScheduleRepository
                 .findAllByShiftDateBetween(month.atDay(1), month.atEndOfMonth()).stream()
@@ -362,7 +369,22 @@ public class ShiftSchedulingService {
      */
     @Transactional(readOnly = true)
     public MonthlyPlannerResponse getMonthlyPlanner(YearMonth month, String supervisorUserId) {
-        List<Employee> employees = employeeService.plannerScope(supervisorUserId);
+        return getMonthlyPlanner(month, supervisorUserId, null);
+    }
+
+    /**
+     * As above, for one contractor's workforce when {@code contractorId} is
+     * given - the contractor roster planner.
+     *
+     * <p>The two never appear in one grid: see
+     * {@link EmployeeService#plannerScope(String, Long)}. What they do share
+     * is the {@code Shift} catalog itself, which is the point - a contractor's
+     * worker on the night shift is on the same night shift, with the same
+     * punch window and grace period, as everyone else on that line.
+     */
+    @Transactional(readOnly = true)
+    public MonthlyPlannerResponse getMonthlyPlanner(YearMonth month, String supervisorUserId, Long contractorId) {
+        List<Employee> employees = employeeService.plannerScope(supervisorUserId, contractorId);
 
         List<LocalDate> dates = month.atDay(1).datesUntil(month.atEndOfMonth().plusDays(1)).toList();
         if (employees.isEmpty()) {
@@ -370,18 +392,34 @@ public class ShiftSchedulingService {
         }
 
         List<String> userIds = employees.stream().map(Employee::getUserId).toList();
-        Map<String, Map<LocalDate, String>> byUser = new HashMap<>();
-        shiftScheduleRepository.findAllByUserIdInAndShiftDateBetween(userIds, month.atDay(1), month.atEndOfMonth())
-                .forEach(schedule -> byUser
-                        .computeIfAbsent(schedule.getUserId(), key -> new LinkedHashMap<>())
-                        .put(schedule.getShiftDate(),
-                                schedule.isWeekOff() ? "WO" : schedule.getShift().getShiftCode()));
+        Map<String, List<ShiftSchedule>> storedByUser = shiftScheduleRepository
+                .findAllByUserIdInAndShiftDateBetween(userIds, month.atDay(1), month.atEndOfMonth())
+                .stream()
+                .collect(Collectors.groupingBy(ShiftSchedule::getUserId));
 
+        // An employee on a fixed shift has a roster whether or not anybody wrote
+        // one down. Showing them as blank here would read as "nobody is
+        // scheduled" rather than "everybody is on their usual shift" - a worse
+        // lie than the one the deleted cron job was telling, because this is the
+        // screen HR uses to decide what still needs assigning.
         List<MonthlyPlannerResponse.EmployeeRow> rows = employees.stream()
-                .map(employee -> new MonthlyPlannerResponse.EmployeeRow(
-                        employee.getUserId(),
-                        employee.getEmployeeName(),
-                        byUser.getOrDefault(employee.getUserId(), Map.of())))
+                .map(employee -> {
+                    List<ShiftSchedule> roster = defaultRosterResolver.merge(employee,
+                            storedByUser.getOrDefault(employee.getUserId(), List.of()),
+                            month.atDay(1), month.atEndOfMonth());
+
+                    Map<LocalDate, String> shiftByDate = new LinkedHashMap<>();
+                    Map<LocalDate, Boolean> defaultedByDate = new LinkedHashMap<>();
+                    roster.forEach(schedule -> {
+                        shiftByDate.put(schedule.getShiftDate(),
+                                schedule.isWeekOff() ? "WO" : schedule.getShift().getShiftCode());
+                        defaultedByDate.put(schedule.getShiftDate(), schedule.isDefaulted());
+                    });
+
+                    return new MonthlyPlannerResponse.EmployeeRow(
+                            employee.getUserId(), employee.getEmployeeName(),
+                            shiftByDate, defaultedByDate);
+                })
                 .toList();
 
         return new MonthlyPlannerResponse(month, dates, rows);
@@ -439,15 +477,12 @@ public class ShiftSchedulingService {
         if (actor == null || assignedBy.equals(userId)) {
             return;
         }
-        switch (actor.getRole()) {
-            case ADMIN, HR -> { /* full roster access */ }
-            case SUPERVISOR -> {
-                if (!employeeService.supervises(assignedBy, userId)) {
-                    throw new BusinessRuleException(
-                            "Supervisor " + assignedBy + " does not manage employee " + userId);
-                }
-            }
-            default -> throw new BusinessRuleException("Role " + actor.getRole() + " cannot assign shifts");
+        // Whoever the actor reaches: the company for ADMIN/HR, a supervisor's own
+        // team, every team below a director (DataScope.ALL_REPORTS, granted through
+        // a custom role), nobody for anyone else.
+        if (!employeeService.managesEmployee(actor, userId)) {
+            throw new BusinessRuleException(
+                    "Scheduler " + assignedBy + " does not manage employee " + userId);
         }
     }
 

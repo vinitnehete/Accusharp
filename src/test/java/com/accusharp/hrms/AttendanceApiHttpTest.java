@@ -123,7 +123,8 @@ class AttendanceApiHttpTest {
                   "month": "2026-10",
                   "userIds": ["EMP300"],
                   "generatedBy": "HR300",
-                  "overwriteManual": false
+                  "overwriteManual": false,
+                  "includeUnrostered": false
                 }""", hrToken);
 
         assertThat(generated.status()).isEqualTo(200);
@@ -173,7 +174,8 @@ class AttendanceApiHttpTest {
                 .contains("Attendance has not been generated");
 
         send("POST", "/api/attendance/generate", """
-                {"month": "2026-10", "userIds": ["EMP300"], "generatedBy": "HR300"}""", hrToken);
+                {"month": "2026-10", "userIds": ["EMP300"], "generatedBy": "HR300",
+                 "includeUnrostered": false}""", hrToken);
 
         // 201 Created - payroll writes a new immutable revision.
         assertThat(send("POST", "/api/payroll/generate", """
@@ -198,7 +200,8 @@ class AttendanceApiHttpTest {
     @DisplayName("an employee correcting attendance is refused over HTTP - no ATTENDANCE_CORRECT permission")
     void roleIsEnforcedOverHttp() {
         send("POST", "/api/attendance/generate", """
-                {"month": "2026-10", "userIds": ["EMP300"], "generatedBy": "HR300"}""", hrToken);
+                {"month": "2026-10", "userIds": ["EMP300"], "generatedBy": "HR300",
+                 "includeUnrostered": false}""", hrToken);
 
         Resp refused = send("PUT", "/api/attendance/EMP300/2026-10-20", """
                 {"status": "PRESENT", "remarks": "Marking myself present", "updatedBy": "EMP300"}""",

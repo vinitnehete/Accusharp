@@ -81,13 +81,16 @@ public class PermissionSeeder {
                 PermissionCode.DEPARTMENT_MANAGE, PermissionCode.DEPARTMENT_READ,
                 PermissionCode.DESIGNATION_MANAGE, PermissionCode.DESIGNATION_READ,
                 PermissionCode.CATEGORY_MANAGE, PermissionCode.CATEGORY_READ,
+                PermissionCode.EMPLOYMENT_TYPE_READ, PermissionCode.EMPLOYMENT_TYPE_MANAGE,
                 PermissionCode.EMPLOYEE_CREATE, PermissionCode.EMPLOYEE_READ,
                 PermissionCode.EMPLOYEE_UPDATE, PermissionCode.EMPLOYEE_DELETE,
+                PermissionCode.CONTRACTOR_READ, PermissionCode.CONTRACTOR_MANAGE,
                 PermissionCode.SHIFT_MANAGE, PermissionCode.SHIFT_READ,
                 PermissionCode.SHIFT_SCHEDULE_MANAGE, PermissionCode.SHIFT_SCHEDULE_READ,
                 PermissionCode.ATTENDANCE_READ, PermissionCode.ATTENDANCE_GENERATE,
                 PermissionCode.ATTENDANCE_CORRECT, PermissionCode.ATTENDANCE_UNLOCK,
                 PermissionCode.ATTENDANCE_RULE_READ, PermissionCode.ATTENDANCE_RULE_MANAGE,
+                PermissionCode.ATTENDANCE_POLICY_READ, PermissionCode.ATTENDANCE_POLICY_MANAGE,
                 PermissionCode.HOLIDAY_MANAGE, PermissionCode.HOLIDAY_READ,
                 PermissionCode.LEAVE_APPLY, PermissionCode.LEAVE_READ,
                 PermissionCode.LEAVE_SUPERVISOR_APPROVE, PermissionCode.LEAVE_APPROVE,
@@ -96,7 +99,10 @@ public class PermissionSeeder {
                 PermissionCode.PAYROLL_PROCESS, PermissionCode.PAYROLL_READ,
                 PermissionCode.SALARY_SLIP_READ,
                 PermissionCode.REPORT_READ,
-                PermissionCode.DASHBOARD_READ);
+                PermissionCode.DASHBOARD_READ,
+                // Scope, as a grant rather than a role name - see DataScope.
+                PermissionCode.SCOPE_COMPANY,
+                PermissionCode.WORK_POLICY_READ, PermissionCode.WORK_POLICY_MANAGE);
 
         grants.put(Role.HR.name(), companyAdminPermissions);
 
@@ -115,6 +121,10 @@ public class PermissionSeeder {
                 PermissionCode.DESIGNATION_READ,
                 PermissionCode.CATEGORY_READ,
                 PermissionCode.EMPLOYEE_READ,
+                // Read, not manage: a supervisor rosters and reviews the
+                // contractor workers assigned to them, but onboarding a
+                // contractor is an HR/ADMIN decision - see CONTRACTOR_READ.
+                PermissionCode.CONTRACTOR_READ,
                 PermissionCode.SHIFT_READ,
                 PermissionCode.SHIFT_SCHEDULE_MANAGE, PermissionCode.SHIFT_SCHEDULE_READ,
                 PermissionCode.ATTENDANCE_READ,
@@ -125,7 +135,10 @@ public class PermissionSeeder {
                 PermissionCode.PAYROLL_READ,
                 PermissionCode.SALARY_SLIP_READ,
                 PermissionCode.REPORT_READ,
-                PermissionCode.DASHBOARD_READ));
+                PermissionCode.DASHBOARD_READ,
+                // A supervisor's own team, exactly as before. A director's wider
+                // reach is SCOPE_ALL_REPORTS, granted through a custom role.
+                PermissionCode.SCOPE_DIRECT_REPORTS));
 
         grants.put(Role.EMPLOYEE.name(), EnumSet.of(
                 PermissionCode.COMPANY_READ,

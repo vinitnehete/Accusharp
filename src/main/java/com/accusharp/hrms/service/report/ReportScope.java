@@ -27,10 +27,10 @@ import java.util.function.Function;
  *
  * <p>Company scoping is inherited rather than re-implemented: both employee
  * lookups go through {@link EmployeeService}, which is where tenant isolation
- * lives. Like every other {@code REPORT_READ} endpoint these stay
- * company-wide for SUPERVISOR/HR/ADMIN rather than self-service scoped - see
- * {@code PayrollService.getPeriod}'s Javadoc for why reports and raw record
- * lists are treated differently.
+ * lives. Both are also narrowed to the employees the caller may see - the
+ * whole company for HR/ADMIN, their own team for a SUPERVISOR - so a report
+ * can never show someone the caller could not open directly. Everything
+ * built on this class inherits that, totals included.
  *
  * <p>Master names are batch-loaded by id rather than read off the lazy
  * association per row, the same N+1 fix {@code ReportService.departmentNamesFor}
@@ -49,17 +49,17 @@ public class ReportScope {
     private final CategoryRepository categoryRepository;
 
     /**
-     * Every employee of the caller's company matching the filter, including
+     * Every employee the caller may see matching the filter, including
      * deactivated ones - a month already paid must stay auditable after the
      * employee leaves.
      */
     public List<Employee> employees(ReportFilter filter) {
-        return filtered(employeeService.getAllEntities(), filter);
+        return filtered(employeeService.getVisibleEntities(), filter);
     }
 
     /** Active employees only - for reports about the present rather than a closed period. */
     public List<Employee> activeEmployees(ReportFilter filter) {
-        return filtered(employeeService.getActiveEntities(), filter);
+        return filtered(employeeService.getActiveVisibleEntities(), filter);
     }
 
     public Map<String, Employee> byUserId(Collection<Employee> employees) {

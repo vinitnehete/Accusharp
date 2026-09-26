@@ -23,6 +23,45 @@ public enum PermissionCode {
     CATEGORY_MANAGE,
     CATEGORY_READ,
 
+    /**
+     * Employment types and the payroll behaviour attached to them.
+     *
+     * <p>Separate from {@code SALARY_RULE_MANAGE} because this decides the
+     * <em>shape</em> of a pay calculation, not its percentages - a different and
+     * larger decision.
+     *
+     * <p>Granted to HR and ADMIN only, deliberately not to SUPERVISOR or
+     * EMPLOYEE the way {@code CATEGORY_READ} and {@code DEPARTMENT_READ} are.
+     * Those are labels; this is the rule that decides whether somebody is paid
+     * per attended day or per calendar day, which belongs with
+     * {@code SALARY_RULE_READ} rather than with the master-data reads it sits
+     * next to.
+     */
+    EMPLOYMENT_TYPE_READ,
+    EMPLOYMENT_TYPE_MANAGE,
+
+    /**
+     * Labour contractors and the workforce they deploy - onboarding a
+     * contractor, adding its workers, generating their attendance and
+     * reading the reports sent back to them.
+     *
+     * <p>Separate from {@code EMPLOYEE_*} rather than folded into it, and the
+     * separation is the security property, not tidiness: these two grants
+     * address populations with different rules. An {@code EMPLOYEE_UPDATE}
+     * holder can set a gross salary and a role; a {@code CONTRACTOR_MANAGE}
+     * holder can do neither, because the request DTO carries no such field.
+     * A company that outsources contractor administration to a site
+     * coordinator can hand over the second through a custom role without
+     * handing over the payroll master.
+     *
+     * <p>{@code CONTRACTOR_READ} is granted to SUPERVISOR as well: our
+     * supervisors are the ones assigned to the contractor's workers, and they
+     * need to see the workforce whose shifts they roster and whose attendance
+     * they review. {@code CONTRACTOR_MANAGE} stays HR/ADMIN.
+     */
+    CONTRACTOR_READ,
+    CONTRACTOR_MANAGE,
+
     EMPLOYEE_CREATE,
     EMPLOYEE_READ,
     EMPLOYEE_UPDATE,
@@ -41,6 +80,16 @@ public enum PermissionCode {
 
     ATTENDANCE_RULE_READ,
     ATTENDANCE_RULE_MANAGE,
+
+    /**
+     * The per-population attendance policy engine. Deliberately separate from
+     * {@code ATTENDANCE_RULE_*}: those three thresholds apply company-wide and
+     * are visible in one screen, whereas a policy rule can dock a named
+     * category half a day and is a strictly larger blast radius. Granting one
+     * should not silently grant the other.
+     */
+    ATTENDANCE_POLICY_READ,
+    ATTENDANCE_POLICY_MANAGE,
 
     HOLIDAY_MANAGE,
     HOLIDAY_READ,
@@ -71,5 +120,31 @@ public enum PermissionCode {
 
     /** Create/edit/delete custom roles, assign their permissions, assign them to employees. ADMIN only - not HR, same trust bar as AUDIT_READ. */
     ROLE_MANAGE,
-    ROLE_READ
+    ROLE_READ,
+
+    /**
+     * How far a holder can see and act - {@link DataScope}. Every other code
+     * here answers "what may be done"; these three answer "to whose records",
+     * and the two are deliberately separate: a custom role granting
+     * {@code LEAVE_APPROVE} should decide leave for the people its holder
+     * already reaches, not for the whole company by implication.
+     *
+     * <p>Seeded onto the fixed roles as they always behaved - COMPANY for
+     * ADMIN/HR, DIRECT_REPORTS for SUPERVISOR, nothing for EMPLOYEE - and
+     * grantable through a custom role for anything wider. {@code
+     * SCOPE_ALL_REPORTS} is the director's: everyone below them in the
+     * reporting chain, not just their direct reports.
+     */
+    SCOPE_DIRECT_REPORTS,
+    SCOPE_ALL_REPORTS,
+    SCOPE_COMPANY,
+
+    /**
+     * Who follows the attendance process and who is simply paid - see
+     * {@code WorkPolicy}. Separate from {@code ATTENDANCE_POLICY_*}: those shape
+     * what a tracked day is worth, this decides whether a population is tracked
+     * or paid a fixed salary at all, which is a payroll decision.
+     */
+    WORK_POLICY_READ,
+    WORK_POLICY_MANAGE
 }

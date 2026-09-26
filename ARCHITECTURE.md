@@ -38,10 +38,13 @@ service/
   calculation/  SalaryCalculationService, DeductionCalculationService,
                 AttendanceCalculationService, LopCalculationService
   attendance/   AttendanceService
+  contractor/   ContractorService, ContractorEmployeeService, ContractorAttendanceService -
+                labour contractors and the workforce they deploy. Holds no attendance logic
+                of its own; it resolves a population and hands it to AttendanceService
   shift/        ShiftService, ShiftSchedulingService
   leave/        LeaveService, LeaveBalanceService, LeaveCalculationService
   payroll/      PayrollService, SalarySlipService
-  report/       ReportService, DashboardService
+  report/       ReportService, DashboardService, ContractorAttendanceReportService
 util/         AmountInWords, TemporaryPasswordGenerator,
               EmployeeCsvParser, ShiftAssignmentCsvParser, PayrollCsvParser (CSV -> request DTO,
               one independently-failable row at a time - see "Bulk / CSV mutation endpoints" below),
@@ -58,7 +61,14 @@ Every failure returns one shape (`ApiError`: `timestamp`, `status`, `error`,
 Company -> Department -> Designation -> Employee -> Supervisor mapping
    -> Shift scheduling -> Biometric punches -> Attendance generated
    -> HR corrections -> Leave approval -> LOP -> Payroll -> Salary slip -> Reports
+
+Company -> Contractor -> Contractor's worker -> our Supervisor mapping
+   -> Shift scheduling -> Biometric punches -> Attendance generated
+   -> Contractor attendance report -> (the contractor runs their own payroll)
 ```
+
+The second flow rejoins the first at "Shift scheduling" and leaves it before
+"Payroll" - see [Labour contractors](#labour-contractors) below.
 
 ## Domain model
 
@@ -66,7 +76,8 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 |---|---|---|
 | `Company` | `company` | The tenant. Every company-scoped entity below resolves back to one, directly or via its owning `Employee` |
 | `Department`, `Designation`, `Category`, `Shift` | `department`, `designation`, `category`, `shift` | One row per company, plus rows with `company = null` - a shared, read-only-to-companies catalog (the seeded defaults). Unique on `(company_id, code)`, not code alone - see [SECURITY.md](SECURITY.md) Phase 6. `Category` is the employee grade (Worker, Supervisor, Manager, Director, ...) - a company may define as many as it needs via `/api/categories`, same as `Department`/`Designation` |
-| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below). `category`, `gender`, `uanNo`, `esicIpNo`, `bankAccountNo` and `bankIfscNo` are all optional |
+| `Employee` | `employee` | Business key `userId` (also the device user id); self-referencing `supervisor`; one of two principal types (see Security below). `category`, `gender`, `uanNo`, `esicIpNo`, `bankAccountNo` and `bankIfscNo` are all optional. A non-null `contractor` makes the row a labour contractor's worker rather than the company's own employee - see "Labour contractors" below |
+| `Contractor` | `contractor` | A labour contractor engaged by one company. Unlike the masters above there is no shared `company = null` catalog - a contractor is a commercial relationship, not a reference row. One company routinely engages several |
 | `PlatformUser` | `platform_user` | The other principal type - platform-level accounts (company onboarding etc.), not tied to any company |
 | `RefreshToken` | `refresh_token` | Opaque, hashed at rest, single-use with rotation - never a JWT itself |
 | `Permission`, `RolePermission` | `permission`, `role_permission` | The data-driven grant table every `@PreAuthorize` check resolves against - see Security below |
@@ -80,6 +91,8 @@ Company -> Department -> Designation -> Employee -> Supervisor mapping
 | `MonthlyAttendanceSummary` | `emp_monthly_attendance_summary` | Cached rollup of the stored days |
 | `SalaryRule` | `salary_rule` | One row per company holding every percentage and slab, plus one `company = null` global default a company falls back to until it customizes its own - see [SECURITY.md](SECURITY.md) |
 | `SalaryRevision` | `salary_revision` | Append-only history of one employee's gross-salary changes (hike/promotion/correction) - see "Salary revision history" below |
+| `EmploymentType` | `employment_type` | The payroll behaviour a population is paid by - pay basis, payable-days cap, whether LOP applies, which overtime formula. One row per company plus a shared catalog. `Employee.employmentType` is nullable: null falls back to the legacy `EmployeeStatus` semantics |
+| `AttendancePolicyRule` | `attendance_policy_rule` | Per-population attendance policy, append-only and effective-dated - see "Attendance policy" above |
 | `Payroll` | `payroll` | Immutable snapshot per employee/month/year/revision |
 
 ### Salary structure
@@ -192,10 +205,13 @@ changing over time. Both are real, unrelated gaps.
 
 ### Attendance
 
-The roster is the source of expectation: a day the employee was not scheduled on
-is not an attendance day at all. For each scheduled day the engine takes the
-punch window, pulls the punches inside it and derives first in, last out,
-working hours, break, late minutes, early exit, overtime and invalid punches.
+The roster is the source of expectation. For each scheduled day the engine takes
+the punch window, pulls the punches inside it and derives first in, last out,
+working hours, break, late minutes, early exit, overtime and invalid punches. A
+day with no roster row has no shift to derive any of that from, so it is stored
+blank and `ABSENT` - visible and correctable, rather than missing from a month
+payroll then pays in full (`includeUnrostered`, on by default; see
+[Attendance.md](Attendance.md) section 3.1).
 
 - **Night shifts.** A shift whose end time is not after its start time crosses
   midnight, so its window ends on the following calendar day - but the day still
@@ -238,6 +254,69 @@ Javadoc) - everything else attendance calculation used to hardcode
 identically for every company (shift timings, grace period, break minutes,
 overtime window, weekly-offs, holidays) was already per-company via `Shift`
 and `Holiday`; these three were the only genuinely global constants left.
+
+### Attendance policy: per-population rules
+
+The three `AttendanceRule` numbers above are company-wide. Real companies hold
+different populations to different standards, so policy is also configurable
+**per employee population** on top of them - by category, department,
+designation, employment type, or an individual employee.
+
+A rule is an `enum RuleType` plus a small typed, bean-validated parameter set,
+never a formula in a column: attendance policy decides salary, and an eval-able
+string cannot be tested, migrated, or explained to an employee disputing a
+deduction. Adding a rule type is a code change; adding a rule is a form.
+
+```
+AttendancePolicyRule  (append-only, versioned, effective-dated)
+        |
+        v
+AttendancePolicyResolver     most specific scope wins, version in force on the ATTENDANCE DATE
+        |
+        +--> DayPolicyEvaluator     inside AttendanceCalculationService.calculateDay
+        |                           (pure per-day: MISSING_PUNCH, SHORT_HOURS,
+        |                            LATE_ARRIVAL, DAY_OFF_WORK, OVERTIME)
+        |
+        +--> MonthPolicyEvaluator   inside AttendanceService.aggregate
+                                    (stateful replay: EARLY_EXIT_BUDGET,
+                                     LATE_MARK_ACCUMULATION)
+```
+
+Three things about this are load-bearing:
+
+- **Day and month scope are genuinely different.** A day rule is a pure function
+  of one day and runs during generation. A month rule - a budget spent day by
+  day, an Nth-occurrence counter - cannot: regenerating day 12 alone would spend
+  budget the rest of the month already spent. Month rules are therefore a replay
+  over the month's stored days in date order, from a zero accumulator, at
+  summary-rebuild time. Recomputed from scratch, never incremented.
+- **Day rules live inside `calculateDay`, not in its caller.** `correctDay` runs
+  hand-supplied punches back through the same method, so putting policy in the
+  caller would create exactly the second code path that "a hand-fixed day cannot
+  obey different rules" rules out.
+- **Versions succeed rather than overlap.** There is no `effectiveTo`. A version
+  runs until the next version's `effectiveFrom`, which makes overlap
+  structurally impossible and lets `uk_policy_rule_effective` actually enforce
+  "two rules of the same type never both apply" - a from/to model could not be
+  enforced by any index MySQL has. Ending a rule appends a disabled version.
+
+Resolution is `EMPLOYEE > DESIGNATION > CATEGORY > DEPARTMENT > EMPLOYMENT_TYPE
+> COMPANY > GLOBAL`, most specific winning outright rather than merging. A
+disabled rule is an answer, not an absence: it stops a broader scope taking over,
+which is what an opt-out has to mean.
+
+Every applied rule leaves a trace - `attendance_policy_application` per day,
+`attendance_policy_outcome` per month - carrying the rule, its version, its
+scope, the before and after, and a rendered sentence. Stored, not derived on
+read, for the same reason `Payroll` snapshots rule percentages: the rule will
+have been superseded by the time anyone asks.
+
+`attendance_policy_rule` ships empty and the `GLOBAL` scope is seeded with
+nothing, so a company that configures nothing produces byte-identical output to
+what it produced before the engine existed. `POST /api/attendance-policy/preview`
+re-evaluates a real past month under a proposed rule set and returns the diff -
+days changed, LOP delta, overtime delta - without writing anything. Full design
+in [docs/design/attendance-policy-engine.md](docs/design/attendance-policy-engine.md).
 
 ### Attendance is generated, then reviewed
 
@@ -282,6 +361,11 @@ Never entered by hand:
 ```
 LOP days = working days - present days - approved paid leave
 ```
+
+Month-scoped attendance policy rules add to this, and the summary keeps the two
+apart: `lop_days` is the total payroll reads, `policy_lop_days` beside it is the
+share somebody configured. The total is clamped to the working days, so policy
+can never make an employee owe more days than they were expected to work.
 
 Working days already exclude weekly offs and mandatory holidays, so those can
 never become LOP. The specification's worked example - 26 working days, 23
@@ -342,6 +426,121 @@ netSalary        = totalEarnings - totalDeduction
   `otAllowance = overtimeHours x perHour x overtimeRateMultiplier`. See
   `PayrollService.monthlyOvertimeHours` and
   [`DayWisePayrollOvertimeTest`](src/test/java/com/accusharp/hrms/DayWisePayrollOvertimeTest.java).
+
+### Work policy: who follows the process at all
+
+`EmploymentType` above shapes an attendance-based calculation. It cannot say
+that somebody has no attendance to calculate from - and a company owner or
+director usually hasn't: no punches, no roster, no approvals, paid the same
+salary every month with only the statutory deductions taken off. Payroll
+refused to run for them at all, since it demands generated attendance for every
+employee, so the only way through was to fabricate a month of attendance for a
+person who was never tracked.
+
+`WorkPolicy` answers three questions per population - is their attendance
+tracked, where does their pay come from, and who approves their leave:
+
+```
+WorkPolicy  (append-only, versioned, effective-dated)
+        |
+        v
+WorkPolicyResolver     most specific scope wins, version in force on the date
+        |
+        +--> AttendanceService.generate   NOT_TRACKED employees are skipped entirely
+        |
+        +--> PayrollService.build         FIXED_MONTHLY pays the structure for the
+        |                                 days employed, with no attendance at all
+        |
+        +--> LeaveService.apply           AUTO_APPROVE approves as it is applied for;
+                                          HR_ONLY refuses the endorsement step
+```
+
+Deliberately the same shape as the attendance policy engine: the same
+`RuleScope` chain (`EMPLOYEE > DESIGNATION > CATEGORY > DEPARTMENT >
+EMPLOYMENT_TYPE > COMPANY > GLOBAL`, most specific winning outright), the same
+succession model with no `effectiveTo`, the same "a disabled version is an
+answer, not an absence", and the same empty start - a company that configures
+nothing is paid to the rupee as it was before the table existed. The scope
+lookup itself is shared code (`ScopeRefs`), so the two engines can never
+disagree about what "this employee's category" means.
+
+Three things follow from `FIXED_MONTHLY`:
+
+- **Attendance is neither required nor consulted.** The month is built as
+  employed-throughout rather than read, and never stored - these employees have
+  no attendance rows, which is the point.
+- **Proration is by employment, not attendance.** A full month pays the whole
+  structure; only a joining or relieving date inside the period reduces it.
+  Loss of pay is zero, because there is nothing to be absent from.
+- **Everything downstream is unchanged.** Every deduction applies as usual, and
+  earned leave still accrues, so a director's balance grows like anyone else's.
+
+`Payroll` snapshots `payrollMode`, `workPolicyScope` and `workPolicyVersion`
+beside the rule percentages it already froze - a policy is an editable row, and
+without this a company switching a population to fixed-monthly pay would
+silently restate every payslip that population was ever paid from attendance.
+
+Paying from attendance nobody records is refused when the policy is written,
+not discovered on a payslip: `NOT_TRACKED` with `ATTENDANCE_BASED` is a 400.
+
+`leaveApproval` is the third axis, and for the same reason: a director has
+nobody above them to endorse their leave, so a two-step flow leaves the request
+waiting forever, and an owner is not asking their own HR for a day off.
+`AUTO_APPROVE` approves on application and spends the balance there - every
+check `apply` already made still runs first, so it is never a way around an
+empty balance or an overlapping leave. `HR_ONLY` refuses endorsement outright
+rather than accepting a step that means nothing. The column is nullable and null
+reads as `SUPERVISOR_THEN_HR`, so policies written before it existed keep the
+flow they were written under.
+
+### Employment types are configurable
+
+`EmployeeStatus` is a fixed enum of four, and one line -
+`employee.getStatus().isPaidPerAttendedDay()` - used to drive **seven** separate
+branches in `PayrollService.build`: the proration base, whether LOP applies, how
+payable days derive, whether paid leave counts toward them, the stored
+present-days figure, which overtime formula runs, and whether a mid-period
+salary revision is segmented. A company could change the *numbers* those
+branches used (`dayWiseDaysInMonth`, `standardHoursPerDay`, both on
+`SalaryRule`) but never the behaviour, and could not add a fifth type at all -
+so two clients with different definitions of "contract" had no way to express
+it.
+
+Each of those seven is now a column on `EmploymentType`:
+
+| Field | Replaces |
+|---|---|
+| `payBasis` | `PER_ATTENDED_DAY` / `PER_CALENDAR_DAY_LESS_LOP` — the proration model |
+| `payableDaysCap` | The 26. Null inherits `salaryRule.dayWiseDaysInMonth` |
+| `lopApplies` | The hardcoded `lopDays = ZERO` for day-wise |
+| `paidLeaveAddsPayableDays` | Whether leave earns a share of the fixed structure |
+| `overtimeBasis` | `MONTHLY_TOTAL_HOURS` vs the attendance engine's daily-summed value |
+| `paidLeaveEarnsOvertime` | Whether leave adds its own hours to overtime |
+| `segmentedRevisionEarnings` | Whether a mid-period revision splits the earnings |
+
+`PayBehaviourResolver` turns an employee into a `PayBehaviour` record, and
+`PayrollService` reads named fields instead of one boolean. The arithmetic is
+unchanged — the `if` moved from the enum to a row.
+
+**The legacy fallback is what makes this safe to deploy.**
+`Employee.employmentType` is nullable and `Employee.status` stays exactly where
+it is. An employee with no type resolves to precisely the behaviour that was
+hardcoded before, so a database with no `employment_type` rows pays everybody
+as it always did, and adoption is opt-in per employee rather than a migration
+that must finish before the next pay run.
+
+**`Payroll` snapshots the behaviour**, not just the employee — `employmentTypeCode`,
+`payBasis`, `payableDaysCap`, alongside the `rule*` columns it already froze. An
+employment type is an editable row now, so without this a company changing a
+type's pay basis would silently change how every historical payslip is laid out
+and reconciled. `Payroll.wasPaidPerAttendedDay()` is what the registers and the
+audit report read; it falls back to the snapshotted enum for payrolls generated
+before types existed.
+
+Per-company plus a shared catalog, the Phase 6 pattern. `POST
+/api/employment-types/seed-defaults` creates the four types reproducing today's
+behaviour as a starting point — idempotent, and it never overwrites a type a
+company has already customised.
 
 ### Immutable payroll history
 
@@ -413,14 +612,152 @@ Existing `POST /api/shift-schedules/bulk` (one shift, many employees, a date
 range) is unrelated to this family - it stays a single validated operation
 that 409s on the first conflict, by design (see `ShiftSchedulingService.assignBulk`).
 
+## Labour contractors
+
+A client company does not care what a contractor pays their people. It cares
+that they turned up. So this module does one job: register the contractor,
+register the workers they deploy, roster those workers onto our shifts,
+generate their attendance, and hand the contractor a report they can run their
+own payroll from.
+
+```
+Contractor (agency)
+   |
+   +-- worker  (Employee row, contractor_id set, no pay, no login)
+   |      |
+   |      +-- supervisor -> one of OUR employees
+   |      +-- ShiftSchedule -> our Shift catalog
+   |      +-- DeviceLog     -> the same biometric feed
+   |      +-- DailyAttendance / MonthlyAttendanceSummary
+   |
+   +-- monthly attendance report -> emailed/exported to the contractor
+```
+
+### Why a worker is an `employee` row
+
+`ShiftSchedule`, `DailyAttendance`, `DeviceLog` and `MonthlyAttendanceSummary`
+are all keyed by the plain `user_id` **string**, and `Employee.userId` is
+unique platform-wide precisely because the device feed resolves a punch by it
+alone (see `uk_employee_user_id`). A parallel `contractor_employee` table
+would therefore have had to either share that key space anyway - reintroducing
+the collision the global constraint exists to prevent - or grow a second copy
+of the attendance engine to read from. One nullable foreign key buys the
+punch window, the night-shift handover, the exclusive-window truncation, the
+policy engine, HR corrections and payroll locking unchanged.
+
+The cost is that "every employee of this company" now has to mean two
+different things, and the whole feature turns on getting that right.
+
+### The two choke points
+
+`EmployeeService.getActiveEntities()` and `getAllEntities()` were already the
+single places every company-wide operation resolved its population -
+generate-all payroll, generate-all attendance, the dashboard, every report,
+`ReportScope`, the shift planner, the employee directory, the attendance
+policy scope matcher. Both now filter on `contractor IS NULL`, so all of them
+exclude contractor workers without any of them being edited:
+
+- **payroll can never pay one** - `PayrollService.generateAll` and the period
+  reads both go through these;
+- **the statutory returns can never file one** - PF ECR, ESI, PT and TDS all
+  resolve through `ReportScope`;
+- **the employee directory never lists one** - `getVisible()` is `getAllEntities()`
+  filtered by self-service scope.
+
+Three things deliberately do *not* use them:
+
+- `getActiveEntitiesIncludingContractorWorkers()`, whose only caller is
+  `ShiftSchedulingService.applyHolidayOverride` - a public holiday shuts the
+  site for everyone standing on it, and leaving contractor workers rostered
+  onto a closed plant would bill their absence to their contractor;
+- `plannerScope(supervisorUserId, contractorId)`, which returns one
+  contractor's workforce when given a contractor and the company's own staff
+  otherwise - never both in one grid;
+- `getEntityById`/`getEntityByUserId`, which stay permissive because
+  attendance, shift scheduling and this module all resolve a worker through
+  them. The *mutating* employee paths use `getCompanyEmployeeById` instead,
+  which 404s a contractor's worker - so a `PUT /api/employees/{id}` can never
+  write an `EmployeeRequest` (gross salary, derived structure, a `role`) over
+  somebody this company does not pay.
+
+### What a worker deliberately has none of
+
+`ContractorEmployeeRequest` carries identity, trade, supervisor, deployment
+dates and a phone number. It has no salary field, no PF/ESIC/UAN, no bank
+details and no `role` - not "ignored if supplied", *absent*, which is what
+makes them unsettable rather than a comment asking callers not to.
+`ContractorEmployeeService` additionally pins three things the request cannot
+reach: `role = EMPLOYEE`, `accountEnabled = false` with a null password hash
+(these people are attendance subjects, not users of this system), and
+`status = CONTRACT`.
+
+That last one is load-bearing rather than cosmetic. `EmployeeStatus` is what
+`DefaultRosterService` reads to decide who gets a free `GENERAL`-shift roster
+out to two months ahead, and a contractor's workers must not: they are on site
+only for the days their contractor sends them, so auto-rostering would
+manufacture absent days - and therefore an invoice dispute - for days nobody
+was expected. For the same reason `ContractorAttendanceService.generate`
+defaults `includeUnrostered` to **false**, the opposite of the company
+console's default; `AttendanceGenerationRequest`'s own Javadoc named this
+population as the reason that switch exists.
+
+The supervisor, by contrast, must be one of *our* employees.
+`resolveSupervisor` rejects another contractor's worker outright - one has no
+login and no authority to approve anything, so that reporting line would be
+one nobody could act on. No cycle check is needed: a contractor's worker is
+never anybody's supervisor, so the chain is at most one link deep.
+
+### Reports
+
+`ContractorAttendanceReportService` aggregates, never calculates - the rows
+come straight off the stored `MonthlyAttendanceSummary` and `DailyAttendance`,
+so a contractor's copy of a figure can never disagree with what HR sees on
+screen for the same person on the same day. That property is what makes the
+report worth sending. It resyncs through
+`AttendanceService.syncSummaries(month, employees)` first, because the
+no-argument form reads `getActiveEntities()` and so cannot see this
+population.
+
+Three shapes, and every one of them carries `contractorName` on the **row**
+rather than only in the envelope - a company with several agencies reads these
+across all of them at once, and a grouping that survives only in the JSON does
+not survive the CSV export:
+
+| | |
+|---|---|
+| `ContractorAttendanceRow` | one line per worker for the month - what the contractor invoices from |
+| `ContractorDailyRow` | the day-by-day register behind it, `recordStatus` included so a hand-corrected day is disclosed rather than presented as a device reading |
+| `ContractorSummaryRow` | one line per contractor - the only side-by-side view, and `workersWithoutAttendance` on it is the figure that says a report is not ready to send |
+
+A worker with no generated attendance is listed with zeros rather than
+dropped: their absence from the sheet is exactly what the contractor would not
+notice, and a missing name reads as "nobody deployed them" instead of "nobody
+generated it".
+
+### Permissions
+
+`CONTRACTOR_READ` and `CONTRACTOR_MANAGE`, separate from `EMPLOYEE_*` - and the
+separation is the security property, not tidiness. An `EMPLOYEE_UPDATE` holder
+can set a gross salary and a role; a `CONTRACTOR_MANAGE` holder can do
+neither, so a company can hand contractor administration to a site coordinator
+through a custom role without handing over the payroll master. HR and ADMIN
+hold both; SUPERVISOR holds `CONTRACTOR_READ` only, since our supervisors are
+the ones assigned to these workers and need to see the workforce they roster
+and review. Generating attendance additionally requires `ATTENDANCE_GENERATE`
+on top of `CONTRACTOR_MANAGE` - writing attendance rows is the same act
+whoever the subject is, and must not become reachable through a narrower
+grant.
+
 ## Leave workflow
 
 ```
 Employee applies -> Supervisor endorses -> HR approves
 ```
 
-Balance moves at exactly two points: it is consumed on final approval and
-restored on cancellation. A rejection never touches it. Overlapping open or
+Applying for leave moves the balance at exactly two points: it is consumed on
+final approval and restored on cancellation. A rejection never touches it. (Earned
+leave and the year close move it too - see below - but always through the
+`leave_credit` ledger, never through a leave request.) Overlapping open or
 approved requests are refused, half days are only valid on a single-day request,
 and the balance is checked at application time so the approver never hits an
 empty quota.
@@ -436,6 +773,64 @@ independently-failable-row shape as the other bulk/CSV endpoints below.
 `LeaveRequest.origin` (`SELF_SERVICE`/`HR_DIRECT`) is what distinguishes the
 two once both sit at `APPROVED` - the leave-side analog of `DailyAttendance`'s
 `GENERATED`/`MANUAL` `recordStatus`.
+
+### Leave rules, earned leave and year close
+
+Who gets which leave is a `LeaveRule` per leave type and population - company-wide,
+overridden by any narrower population down the same `RuleScope` chain every other
+rule engine here uses (one employee, then designation, category, department,
+employment type), most specific winning outright (`LeaveRuleResolver`). "Directors
+get no casual leave" and "this one person gets five days" are both rules. A rule
+gives the type as a yearly grant (pro-rated for mid-year joiners), a flat credit
+each month on the books, earned from attendance (EL only), or not at all. With no
+rule, a balance opens at the
+`LeaveType` default - CL 12, SL 8, EL 0 - exactly as before rules existed, and a
+balance row that already exists is never re-seeded, so hand-entered opening EL
+balances survive any rule configured afterwards. Contractor workers get none.
+
+Two more postings move a balance's quota. Each is one row in the `leave_credit`
+ledger with its reason in words, and each is idempotent per period - reposting
+replaces the row and moves the balance by the difference:
+
+- **Monthly accrual** - `LeaveAccrualService`, called by `PayrollService` as it
+  locks the month, so a credit computed from attendance comes from attendance that
+  can no longer change. Two kinds, one ledger:
+  - *Earned leave from attendance*: days counted = working days minus LOP. A full
+    month (employed all month, no LOP) earns 1.5; otherwise the higher of the
+    rule's step (20 days = 1, 10 = 0.5) or the legal floor of one day per 20
+    worked (OSH Code 2020 s.32, in force since 21 November 2025), rounded up.
+  - *A flat monthly credit* of any paid type - "one casual leave a month", which
+    is how most companies actually run CL and SL. Attendance is not consulted; a
+    part-month joiner credits nothing rather than a whole day.
+
+  `yearlyAccrualCap` bounds the year's total either way: the month that reaches it
+  credits the remainder, the months after it credit nothing, and because the
+  ledger is keyed per period a repost recomputes the same answer rather than
+  spending the headroom twice. Null is no ceiling, which is what earned leave had
+  before - the only limit was the carry-forward cap at year end, long after the
+  balance had grown. The rule's effective month is the go-live: nothing before it
+  is ever credited. Regenerating payroll recomputes the month's credit rather than
+  adding a second one.
+- **Year close** - `POST /api/leave-balances/close-year`, run by HR once December's
+  payroll is done (December's EL is credited by that run, in January - which is
+  why this is not an automatic 1 January rollover). Carries each balance into the
+  next year up to its rule's cap (30 for EL); anything above the cap is reported
+  for payout, not paid. A type with no cap lapses. Safe to rerun.
+
+**The leave year is per company** - `Company.leaveYearStartMonth`, January
+(calendar) or April (financial), set at `PUT /api/leave-settings`. Balances are
+numbered by the year their leave year starts in (`LeaveYears`), so a calendar
+company is unchanged; for an April company, 2026 is April 2026 to March 2027,
+shown as 2026-27. Which balance a leave comes out of and goes back to, where a
+month's EL lands, joiner pro-rating and the year close all follow it, and a leave
+may not span two leave years. It can be switched only while the company has no
+leave taken, pending or credited; a balance that merely exists - they open
+automatically when viewed - does not block it.
+
+What happens above a rule's carry-forward cap is the rule's `excessOverCap`:
+listed for payout (the default, and what the OSH Code requires for its "workers")
+or lapsed. "Only EL carries, at most 45, the rest lapses" is three rules: EL with
+cap 45 and `LAPSE`, CL and SL with no cap.
 
 ## Security &amp; multi-tenancy
 
@@ -466,10 +861,9 @@ is the summary.
   `EMPLOYEE` sees only their own record across the employee directory,
   attendance, leave, leave balance, salary slips and shift roster; a
   `SUPERVISOR` sees themselves plus their own direct reports for the same
-  set; `ADMIN`/`HR` are unrestricted within their own company.
-  `ReportService`/`DashboardService` are a deliberate exception - those stay
-  company-wide for SUPERVISOR/HR/ADMIN, since they're aggregate reports, not
-  individual-record access.
+  set; `ADMIN`/`HR` are unrestricted within their own company. Reports and
+  the dashboard follow the same rule (Phase 14): a `SUPERVISOR` sees their
+  own team's rows and totals, never the company's payroll.
 - **Account security.** BCrypt password hashing, account lockout after
   repeated failed logins, no account-enumeration in login errors, short-lived
   JWT access tokens plus opaque rotating refresh tokens. Every newly created
@@ -488,14 +882,30 @@ is the summary.
   old rows but is gated by a permission granted only to platform roles,
   never a company role - the entity a trail holds accountable must never be
   able to erase it.
-- **Dynamic role/permission management** (Phase 10): a company `ADMIN` can
-  define named custom roles, grant each an arbitrary set of permissions,
-  and assign them to employees - additive on top of the employee's fixed
-  `Role`, never a replacement for it, so every hardcoded `Role` check
-  elsewhere in the app (self-escalation guard, supervisor-team rules,
-  self-service scoping) is untouched by this. Platform-only permissions can
-  never be granted through a custom role. See `CustomRoleController`/
-  `CustomRoleService` and SECURITY.md's Phase 10 write-up.
+- **Dynamic role/permission management** (Phase 10, effective end to end in
+  Phase 15): a company `ADMIN` can define named custom roles, grant each an
+  arbitrary set of permissions, and assign them to employees - additive on top
+  of the employee's fixed `Role`, never a replacement for it. Platform-only
+  permissions can never be granted through a custom role.
+
+  **A permission says what may be done; a scope says to whom.** Login and
+  refresh return the session's effective permissions (base role plus custom
+  roles), which is what the UI's menus and route guards read, and the
+  service-layer checks ask for the permission by name rather than for HR or
+  ADMIN - so a custom role works past the `@PreAuthorize` gate too.
+
+  Reach is its own trio of grants (`DataScope`): `SCOPE_DIRECT_REPORTS`,
+  `SCOPE_ALL_REPORTS` and `SCOPE_COMPANY`, seeded onto the fixed roles exactly
+  as they always behaved - COMPANY for ADMIN/HR, DIRECT_REPORTS for
+  `SUPERVISOR`, nothing for `EMPLOYEE` - and grantable through a custom role for
+  anything wider. `SCOPE_ALL_REPORTS` is what a director needs: everyone below
+  them in the reporting chain, not only their direct reports, resolved by
+  walking up from the target in `EmployeeService`. The directory, reports, the
+  dashboard, the roster planner, leave decisions and attendance corrections all
+  read that one answer (`assertManages` / `getVisibleEntities`), and a
+  privileged write never reaches the caller's own record unless they hold
+  company scope. See `CustomRoleController`/`CustomRoleService` and SECURITY.md's
+  Phase 10, 15 and 16 write-ups.
 
 ## Design decisions worth knowing
 
@@ -522,8 +932,7 @@ tooling), and dynamic role/permission management all exist now (see
 Security &amp; multi-tenancy above and [SECURITY.md](SECURITY.md)). Still
 open: a self-service ("I forgot my password, no admin involved") recovery
 flow - an ADMIN/HR-triggered reset exists instead, since there's no email
-delivery infrastructure to build the self-service version on; a UI for
-custom-role assignment (the API exists, see `CustomRoleController`); and a
+delivery infrastructure to build the self-service version on; and a
 general no-privilege-escalation check on custom roles (today only
 platform-only permission codes are blocked, not "grant nothing beyond what
 you yourself hold"). Also not built: multi-branch support, notification
