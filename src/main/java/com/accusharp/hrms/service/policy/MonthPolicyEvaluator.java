@@ -3,6 +3,7 @@ package com.accusharp.hrms.service.policy;
 import com.accusharp.hrms.dto.DailyAttendanceResponse;
 import com.accusharp.hrms.dto.policy.AttendancePolicyParams.EarlyExitBudget;
 import com.accusharp.hrms.dto.policy.AttendancePolicyParams.LateMarkAccumulation;
+import com.accusharp.hrms.dto.policy.AttendancePolicyParams.SandwichLeave;
 import com.accusharp.hrms.entity.AttendancePolicyOutcome;
 import com.accusharp.hrms.entity.AttendancePolicyRule;
 import com.accusharp.hrms.enums.RuleType;
@@ -50,15 +51,33 @@ import java.util.Set;
 public class MonthPolicyEvaluator {
 
     private final AttendancePolicyParamsCodec codec;
+    private final SandwichLeaveEvaluator sandwichLeaveEvaluator;
 
     /**
      * @param lopDays  the month's total policy penalty, summed over every rule
+     * @param sandwich what {@code SANDWICH_LEAVE} took, by date - the holidays in
+     *                 it are the part of {@code lopDays} that fell on holidays
      * @param outcomes one row per rule that produced a penalty, for the trace
      */
-    public record MonthPolicyResult(BigDecimal lopDays, List<AttendancePolicyOutcome> outcomes) {
+    public record MonthPolicyResult(BigDecimal lopDays, SandwichLeaveEvaluator.Charge sandwich,
+                                    List<AttendancePolicyOutcome> outcomes) {
 
         public static final MonthPolicyResult NONE =
-                new MonthPolicyResult(BigDecimal.ZERO, List.of());
+                new MonthPolicyResult(BigDecimal.ZERO, SandwichLeaveEvaluator.Charge.NONE, List.of());
+
+        /**
+         * The month's LOP with this penalty added. The working-day part is
+         * clamped - a badly configured rule must never push LOP past the days
+         * the employee was expected to work - and a lost holiday is added after
+         * the clamp, because a holiday is never one of those days.
+         */
+        public BigDecimal addTo(BigDecimal baseLop, long workingDays) {
+            BigDecimal holidays = sandwich.holidayDays();
+            return baseLop.add(lopDays.subtract(holidays))
+                    .min(BigDecimal.valueOf(workingDays))
+                    .add(holidays)
+                    .setScale(1, RoundingMode.HALF_UP);
+        }
     }
 
     /**
@@ -95,12 +114,39 @@ public class MonthPolicyEvaluator {
                 .flatMap(rule -> lateMarkPenalty(userId, month, ordered, latePenalisedDates, rule))
                 .ifPresent(outcomes::add);
 
+        // Reads its own days: it needs the holiday flags, and the neighbouring
+        // months, which the working days above do not carry.
+        SandwichLeaveEvaluator.Charge sandwich = SandwichLeaveEvaluator.Charge.NONE;
+        AttendancePolicyRule sandwichRule = policy.rule(RuleType.SANDWICH_LEAVE).orElse(null);
+        if (sandwichRule != null) {
+            sandwich = sandwichLeaveEvaluator.charge(userId, month,
+                    codec.parse(sandwichRule, SandwichLeave.class).adjacentLeaveUnpaid());
+            if (sandwich.lopDays().signum() > 0) {
+                outcomes.add(sandwichOutcome(userId, month, sandwich, sandwichRule));
+            }
+        }
+
         BigDecimal total = outcomes.stream()
                 .map(AttendancePolicyOutcome::getLopDays)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(1, RoundingMode.HALF_UP);
 
-        return new MonthPolicyResult(total, List.copyOf(outcomes));
+        return new MonthPolicyResult(total, sandwich, List.copyOf(outcomes));
+    }
+
+    private AttendancePolicyOutcome sandwichOutcome(String userId, YearMonth month,
+                                                    SandwichLeaveEvaluator.Charge charge,
+                                                    AttendancePolicyRule rule) {
+        BigDecimal lop = charge.lopDays().setScale(1, RoundingMode.HALF_UP);
+        String explanation = ("not worked on either side of a holiday - holiday lost: %s; "
+                + "paid leave unpaid: %s = %s LOP days, rule %s")
+                .formatted(datesOrNone(charge.holidays()), datesOrNone(charge.leaveDates()),
+                        lop.toPlainString(), rule.ruleLabel());
+        return outcome(userId, month, rule, lop, explanation);
+    }
+
+    private String datesOrNone(List<LocalDate> dates) {
+        return dates.isEmpty() ? "none" : joinDates(dates);
     }
 
     /**

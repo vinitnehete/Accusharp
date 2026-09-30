@@ -1,6 +1,7 @@
 package com.accusharp.hrms.dto;
 
 import com.accusharp.hrms.entity.AttendancePolicyOutcome;
+import com.accusharp.hrms.service.policy.SandwichLeaveEvaluator;
 
 import java.math.BigDecimal;
 import java.time.YearMonth;
@@ -30,6 +31,13 @@ public record MonthlyAttendanceResponse(
          * configures no rules.
          */
         BigDecimal policyLopDays,
+
+        /**
+         * The holidays a sandwich rule took away and the paid leave it made
+         * unpaid, by date - already inside {@link #lopDays}. Lets the records
+         * screen mark those days, whose own status does not change.
+         */
+        SandwichLeaveEvaluator.Charge sandwich,
 
         /** Compensatory-off days earned by working a weekly off or holiday. */
         BigDecimal compOffCreditDays,

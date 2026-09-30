@@ -146,8 +146,10 @@ public class DashboardService {
                 .map(entry -> new ReportDtos.PointLong(entry.getKey(), entry.getValue()))
                 .toList();
 
+        // A sum of other people's pay - empty for a viewer without PAY_READ.
+        boolean seesPay = employeeService.seesEveryonesPay();
         List<ReportDtos.PointAmount> payrollCost = new ArrayList<>();
-        for (int offset = PAYROLL_COST_MONTHS - 1; offset >= 0; offset--) {
+        for (int offset = PAYROLL_COST_MONTHS - 1; seesPay && offset >= 0; offset--) {
             YearMonth period = YearMonth.from(today).minusMonths(offset);
             BigDecimal cost = payrollService.getPeriodForCaller(period.getMonthValue(), period.getYear()).stream()
                     .map(Payroll::getNetSalary)

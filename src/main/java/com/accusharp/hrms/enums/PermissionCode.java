@@ -108,6 +108,15 @@ public enum PermissionCode {
     PAYROLL_PROCESS,
     PAYROLL_READ,
 
+    /**
+     * See other people's pay: salary and bank/statutory numbers on their
+     * record, their payroll and salary slips, salary history, and every report
+     * carrying money. Your own pay needs nothing. A data scope never reaches
+     * pay on its own - a supervisor sees their team, not what the team is paid;
+     * grant this through a custom role where someone should (a director).
+     */
+    PAY_READ,
+
     SALARY_SLIP_READ,
 
     REPORT_READ,

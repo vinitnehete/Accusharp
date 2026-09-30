@@ -147,6 +147,30 @@ class LeaveRuleTargetingAndAccrualHttpTest {
     }
 
     @Test
+    @DisplayName("one leave rule is saved for several employees at once, one rule each")
+    void oneRuleForSeveralEmployees() {
+        Resp created = send("POST", "/api/leave-rules/batch", """
+                {"scope": "EMPLOYEE", "scopeRefs": ["LRDIR", "LRWORKER"], "leaveType": "CASUAL_LEAVE",
+                 "grantMethod": "YEARLY_GRANT", "yearlyDays": 5, "effectiveFrom": "2031-01-01"}""", hrToken);
+
+        assertThat(created.status()).isEqualTo(201);
+        assertThat(created.body()).hasSize(2);
+        assertThat(quota("LRDIR", "CASUAL_LEAVE")).isEqualByComparingTo("5.0");
+        assertThat(quota("LRWORKER", "CASUAL_LEAVE")).isEqualByComparingTo("5.0");
+    }
+
+    @Test
+    @DisplayName("if one employee in the list does not exist, no leave rule is saved")
+    void aWrongEmployeeSavesNoLeaveRule() {
+        Resp refused = send("POST", "/api/leave-rules/batch", """
+                {"scope": "EMPLOYEE", "scopeRefs": ["LRDIR", "NOBODY"], "leaveType": "CASUAL_LEAVE",
+                 "grantMethod": "YEARLY_GRANT", "yearlyDays": 5, "effectiveFrom": "2031-01-01"}""", hrToken);
+
+        assertThat(refused.status()).isEqualTo(404);
+        assertThat(leaveRuleRepository.findAll()).isEmpty();
+    }
+
+    @Test
     @DisplayName("a rule naming a population nobody is in is refused, rather than silently never applying")
     void unknownScopeRefIsRefused() {
         Resp refused = send("POST", "/api/leave-rules", """

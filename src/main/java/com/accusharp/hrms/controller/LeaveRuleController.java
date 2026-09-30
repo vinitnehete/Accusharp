@@ -46,6 +46,13 @@ public class LeaveRuleController {
         return leaveRuleService.create(request);
     }
 
+    /** The same rule for several employees (or several of any one scope) at once - all saved, or none. */
+    @PostMapping("/batch")
+    @ResponseStatus(HttpStatus.CREATED)
+    public List<LeaveRule> createForEach(@Valid @RequestBody LeaveRuleRequest request) {
+        return leaveRuleService.createForEach(request);
+    }
+
     @PutMapping("/{id}")
     public LeaveRule update(@PathVariable Long id, @Valid @RequestBody LeaveRuleRequest request) {
         return leaveRuleService.update(id, request);

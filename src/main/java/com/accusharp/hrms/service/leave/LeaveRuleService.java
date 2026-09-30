@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -49,15 +50,36 @@ public class LeaveRuleService {
 
     @Transactional
     public LeaveRule create(LeaveRuleRequest request) {
-        Long companyId = tenantContext.currentCompanyId().orElse(null);
-        LeaveRule rule = new LeaveRule();
-        rule.setCompany(companyId == null ? null : companyRepository.getReferenceById(companyId));
-        apply(rule, request);
-        assertNoDuplicate(companyId, rule);
+        return createEach(request, Collections.singletonList(request.getScopeRef())).get(0);
+    }
 
-        LeaveRule saved = leaveRuleRepository.save(rule);
-        audit("LEAVE_RULE_CREATE", saved);
-        return saved;
+    /**
+     * The same rule for several populations of one scope - several employees,
+     * say - one rule each. All are validated before any is saved, so a wrong
+     * reference saves none of them.
+     */
+    @Transactional
+    public List<LeaveRule> createForEach(LeaveRuleRequest request) {
+        if (request.getScopeRefs() == null || request.getScopeRefs().isEmpty()) {
+            throw new BusinessRuleException("scopeRefs must name at least one " + request.getScope());
+        }
+        return createEach(request, request.getScopeRefs().stream().distinct().toList());
+    }
+
+    private List<LeaveRule> createEach(LeaveRuleRequest request, List<String> scopeRefs) {
+        Long companyId = tenantContext.currentCompanyId().orElse(null);
+        List<LeaveRule> rules = scopeRefs.stream().map(scopeRef -> {
+            LeaveRule rule = new LeaveRule();
+            rule.setCompany(companyId == null ? null : companyRepository.getReferenceById(companyId));
+            apply(rule, request, scopeRef);
+            assertNoDuplicate(companyId, rule);
+            return rule;
+        }).toList();
+        return rules.stream().map(rule -> {
+            LeaveRule saved = leaveRuleRepository.save(rule);
+            audit("LEAVE_RULE_CREATE", saved);
+            return saved;
+        }).toList();
     }
 
     @Transactional
@@ -71,11 +93,11 @@ public class LeaveRuleService {
         // ahead of that query, and the rule would then collide with itself -
         // refusing every edit that moves its month.
         LeaveRule candidate = new LeaveRule();
-        apply(candidate, request);
+        apply(candidate, request, request.getScopeRef());
         if (!sameKey(rule, candidate)) {
             assertNoDuplicate(companyId, candidate);
         }
-        apply(rule, request);
+        apply(rule, request, request.getScopeRef());
 
         LeaveRule saved = leaveRuleRepository.save(rule);
         audit("LEAVE_RULE_UPDATE", saved);
@@ -97,7 +119,7 @@ public class LeaveRuleService {
 
     // ---- validation --------------------------------------------------------
 
-    private void apply(LeaveRule rule, LeaveRuleRequest request) {
+    private void apply(LeaveRule rule, LeaveRuleRequest request, String requestedScopeRef) {
         LeaveType type = request.getLeaveType();
         LeaveGrant grant = request.getGrantMethod();
 
@@ -120,9 +142,9 @@ public class LeaveRuleService {
         // An employment-type reference names an enum constant, so "day_wise" is
         // the same population as "DAY_WISE"; every other scope names a code
         // exactly as its master holds it.
-        String requestedRef = request.getScope() == RuleScope.EMPLOYMENT_TYPE && request.getScopeRef() != null
-                ? request.getScopeRef().trim().toUpperCase()
-                : request.getScopeRef();
+        String requestedRef = request.getScope() == RuleScope.EMPLOYMENT_TYPE && requestedScopeRef != null
+                ? requestedScopeRef.trim().toUpperCase()
+                : requestedScopeRef;
         String scopeRef = scopeRefValidator.normalise(request.getScope(), requestedRef);
         scopeRefValidator.assertExists(request.getScope(), scopeRef);
         if (request.getCreditSteps() != null) {

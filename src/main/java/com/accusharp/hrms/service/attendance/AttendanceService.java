@@ -1265,6 +1265,7 @@ public class AttendanceService {
         summary.setOvertimeHours(rolled.overtimeHours());
         summary.setLopDays(rolled.lopDays());
         summary.setPolicyLopDays(rolled.policyLopDays());
+        summary.setSandwichHolidayDays(rolled.sandwich().holidayDays());
         summary.setCompOffCreditDays(rolled.compOffCreditDays());
         summary.setPaidDayOffDays(rolled.paidDayOffDays());
         summary.setWeekOffWorkedDays(rolled.weekOffWorkedDays());
@@ -1344,18 +1345,16 @@ public class AttendanceService {
                 employee.getUserId(), month, days, workingDates, latePenalisedDates,
                 monthPolicyFor(employee, month));
 
-        // Clamped: a badly-configured accumulation rule could otherwise push LOP
-        // past the days the employee was expected to work. calculatePayableDays
-        // already floors payable days at zero, but a slip reading "22 working
-        // days, 31 LOP days" is not something to print.
-        BigDecimal lopDays = baseLop.add(policyResult.lopDays())
-                .min(BigDecimal.valueOf(workingDays))
-                .setScale(DAY_SCALE, RoundingMode.HALF_UP);
+        // Clamped to working days - a slip reading "22 working days, 31 LOP
+        // days" is not something to print - except holidays a sandwich rule
+        // took, which are not working days. See MonthPolicyResult#addTo.
+        BigDecimal lopDays = policyResult.addTo(baseLop, workingDays);
 
         return new MonthlyAttendanceResponse(employee.getUserId(), employee.getEmployeeName(), month,
                 workingDays, presentDays, absentDays, halfDays, leaveDayCount, holidayDays, weekOffDays,
                 lateCount, earlyExitCount, invalidPunches, totalHours, overtimeHours, lopDays,
-                policyResult.lopDays(), compOffCreditDays, weekOffTally.paidDayOffDays(),
+                policyResult.lopDays(), policyResult.sandwich(),
+                compOffCreditDays, weekOffTally.paidDayOffDays(),
                 weekOffTally.workedDays(), weekOffTally.unrosteredPunchDays(),
                 policyResult.outcomes(), days);
     }

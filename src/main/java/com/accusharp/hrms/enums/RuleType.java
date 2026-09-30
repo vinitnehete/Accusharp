@@ -97,7 +97,19 @@ public enum RuleType {
      * charge the employee twice for a single late arrival: once as a half day
      * on the day itself, and again as a mark toward this penalty.
      */
-    LATE_MARK_ACCUMULATION(RuleEvaluationScope.MONTH);
+    LATE_MARK_ACCUMULATION(RuleEvaluationScope.MONTH),
+
+    /**
+     * The sandwich leave rule: a mandatory holiday is paid only to someone who
+     * worked the working day just before it or just after it (weekly offs in
+     * between are looked past). Leave or absence on both sides loses the
+     * holiday, and optionally the paid leave on those two days; leave applied
+     * through the holiday keeps it paid.
+     *
+     * <p>Month-scoped because it reads neighbouring days, possibly in the next
+     * month - see {@code SandwichLeaveEvaluator}.
+     */
+    SANDWICH_LEAVE(RuleEvaluationScope.MONTH);
 
     private final RuleEvaluationScope evaluationScope;
 

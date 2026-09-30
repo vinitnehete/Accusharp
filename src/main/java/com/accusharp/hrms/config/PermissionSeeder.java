@@ -97,6 +97,7 @@ public class PermissionSeeder {
                 PermissionCode.LEAVE_BALANCE_READ, PermissionCode.LEAVE_BALANCE_MANAGE,
                 PermissionCode.SALARY_RULE_READ, PermissionCode.SALARY_RULE_MANAGE,
                 PermissionCode.PAYROLL_PROCESS, PermissionCode.PAYROLL_READ,
+                PermissionCode.PAY_READ,
                 PermissionCode.SALARY_SLIP_READ,
                 PermissionCode.REPORT_READ,
                 PermissionCode.DASHBOARD_READ,

@@ -8,6 +8,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -105,7 +107,9 @@ public class AttendancePolicyRule {
     @Column(name = "scope_ref", nullable = false, length = 50)
     private String scopeRef;
 
+    // Text, not a MySQL enum(...): a new rule type must not need an ALTER TABLE.
     @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "rule_type", nullable = false, length = 40)
     private RuleType ruleType;
 

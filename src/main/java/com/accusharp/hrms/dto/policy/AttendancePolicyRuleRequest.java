@@ -8,6 +8,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * Appends a new version of one rule.
@@ -64,4 +65,7 @@ public class AttendancePolicyRuleRequest {
 
     @Size(max = 500)
     private String notes;
+
+    /** For {@code POST /rules/batch}: the same rule for each of these - several employees, say. */
+    private List<@Size(max = 50) String> scopeRefs;
 }

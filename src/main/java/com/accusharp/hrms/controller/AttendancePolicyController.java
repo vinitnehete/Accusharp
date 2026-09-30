@@ -55,6 +55,14 @@ public class AttendancePolicyController {
         return attendancePolicyService.create(request);
     }
 
+    /** The same rule for several employees (or several of any one scope) at once - all saved, or none. */
+    @PreAuthorize("@authz.can('ATTENDANCE_POLICY_MANAGE')")
+    @PostMapping("/rules/batch")
+    public List<AttendancePolicyDtos.RuleResponse> createForEach(
+            @Valid @RequestBody AttendancePolicyRuleRequest request) {
+        return attendancePolicyService.createForEach(request);
+    }
+
     /**
      * Removes a version that has not taken effect yet. Anything that has ever
      * been in force is superseded with a disabled version instead - a day it

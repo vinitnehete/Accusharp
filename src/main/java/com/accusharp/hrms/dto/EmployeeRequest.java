@@ -34,7 +34,7 @@ public class EmployeeRequest {
     @Size(max = 50)
     private String userId;
 
-    @NotBlank
+    /** Optional; blank is saved as no code. */
     @Size(max = 50)
     private String employeeCode;
 

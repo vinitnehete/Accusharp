@@ -11,6 +11,7 @@ import com.accusharp.hrms.entity.WorkPolicy;
 import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.PayrollStatus;
+import com.accusharp.hrms.enums.StatutoryDeduction;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.PayrollRepository;
@@ -43,6 +44,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -174,6 +176,7 @@ public class PayrollService {
         Payroll payroll = payrollRepository.findById(id).orElseThrow(() -> NotFoundException.of("Payroll", id));
         employeeService.getEntityByUserId(payroll.getEmployeeId());
         employeeService.assertSelfOrManages(payroll.getEmployeeId());
+        employeeService.assertCanSeePayOf(payroll.getEmployeeId());
         return payroll;
     }
 
@@ -181,6 +184,7 @@ public class PayrollService {
     public Payroll getCurrent(String employeeId, int month, int year) {
         employeeService.getEntityByUserId(employeeId);
         employeeService.assertSelfOrManages(employeeId);
+        employeeService.assertCanSeePayOf(employeeId);
         return payrollRepository.findByEmployeeIdAndMonthAndYearAndStatus(
                         employeeId, month, year, PayrollStatus.GENERATED)
                 .orElseThrow(() -> NotFoundException.of("Payroll", employeeId + " " + month + "/" + year));
@@ -190,6 +194,7 @@ public class PayrollService {
     public List<Payroll> getRevisions(String employeeId, int month, int year) {
         employeeService.getEntityByUserId(employeeId);
         employeeService.assertSelfOrManages(employeeId);
+        employeeService.assertCanSeePayOf(employeeId);
         return payrollRepository.findAllByEmployeeIdAndMonthAndYearOrderByRevisionDesc(employeeId, month, year);
     }
 
@@ -197,6 +202,7 @@ public class PayrollService {
     public List<Payroll> getHistory(String employeeId) {
         employeeService.getEntityByUserId(employeeId);
         employeeService.assertSelfOrManages(employeeId);
+        employeeService.assertCanSeePayOf(employeeId);
         return payrollRepository.findAllByEmployeeIdOrderByYearDescMonthDesc(employeeId);
     }
 
@@ -219,8 +225,12 @@ public class PayrollService {
         Set<String> visibleUserIds = employeeService.getVisibleEntities().stream()
                 .map(Employee::getUserId)
                 .collect(Collectors.toSet());
+        // Scope decides whose records; pay visibility decides whose pay - a
+        // supervisor's team scope alone yields only their own payroll.
+        Predicate<String> seesPay = employeeService.payVisibility();
         return payrollRepository.findAllByMonthAndYearAndStatus(month, year, PayrollStatus.GENERATED).stream()
                 .filter(payroll -> visibleUserIds.contains(payroll.getEmployeeId()))
+                .filter(payroll -> seesPay.test(payroll.getEmployeeId()))
                 .toList();
     }
 
@@ -407,8 +417,10 @@ public class PayrollService {
             // employed window counts - a leaver is not paid a holiday after
             // relieving. presentDays itself is left alone; see
             // monthlyOvertimeHours for how the holiday meets the cap.
+            // Less any a sandwich rule took away for not working either side of it.
             paidHolidayDays = BigDecimal.valueOf(
-                    attendanceService.paidHolidayDays(employee.getUserId(), window.from(), window.to()));
+                    attendanceService.paidHolidayDays(employee.getUserId(), window.from(), window.to()))
+                    .subtract(attendance.getSandwichHolidayDays()).max(BigDecimal.ZERO);
             BigDecimal attendedDays = behaviour.paidLeaveAddsPayableDays()
                     ? presentDays.add(paidLeaveDays)
                     : presentDays;
@@ -494,17 +506,24 @@ public class PayrollService {
         payroll.setTotalEarnings(totalEarnings);
 
         // ---- deductions ----------------------------------------------------
-        BigDecimal earnPf = deductionCalculationService.calculateEarnPf(
-                employee.getPfBasic(), totalDays, payableDays);
-        payroll.setPf(deductionCalculationService.calculatePf(employee.getPfBasic(), rule));
+        // A work policy may leave statutory deductions out - a director outside
+        // PF, say. Zero rather than skipped, so the PF/ESI/PT registers (which
+        // list only non-zero rows) leave these people out too.
+        Set<StatutoryDeduction> excluded = workPolicy.map(WorkPolicy::getExcludedDeductions).orElse(Set.of());
+        BigDecimal earnPf = unlessExcluded(excluded, StatutoryDeduction.PF,
+                deductionCalculationService.calculateEarnPf(employee.getPfBasic(), totalDays, payableDays));
+        payroll.setPf(unlessExcluded(excluded, StatutoryDeduction.PF,
+                deductionCalculationService.calculatePf(employee.getPfBasic(), rule)));
         payroll.setEarnPf(earnPf);
         payroll.setPfDeduction(deductionCalculationService.calculatePfDeduction(earnPf, rule));
         // Ceiling and percentage both apply to earnBasicDA (this period's earned
         // basicDA, attendance-prorated), not the full earnGross.
-        payroll.setEsic(deductionCalculationService.calculateEsic(payroll.getEarnBasicDA(), rule));
-        payroll.setProfessionalTax(
-                deductionCalculationService.calculateProfessionalTax(employee.getGrossSalary(), rule));
-        payroll.setMlwf(deductionCalculationService.calculateMlwf(request.getMonth(), rule));
+        payroll.setEsic(unlessExcluded(excluded, StatutoryDeduction.ESIC,
+                deductionCalculationService.calculateEsic(payroll.getEarnBasicDA(), rule)));
+        payroll.setProfessionalTax(unlessExcluded(excluded, StatutoryDeduction.PROFESSIONAL_TAX,
+                deductionCalculationService.calculateProfessionalTax(employee.getGrossSalary(), rule)));
+        payroll.setMlwf(unlessExcluded(excluded, StatutoryDeduction.MLWF,
+                deductionCalculationService.calculateMlwf(request.getMonth(), rule)));
         payroll.setTds(salaryCalculationService.scaled(request.getTds()));
         payroll.setAdvanceDeduction(salaryCalculationService.scaled(request.getAdvanceDeduction()));
         payroll.setLoanDeduction(salaryCalculationService.scaled(request.getLoanDeduction()));
@@ -785,10 +804,18 @@ public class PayrollService {
      * Unpaid leave is already excluded from the LOP figure the summary carries,
      * so deriving it back keeps the two consistent.
      */
+    /** The amount, or zero when this employee's work policy leaves the deduction out. */
+    private static BigDecimal unlessExcluded(Set<StatutoryDeduction> excluded, StatutoryDeduction deduction,
+                                             BigDecimal amount) {
+        return excluded.contains(deduction) ? BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP) : amount;
+    }
+
     private BigDecimal paidLeaveDays(MonthlyAttendanceSummary attendance) {
+        // A holiday a sandwich rule took is LOP but not a working day, so it is
+        // left out here - it must not also read as a day of unpaid leave.
         BigDecimal implied = BigDecimal.valueOf(attendance.getWorkingDays())
                 .subtract(attendance.getPresentDays())
-                .subtract(attendance.getLopDays())
+                .subtract(attendance.getLopDays().subtract(attendance.getSandwichHolidayDays()))
                 .max(BigDecimal.ZERO);
         return implied.min(attendance.getLeaveDays()).setScale(1, RoundingMode.HALF_UP);
     }
