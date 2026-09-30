@@ -4,6 +4,7 @@ import com.accusharp.hrms.dto.EmployeeResponse;
 import com.accusharp.hrms.dto.PayrollAuditDtos;
 import com.accusharp.hrms.dto.ReportDtos;
 import com.accusharp.hrms.dto.ReportFilter;
+import com.accusharp.hrms.security.PayReport;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.service.report.AttendanceLeaveReportService;
 import com.accusharp.hrms.service.report.PayrollAuditService;
@@ -89,33 +90,39 @@ public class ReportController {
         return reportService.leaveBalanceReport(year == null ? LocalDate.now().getYear() : year);
     }
 
+    @PayReport
     @GetMapping("/payroll")
     public List<ReportDtos.PayrollRow> payroll(@RequestParam @Min(1) @Max(12) int month, @RequestParam @Min(2000) @Max(2100) int year) {
         return reportService.payrollReport(month, year);
     }
 
+    @PayReport
     @GetMapping("/payroll/by-department")
     public List<ReportDtos.PayrollCostGroup> departmentPayroll(@RequestParam @Min(1) @Max(12) int month,
                                                                @RequestParam @Min(2000) @Max(2100) int year) {
         return reportService.departmentPayrollReport(month, year);
     }
 
+    @PayReport
     @GetMapping("/payroll/by-company")
     public List<ReportDtos.PayrollCostGroup> companyPayroll(@RequestParam @Min(1) @Max(12) int month,
                                                             @RequestParam @Min(2000) @Max(2100) int year) {
         return reportService.companyPayrollReport(month, year);
     }
 
+    @PayReport
     @GetMapping("/statutory/pf")
     public List<ReportDtos.StatutoryRow> pf(@RequestParam @Min(1) @Max(12) int month, @RequestParam @Min(2000) @Max(2100) int year) {
         return reportService.pfReport(month, year);
     }
 
+    @PayReport
     @GetMapping("/statutory/professional-tax")
     public List<ReportDtos.StatutoryRow> professionalTax(@RequestParam @Min(1) @Max(12) int month, @RequestParam @Min(2000) @Max(2100) int year) {
         return reportService.professionalTaxReport(month, year);
     }
 
+    @PayReport
     @GetMapping("/statutory/esic")
     public List<ReportDtos.StatutoryRow> esic(@RequestParam @Min(1) @Max(12) int month, @RequestParam @Min(2000) @Max(2100) int year) {
         return reportService.esicReport(month, year);
@@ -124,6 +131,7 @@ public class ReportController {
     // ---- monthly payroll audit ---------------------------------------------
 
     /** One reconcilable line per employee: identifiers, fixed wages, earned wages, OT, hours, deductions, net. */
+    @PayReport
     @GetMapping("/payroll/audit")
     public List<PayrollAuditDtos.AuditRow> payrollAudit(@RequestParam @Min(1) @Max(12) int month,
                                                         @RequestParam @Min(2000) @Max(2100) int year,
@@ -134,6 +142,7 @@ public class ReportController {
     }
 
     /** Company-level totals over exactly the population {@link #payrollAudit} lists. */
+    @PayReport
     @GetMapping("/payroll/audit/summary")
     public PayrollAuditDtos.CompanySummary payrollAuditSummary(@RequestParam @Min(1) @Max(12) int month,
                                                                @RequestParam @Min(2000) @Max(2100) int year,
@@ -144,6 +153,7 @@ public class ReportController {
     }
 
     /** The day-by-day attendance and wage table behind one employee's audit line. */
+    @PayReport
     @GetMapping("/payroll/audit/{employeeId}/days")
     public PayrollAuditDtos.DayWiseReport payrollAuditDays(@PathVariable String employeeId,
                                                            @RequestParam @Min(1) @Max(12) int month,
@@ -151,6 +161,7 @@ public class ReportController {
         return payrollAuditService.dayWiseReport(employeeId, month, year);
     }
 
+    @PayReport
     @GetMapping(value = "/payroll/audit/export", produces = "text/csv")
     public ResponseEntity<String> payrollAuditExport(@RequestParam @Min(1) @Max(12) int month,
                                                      @RequestParam @Min(2000) @Max(2100) int year,
@@ -164,6 +175,7 @@ public class ReportController {
     // ---- payroll registers --------------------------------------------------
 
     /** Full CTC breakup and every earning/deduction head, one row per employee for the run. */
+    @PayReport
     @GetMapping("/payroll/register")
     public List<ReportDtos.PayrollRegisterRow> payrollRegister(@RequestParam @Min(1) @Max(12) int month,
                                                                @RequestParam @Min(2000) @Max(2100) int year,
@@ -174,6 +186,7 @@ public class ReportController {
                 filter(departmentId, designationId, categoryId));
     }
 
+    @PayReport
     @GetMapping(value = "/payroll/register/export", produces = "text/csv")
     public ResponseEntity<String> payrollRegisterExport(@RequestParam @Min(1) @Max(12) int month,
                                                         @RequestParam @Min(2000) @Max(2100) int year,
@@ -186,6 +199,7 @@ public class ReportController {
     }
 
     /** Every employee's payslip totals for the period, in bulk. */
+    @PayReport
     @GetMapping("/payroll/payslip-register")
     public List<ReportDtos.PayslipRegisterRow> payslipRegister(@RequestParam @Min(1) @Max(12) int month,
                                                                @RequestParam @Min(2000) @Max(2100) int year,
@@ -197,6 +211,7 @@ public class ReportController {
     }
 
     /** Salary revisions taking effect in the window, with the arrears exposure each created. */
+    @PayReport
     @GetMapping("/payroll/salary-revisions")
     public List<ReportDtos.SalaryRevisionRow> salaryRevisions(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
@@ -209,6 +224,7 @@ public class ReportController {
     }
 
     /** The bank credit advice for a period, with the control totals a bank file is reconciled against. */
+    @PayReport
     @GetMapping("/payroll/bank-transfer")
     public ReportDtos.BankTransferAdvice bankTransfer(@RequestParam @Min(1) @Max(12) int month,
                                                       @RequestParam @Min(2000) @Max(2100) int year,
@@ -219,6 +235,7 @@ public class ReportController {
                 filter(departmentId, designationId, categoryId));
     }
 
+    @PayReport
     @GetMapping(value = "/payroll/bank-transfer/export", produces = "text/csv")
     public ResponseEntity<String> bankTransferExport(@RequestParam @Min(1) @Max(12) int month,
                                                      @RequestParam @Min(2000) @Max(2100) int year,
@@ -231,6 +248,7 @@ public class ReportController {
     }
 
     /** The full and final worksheet for everyone relieved inside the window. */
+    @PayReport
     @GetMapping("/payroll/full-and-final")
     public List<ReportDtos.FullAndFinalRow> fullAndFinal(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
@@ -267,6 +285,7 @@ public class ReportController {
     }
 
     /** Day-level overtime drill-down, priced at the rate the period's payroll actually used. */
+    @PayReport
     @GetMapping("/attendance/overtime-register")
     public List<ReportDtos.OvertimeRegisterRow> overtimeRegister(
             @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month,
@@ -277,6 +296,7 @@ public class ReportController {
                 filter(departmentId, designationId, categoryId));
     }
 
+    @PayReport
     @GetMapping(value = "/attendance/overtime-register/export", produces = "text/csv")
     public ResponseEntity<String> overtimeRegisterExport(
             @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month,
@@ -315,6 +335,7 @@ public class ReportController {
     // ---- statutory filings --------------------------------------------------
 
     /** PF ECR lines for the period, in the EPFO column order. */
+    @PayReport
     @GetMapping("/statutory/pf-ecr")
     public List<ReportDtos.PfEcrRow> pfEcr(@RequestParam @Min(1) @Max(12) int month,
                                            @RequestParam @Min(2000) @Max(2100) int year,
@@ -325,6 +346,7 @@ public class ReportController {
     }
 
     /** ESI monthly return lines for the period. */
+    @PayReport
     @GetMapping("/statutory/esi-return")
     public List<ReportDtos.EsiReturnRow> esiReturn(@RequestParam @Min(1) @Max(12) int month,
                                                    @RequestParam @Min(2000) @Max(2100) int year,
@@ -335,6 +357,7 @@ public class ReportController {
     }
 
     /** Professional tax register - who was taxed, on what, and how much. */
+    @PayReport
     @GetMapping("/statutory/pt-register")
     public List<ReportDtos.ProfessionalTaxRow> professionalTaxRegister(
             @RequestParam @Min(1) @Max(12) int month,
@@ -347,6 +370,7 @@ public class ReportController {
     }
 
     /** Quarterly TDS position per employee - the figures Form 24Q Annexure I is filed from. */
+    @PayReport
     @GetMapping("/statutory/tds-24q")
     public List<ReportDtos.Tds24qRow> tds24q(@RequestParam @Min(2000) @Max(2100) int financialYear,
                                              @RequestParam @Min(1) @Max(4) int quarter,
@@ -358,6 +382,7 @@ public class ReportController {
     }
 
     /** Gratuity liability accrued per employee as at a date. */
+    @PayReport
     @GetMapping("/statutory/gratuity")
     public List<ReportDtos.GratuityAccrualRow> gratuity(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf,

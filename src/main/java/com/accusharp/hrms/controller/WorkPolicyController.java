@@ -48,6 +48,13 @@ public class WorkPolicyController {
         return ResponseEntity.status(HttpStatus.CREATED).body(workPolicyService.create(request));
     }
 
+    /** The same policy for several employees (or several of any one scope) at once - all saved, or none. */
+    @PreAuthorize("@authz.can('WORK_POLICY_MANAGE')")
+    @PostMapping("/batch")
+    public ResponseEntity<List<WorkPolicyResponse>> createForEach(@Valid @RequestBody WorkPolicyRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(workPolicyService.createForEach(request));
+    }
+
     /** What one employee actually follows on a date, and under which rule. */
     @PreAuthorize("@authz.can('WORK_POLICY_READ')")
     @GetMapping("/effective")

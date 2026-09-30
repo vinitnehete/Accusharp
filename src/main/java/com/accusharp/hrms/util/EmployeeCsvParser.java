@@ -46,13 +46,14 @@ public final class EmployeeCsvParser {
     }
 
     public static List<ParsedCsvRow<EmployeeRequest>> parse(MultipartFile file) {
-        return CsvRowParser.parse(file, "employeeCode", EmployeeCsvParser::toRequest);
+        // userId finds the header row - employeeCode is optional and may not be a column at all.
+        return CsvRowParser.parse(file, new String[]{"userId", "employeeCode"}, EmployeeCsvParser::toRequest);
     }
 
     private static EmployeeRequest toRequest(CSVRecord record) {
         EmployeeRequest request = new EmployeeRequest();
         request.setUserId(CsvRowParser.required(record, "userId"));
-        request.setEmployeeCode(CsvRowParser.required(record, "employeeCode"));
+        request.setEmployeeCode(CsvRowParser.get(record, "employeeCode"));
         request.setEmployeeName(CsvRowParser.required(record, "employeeName"));
         request.setCompanyId(parseLong(record, "companyId"));
         request.setDepartmentId(parseLong(record, "departmentId"));

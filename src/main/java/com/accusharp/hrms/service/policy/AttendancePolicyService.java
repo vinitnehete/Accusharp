@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -161,18 +162,44 @@ public class AttendancePolicyService {
      */
     @Transactional
     public AttendancePolicyDtos.RuleResponse create(AttendancePolicyRuleRequest request) {
-        RuleType ruleType = request.getRuleType();
+        return createEach(request, Collections.singletonList(request.getScopeRef())).get(0);
+    }
+
+    /**
+     * The same rule for several populations of one scope - several employees,
+     * say - one version each. Every reference is checked before anything is
+     * written, so a wrong one saves none of them (the audit rows commit on
+     * their own, so "rolled back afterwards" would still leave a false trail).
+     */
+    @Transactional
+    public List<AttendancePolicyDtos.RuleResponse> createForEach(AttendancePolicyRuleRequest request) {
+        if (request.getScopeRefs() == null || request.getScopeRefs().isEmpty()) {
+            throw new BusinessRuleException("scopeRefs must name at least one " + request.getScope());
+        }
+        return createEach(request, request.getScopeRefs());
+    }
+
+    private List<AttendancePolicyDtos.RuleResponse> createEach(AttendancePolicyRuleRequest request,
+                                                               List<String> requestedRefs) {
         RuleScope scope = request.getScope();
-        String scopeRef = normaliseScopeRef(scope, request.getScopeRef());
+        List<String> scopeRefs = requestedRefs.stream().map(ref -> normaliseScopeRef(scope, ref)).distinct().toList();
 
         // Bind and validate before anything else - a bad params blob should be a
         // 400 naming the field, not a rule that runs on a zero grace next month.
-        AttendancePolicyParams.Params params = codec.parse(ruleType, request.getParams().toString());
+        AttendancePolicyParams.Params params = codec.parse(request.getRuleType(), request.getParams().toString());
 
         Long companyId = tenantContext.currentCompanyId().orElse(null);
-        assertScopeRefExists(scope, scopeRef, companyId);
-        assertNotBackdatedIntoLockedPeriod(request.getEffectiveFrom(), scope, scopeRef, companyId);
+        scopeRefs.forEach(scopeRef -> {
+            assertScopeRefExists(scope, scopeRef, companyId);
+            assertNotBackdatedIntoLockedPeriod(request.getEffectiveFrom(), scope, scopeRef, companyId);
+        });
+        return scopeRefs.stream().map(scopeRef -> save(request, scopeRef, params, companyId)).toList();
+    }
 
+    private AttendancePolicyDtos.RuleResponse save(AttendancePolicyRuleRequest request, String scopeRef,
+                                                   AttendancePolicyParams.Params params, Long companyId) {
+        RuleType ruleType = request.getRuleType();
+        RuleScope scope = request.getScope();
         int nextVersion = currentHead(companyId, scope, scopeRef, ruleType)
                 .map(rule -> rule.getVersion() + 1)
                 .orElse(1);

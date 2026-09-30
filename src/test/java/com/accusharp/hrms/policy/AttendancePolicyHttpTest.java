@@ -228,6 +228,50 @@ class AttendancePolicyHttpTest {
     }
 
     @Test
+    @DisplayName("the sandwich leave rule is switched on for the whole company through the API, and a misspelt option is refused")
+    void sandwichLeaveIsSwitchedOnPerCompany() {
+        Resp saved = send("POST", "/api/attendance-policy/rules", """
+                {"scope":"COMPANY","ruleType":"SANDWICH_LEAVE","effectiveFrom":"2026-09-01","enabled":true,
+                 "params":{"adjacentLeaveUnpaid":true}}""", hrTokenA);
+
+        assertThat(saved.status()).isEqualTo(200);
+        assertThat(saved.body().get("ruleType").asString()).isEqualTo("SANDWICH_LEAVE");
+        assertThat(saved.body().get("evaluationScope").asString()).isEqualTo("MONTH");
+
+        Resp misspelt = send("POST", "/api/attendance-policy/rules", """
+                {"scope":"COMPANY","ruleType":"SANDWICH_LEAVE","effectiveFrom":"2026-10-01","enabled":true,
+                 "params":{"leaveUnpaid":true}}""", hrTokenA);
+        assertThat(misspelt.status()).isEqualTo(400);
+        assertThat(misspelt.body().get("message").asString()).contains("params do not match SANDWICH_LEAVE");
+    }
+
+    @Test
+    @DisplayName("one rule is saved for several employees at once, each with their own version")
+    void oneRuleForSeveralEmployees() {
+        Resp saved = send("POST", "/api/attendance-policy/rules/batch", """
+                {"scope":"EMPLOYEE","scopeRefs":["EMP-A01","HRA001"],"ruleType":"LATE_ARRIVAL",
+                 "effectiveFrom":"2026-09-01","enabled":true,
+                 "params":{"graceMinutes":15,"penaltyStatus":"HALF_DAY"}}""", hrTokenA);
+
+        assertThat(saved.status()).isEqualTo(200);
+        assertThat(saved.body()).hasSize(2);
+        assertThat(saved.body().get(0).get("scopeRef").asString()).isEqualTo("EMP-A01");
+        assertThat(saved.body().get(1).get("scopeRef").asString()).isEqualTo("HRA001");
+    }
+
+    @Test
+    @DisplayName("an employee of another company in the list saves no rule at all")
+    void anotherCompanysEmployeeSavesNoRule() {
+        Resp refused = send("POST", "/api/attendance-policy/rules/batch", """
+                {"scope":"EMPLOYEE","scopeRefs":["EMP-A01","HRB001"],"ruleType":"LATE_ARRIVAL",
+                 "effectiveFrom":"2026-09-01","enabled":true,
+                 "params":{"graceMinutes":15,"penaltyStatus":"HALF_DAY"}}""", hrTokenA);
+
+        assertThat(refused.status()).isEqualTo(404);
+        assertThat(policyRuleRepository.findAll()).isEmpty();
+    }
+
+    @Test
     @DisplayName("MISSING_PUNCH cannot award a full day - a single punch is no evidence anybody stayed")
     void missingPunchCannotAwardPresent() {
         Resp rejected = send("POST", "/api/attendance-policy/rules", """

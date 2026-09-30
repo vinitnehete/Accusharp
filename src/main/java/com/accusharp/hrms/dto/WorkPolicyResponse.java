@@ -5,8 +5,11 @@ import com.accusharp.hrms.enums.AttendanceTracking;
 import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.RuleScope;
+import com.accusharp.hrms.enums.StatutoryDeduction;
 
 import java.time.LocalDate;
+import java.util.List;
+import java.util.Set;
 
 /**
  * One work policy version, plus a sentence a person can read - what the policy
@@ -22,6 +25,7 @@ public record WorkPolicyResponse(
         AttendanceTracking attendanceTracking,
         PayrollMode payrollMode,
         LeaveApprovalFlow leaveApproval,
+        Set<StatutoryDeduction> excludedDeductions,
         String summary,
         String notes
 ) {
@@ -30,7 +34,7 @@ public record WorkPolicyResponse(
         return new WorkPolicyResponse(policy.getId(), policy.getScope(), policy.getScopeRef(),
                 policy.getVersion(), policy.getEffectiveFrom(), policy.isEnabled(),
                 policy.getAttendanceTracking(), policy.getPayrollMode(), policy.leaveApprovalOrDefault(),
-                summarise(policy), policy.getNotes());
+                policy.getExcludedDeductions(), summarise(policy), policy.getNotes());
     }
 
     private static String summarise(WorkPolicy policy) {
@@ -45,6 +49,17 @@ public record WorkPolicyResponse(
             case HR_ONLY -> "leave goes straight to HR, with no endorsement step";
             case AUTO_APPROVE -> "leave is approved as it is applied for";
         };
-        return attendance + "; " + pay + "; " + leave + ".";
+        return attendance + "; " + pay + "; " + leave + notDeducted(policy.getExcludedDeductions()) + ".";
+    }
+
+    /** "; PF, ESIC and professional tax are not deducted" - or nothing. */
+    private static String notDeducted(Set<StatutoryDeduction> excluded) {
+        if (excluded == null || excluded.isEmpty()) {
+            return "";
+        }
+        List<String> labels = excluded.stream().map(StatutoryDeduction::label).toList();
+        String names = labels.size() == 1 ? labels.get(0)
+                : String.join(", ", labels.subList(0, labels.size() - 1)) + " and " + labels.get(labels.size() - 1);
+        return "; " + names + (labels.size() == 1 ? " is" : " are") + " not deducted";
     }
 }

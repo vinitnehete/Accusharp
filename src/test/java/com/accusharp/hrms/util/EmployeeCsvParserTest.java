@@ -40,6 +40,23 @@ class EmployeeCsvParserTest {
     }
 
     @Test
+    @DisplayName("the employee code is optional - a blank cell, or no employeeCode column at all")
+    void employeeCodeIsOptional() {
+        String blankCell = BASE_COLUMNS + "\nEMP102,,No Code,PERMANENT,20000,8000,1000,0\n";
+        String noColumn = "userId,employeeName,status,grossSalary,pfBasic,medicalAllowance,otherAllowance\n"
+                + "EMP103,No Column,PERMANENT,20000,8000,1000,0\n";
+
+        List<ParsedCsvRow<EmployeeRequest>> blank = EmployeeCsvParser.parse(multipart(blankCell));
+        List<ParsedCsvRow<EmployeeRequest>> missing = EmployeeCsvParser.parse(multipart(noColumn));
+
+        assertThat(blank.get(0).isOk()).isTrue();
+        assertThat(blank.get(0).value().getEmployeeCode()).isNull();
+        assertThat(missing.get(0).isOk()).isTrue();
+        assertThat(missing.get(0).value().getUserId()).isEqualTo("EMP103");
+        assertThat(missing.get(0).value().getEmployeeCode()).isNull();
+    }
+
+    @Test
     @DisplayName("structure override columns are null when the sheet leaves them blank")
     void leavesStructureOverrideColumnsNullWhenBlank() {
         String csv = BASE_COLUMNS + "\n"

@@ -251,7 +251,7 @@ class EmployeeSalaryStructureHttpTest {
     void bulkImportCsvFormatReturnsCredentialsSheet() {
         String csv = "userId,employeeCode,employeeName,status,grossSalary,pfBasic,medicalAllowance,otherAllowance\n"
                 + "EMP030,EMP-EMP030,Good Row One,PERMANENT,20000,8000,1000,0\n"
-                + "EMP031,,Missing Code,PERMANENT,20000,8000,1000,0\n"; // employeeCode blank -> fails
+                + "EMP031,EMP-EMP031,,PERMANENT,20000,8000,1000,0\n"; // employeeName blank -> fails
 
         RawResp result = sendMultipartRaw("/api/employees/bulk-import?format=csv", "employees.csv", csv, hrToken);
         assertThat(result.status()).isEqualTo(200);

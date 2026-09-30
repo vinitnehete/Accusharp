@@ -139,6 +139,49 @@ class EmployeeUpdateHttpTest {
 
     // ---- helpers -----------------------------------------------------------
 
+    // ---- the employee code is optional ---------------------------------------
+
+    @Test
+    @DisplayName("several employees in one company can be saved with no employee code")
+    void employeeCodeIsOptional() {
+        Resp first = send("POST", "/api/employees", noCode("NOCODE1", ""), hrToken);
+        Resp second = send("POST", "/api/employees", noCode("NOCODE2", "\"employeeCode\": \"   \","), hrToken);
+
+        assertThat(first.status()).as(String.valueOf(first.body())).isEqualTo(201);
+        assertThat(second.status()).as(String.valueOf(second.body())).isEqualTo(201);
+        // Stored as no code at all, never as blank text - blank would collide on the unique key.
+        assertThat(employeeRepository.findByUserId("NOCODE2").orElseThrow().getEmployeeCode()).isNull();
+    }
+
+    @Test
+    @DisplayName("a code that is given must still be unique in the company")
+    void aGivenCodeIsStillUnique() {
+        create("CODED1", "");
+        Resp duplicate = send("POST", "/api/employees",
+                noCode("CODED2", "\"employeeCode\": \"CODED1-C\","), hrToken);
+
+        assertThat(duplicate.status()).isEqualTo(409);
+    }
+
+    @Test
+    @DisplayName("an employee's code can be removed on edit, next to another employee with none")
+    void aCodeCanBeRemoved() {
+        send("POST", "/api/employees", noCode("NOCODE3", ""), hrToken);
+        long id = create("CODED3", "");
+
+        Resp updated = send("PUT", "/api/employees/" + id, noCode("CODED3", ""), hrToken);
+
+        assertThat(updated.status()).as(String.valueOf(updated.body())).isEqualTo(200);
+        assertThat(updated.body().get("employeeCode").isNull()).isTrue();
+    }
+
+    private String noCode(String userId, String codeField) {
+        return """
+                {"userId": "%s", %s "employeeName": "%s Name", "status": "PERMANENT",
+                 "grossSalary": 20000, "pfBasic": 8000, "medicalAllowance": 1000, "otherAllowance": 0}"""
+                .formatted(userId, codeField, userId);
+    }
+
     private record Resp(int status, JsonNode body) {
     }
 

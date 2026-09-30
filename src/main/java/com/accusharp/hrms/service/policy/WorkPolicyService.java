@@ -9,6 +9,7 @@ import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.RuleScope;
+import com.accusharp.hrms.enums.StatutoryDeduction;
 import com.accusharp.hrms.exception.BusinessRuleException;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.WorkPolicyRepository;
@@ -22,7 +23,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Managing {@link WorkPolicy} versions: who is tracked, and who is simply paid.
@@ -66,11 +69,30 @@ public class WorkPolicyService {
 
     @Transactional
     public WorkPolicyResponse create(WorkPolicyRequest request) {
+        assertCoherent(request);
+        return create(request, scopeRefValidator.normalise(request.getScope(), request.getScopeRef()));
+    }
+
+    /**
+     * The same policy for each of several populations of one scope - several
+     * employees, say - one version each. Every reference is checked before
+     * anything is written, so a wrong one saves none of them.
+     */
+    @Transactional
+    public List<WorkPolicyResponse> createForEach(WorkPolicyRequest request) {
+        assertCoherent(request);
+        List<String> scopeRefs = (request.getScopeRefs() == null ? List.<String>of() : request.getScopeRefs())
+                .stream().map(ref -> scopeRefValidator.normalise(request.getScope(), ref)).distinct().toList();
+        if (scopeRefs.isEmpty()) {
+            throw new BusinessRuleException("scopeRefs must name at least one " + request.getScope());
+        }
+        scopeRefs.forEach(ref -> scopeRefValidator.assertExists(request.getScope(), ref));
+        return scopeRefs.stream().map(ref -> create(request, ref)).toList();
+    }
+
+    private WorkPolicyResponse create(WorkPolicyRequest request, String scopeRef) {
         Long companyId = tenantContext.currentCompanyId().orElse(null);
         RuleScope scope = request.getScope();
-        String scopeRef = scopeRefValidator.normalise(scope, request.getScopeRef());
-
-        assertCoherent(request);
         scopeRefValidator.assertExists(scope, scopeRef);
 
         int nextVersion = policyRepository
@@ -88,6 +110,8 @@ public class WorkPolicyService {
                 .attendanceTracking(request.getAttendanceTracking())
                 .payrollMode(request.getPayrollMode())
                 .leaveApproval(request.getLeaveApproval())
+                .excludedDeductions(request.getExcludedDeductions() == null
+                        ? EnumSet.noneOf(StatutoryDeduction.class) : EnumSet.copyOf(request.getExcludedDeductions()))
                 .createdAt(Instant.now())
                 .createdBy(tenantContext.currentPrincipal().map(UserPrincipal::getUsername).orElse(null))
                 .notes(request.getNotes())
@@ -95,7 +119,8 @@ public class WorkPolicyService {
 
         auditService.record("WORK_POLICY_CREATE", "WorkPolicy", scope + ":" + scopeRef, AuditOutcome.SUCCESS,
                 "version=" + nextVersion + " tracking=" + policy.getAttendanceTracking()
-                        + " pay=" + policy.getPayrollMode() + " from=" + policy.getEffectiveFrom());
+                        + " pay=" + policy.getPayrollMode() + " from=" + policy.getEffectiveFrom()
+                        + " notDeducted=" + policy.getExcludedDeductions());
         return WorkPolicyResponse.of(policy);
     }
 
@@ -117,7 +142,7 @@ public class WorkPolicyService {
     private static WorkPolicyResponse defaults() {
         return new WorkPolicyResponse(null, null, null, 0, null, true,
                 AttendanceTracking.TRACKED, PayrollMode.ATTENDANCE_BASED, LeaveApprovalFlow.SUPERVISOR_THEN_HR,
-                "No work policy applies: attendance is tracked, pay comes from it, and leave is endorsed by a "
+                Set.of(), "No work policy applies: attendance is tracked, pay comes from it, and leave is endorsed by a "
                         + "supervisor and approved by HR.", null);
     }
 }

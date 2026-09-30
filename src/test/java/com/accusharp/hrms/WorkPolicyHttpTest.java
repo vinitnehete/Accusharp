@@ -224,6 +224,91 @@ class WorkPolicyHttpTest {
                 .isEqualTo(403);
     }
 
+    // ---- deductions a policy leaves out --------------------------------------
+
+    @Test
+    @DisplayName("a director's policy can leave PF, ESIC and professional tax out of payroll")
+    void excludedDeductionsAreNotTaken() {
+        Resp created = send("POST", "/api/work-policies", """
+                {"scope": "EMPLOYEE", "scopeRef": "WPDIR", "attendanceTracking": "NOT_TRACKED",
+                 "payrollMode": "FIXED_MONTHLY", "effectiveFrom": "2031-05-01",
+                 "excludedDeductions": ["PF", "ESIC", "PROFESSIONAL_TAX"]}""", hrToken);
+        assertThat(created.status()).isEqualTo(201);
+        assertThat(created.body().get("summary").asString())
+                .contains("PF, ESIC and professional tax are not deducted");
+
+        Resp payroll = generatePayroll("WPDIR");
+
+        assertThat(payroll.status()).isEqualTo(201);
+        assertThat(payroll.body().get("pfDeduction").asDouble()).isZero();
+        assertThat(payroll.body().get("earnPf").asDouble()).isZero();
+        assertThat(payroll.body().get("esic").asDouble()).isZero();
+        assertThat(payroll.body().get("professionalTax").asDouble()).isZero();
+        assertThat(payroll.body().get("totalDeduction").asDouble()).isZero();
+        assertThat(payroll.body().get("netSalary").asDouble())
+                .isEqualTo(payroll.body().get("totalEarnings").asDouble());
+    }
+
+    @Test
+    @DisplayName("only the ticked deductions are left out - professional tax off, PF still taken")
+    void onlyTheTickedDeductionsAreLeftOut() {
+        Resp created = send("POST", "/api/work-policies", """
+                {"scope": "EMPLOYEE", "scopeRef": "WPDIR", "attendanceTracking": "NOT_TRACKED",
+                 "payrollMode": "FIXED_MONTHLY", "effectiveFrom": "2031-05-01",
+                 "excludedDeductions": ["PROFESSIONAL_TAX"]}""", hrToken);
+        assertThat(created.status()).isEqualTo(201);
+
+        Resp payroll = generatePayroll("WPDIR");
+
+        assertThat(payroll.body().get("professionalTax").asDouble()).isZero();
+        assertThat(payroll.body().get("pfDeduction").asDouble()).isGreaterThan(0.0);
+    }
+
+    @Test
+    @DisplayName("an employee with no employee code is paid, and their salary slip reads, as usual")
+    void anEmployeeWithNoCodeIsPaid() {
+        Employee director = employeeRepository.findByUserId("WPDIR").orElseThrow();
+        director.setEmployeeCode(null);
+        employeeRepository.save(director);
+        createPolicy("EMPLOYEE", "WPDIR", "NOT_TRACKED", "FIXED_MONTHLY", "2031-05-01");
+
+        Resp payroll = generatePayroll("WPDIR");
+        Resp slip = send("GET", "/api/salary-slips/WPDIR?month=5&year=2031", null, hrToken);
+
+        assertThat(payroll.status()).isEqualTo(201);
+        assertThat(payroll.body().get("employeeCode").isNull()).isTrue();
+        assertThat(slip.status()).isEqualTo(200);
+        assertThat(slip.body().get("netSalary").asDouble()).isGreaterThan(0.0);
+    }
+
+    // ---- one policy for several employees -----------------------------------
+
+    @Test
+    @DisplayName("one policy is saved for several employees at once, each with their own version")
+    void onePolicyForSeveralEmployees() {
+        Resp created = send("POST", "/api/work-policies/batch", """
+                {"scope": "EMPLOYEE", "scopeRefs": ["WPDIR", "WPJOINER"], "attendanceTracking": "NOT_TRACKED",
+                 "payrollMode": "FIXED_MONTHLY", "effectiveFrom": "2031-05-01",
+                 "excludedDeductions": ["PF"]}""", hrToken);
+
+        assertThat(created.status()).isEqualTo(201);
+        assertThat(created.body()).hasSize(2);
+        assertThat(created.body().get(1).get("scopeRef").asString()).isEqualTo("WPJOINER");
+        assertThat(generatePayroll("WPDIR").body().get("pfDeduction").asDouble()).isZero();
+        assertThat(generatePayroll("WPJOINER").body().get("pfDeduction").asDouble()).isZero();
+    }
+
+    @Test
+    @DisplayName("if one employee in the list does not exist, none of the policies is saved")
+    void aWrongEmployeeSavesNone() {
+        Resp refused = send("POST", "/api/work-policies/batch", """
+                {"scope": "EMPLOYEE", "scopeRefs": ["WPDIR", "NOBODY"], "attendanceTracking": "NOT_TRACKED",
+                 "payrollMode": "FIXED_MONTHLY", "effectiveFrom": "2031-05-01"}""", hrToken);
+
+        assertThat(refused.status()).isEqualTo(404);
+        assertThat(workPolicyRepository.findAll()).isEmpty();
+    }
+
     @Test
     @DisplayName("the effective policy for one employee is readable, so HR can see which rule applies and why")
     void effectivePolicyIsExplained() {

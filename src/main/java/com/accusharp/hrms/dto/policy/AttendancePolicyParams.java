@@ -41,13 +41,14 @@ public final class AttendancePolicyParams {
             case OVERTIME -> Overtime.class;
             case EARLY_EXIT_BUDGET -> EarlyExitBudget.class;
             case LATE_MARK_ACCUMULATION -> LateMarkAccumulation.class;
+            case SANDWICH_LEAVE -> SandwichLeave.class;
         };
     }
 
-    /** Marker for the seven records below, so the resolver can hold one without casting to Object. */
+    /** Marker for the records below, so the resolver can hold one without casting to Object. */
     public sealed interface Params
             permits MissingPunch, ShortHours, LateArrival, DayOffWork, Overtime,
-                    EarlyExitBudget, LateMarkAccumulation {
+                    EarlyExitBudget, LateMarkAccumulation, SandwichLeave {
     }
 
     // ---- DAY-scoped --------------------------------------------------------
@@ -206,5 +207,14 @@ public final class AttendancePolicyParams {
             @Min(1) @Max(365) int occurrencesPerPenalty,
             @NotNull @DecimalMin("0.0") @DecimalMax("1.0") BigDecimal penaltyLopDays
     ) implements Params {
+    }
+
+    /**
+     * @param adjacentLeaveUnpaid when the holiday is lost, whether the paid
+     *                       leave on the working day before and after it is
+     *                       unpaid too. The leave stays approved and used - the
+     *                       rule decides pay, never balances.
+     */
+    public record SandwichLeave(boolean adjacentLeaveUnpaid) implements Params {
     }
 }

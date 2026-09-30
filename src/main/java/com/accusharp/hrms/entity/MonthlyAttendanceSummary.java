@@ -103,6 +103,17 @@ public class MonthlyAttendanceSummary {
      * dynamic-leave-types work, not this one. See
      * {@code docs/design/dynamic-configuration.md}.
      */
+    /**
+     * Mandatory holidays a {@code SANDWICH_LEAVE} rule took away - already
+     * inside {@link #lopDays} and {@link #policyLopDays}. Kept apart because a
+     * holiday is not a working day: payroll must not read it as unpaid leave,
+     * and must not pay it to a day-wise worker on top of attended days.
+     */
+    @Column(name = "sandwich_holiday_days", nullable = false,
+            columnDefinition = "decimal(6,1) not null default 0")
+    @Builder.Default
+    private BigDecimal sandwichHolidayDays = BigDecimal.ZERO;
+
     @Column(name = "comp_off_credit_days", nullable = false, precision = 6, scale = 1)
     @Builder.Default
     private BigDecimal compOffCreditDays = BigDecimal.ZERO;

@@ -37,7 +37,8 @@ class MonthPolicyEvaluatorTest {
     private static final String USER = "SE10012";
 
     private final MonthPolicyEvaluator evaluator = new MonthPolicyEvaluator(
-            new AttendancePolicyParamsCodec(Validation.buildDefaultValidatorFactory().getValidator()));
+            new AttendancePolicyParamsCodec(Validation.buildDefaultValidatorFactory().getValidator()),
+            null); // no SANDWICH_LEAVE rule is used here - see SandwichLeaveEvaluatorTest
 
     @Test
     @DisplayName("no month rules produces no penalty and no outcome rows")

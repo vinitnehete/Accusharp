@@ -193,11 +193,9 @@ public class AttendancePolicyPreviewService {
         BigDecimal paidLeave = leaveCalculationService.paidLeaveDays(
                 leaveCalculationService.approvedLeaveDaysInMonth(userId, month), workingDates);
 
-        BigDecimal lopAfter = lopCalculationService
-                .calculateLopDays(BigDecimal.valueOf(workingDates.size()), presentAfter, paidLeave)
-                .add(monthResult.lopDays())
-                .min(BigDecimal.valueOf(workingDates.size()))
-                .setScale(1, RoundingMode.HALF_UP);
+        BigDecimal lopAfter = monthResult.addTo(lopCalculationService
+                .calculateLopDays(BigDecimal.valueOf(workingDates.size()), presentAfter, paidLeave),
+                workingDates.size());
 
         return new EmployeePreview(userId, employee.getEmployeeName(),
                 lopBefore, lopAfter, lopAfter.subtract(lopBefore).setScale(1, RoundingMode.HALF_UP),

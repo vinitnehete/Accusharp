@@ -8,6 +8,7 @@ import com.accusharp.hrms.enums.LeaveType;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -65,4 +66,7 @@ public class LeaveRuleRequest {
 
     /** Null means enabled. */
     private Boolean enabled;
+
+    /** For {@code POST /batch}: the same rule for each of these - several employees, say. */
+    private List<@Size(max = 50) String> scopeRefs;
 }

@@ -32,6 +32,7 @@ import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import com.accusharp.hrms.util.TemporaryPasswordGenerator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,6 +46,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Employee master. Owns three rules worth calling out:
@@ -189,17 +191,28 @@ public class EmployeeService {
         return response;
     }
 
-    /** employeeCode is unique per company (or per shared-null-company scope), not globally. */
+    /**
+     * employeeCode is unique per company (or per shared-null-company scope), not globally.
+     * No code is never "in use": a null would otherwise query as {@code IS NULL} and
+     * refuse the second employee a company saves without one.
+     */
     private boolean employeeCodeInUse(Long companyId, String employeeCode) {
-        return companyId == null
-                ? employeeRepository.existsByEmployeeCodeAndCompanyIsNull(employeeCode)
-                : employeeRepository.existsByEmployeeCodeAndCompanyId(employeeCode, companyId);
+        return findByEmployeeCodeInCompany(companyId, employeeCode).isPresent();
     }
 
     private Optional<Employee> findByEmployeeCodeInCompany(Long companyId, String employeeCode) {
+        String code = codeOrNull(employeeCode);
+        if (code == null) {
+            return Optional.empty();
+        }
         return companyId == null
-                ? employeeRepository.findByEmployeeCodeAndCompanyIsNull(employeeCode)
-                : employeeRepository.findByEmployeeCodeAndCompanyId(employeeCode, companyId);
+                ? employeeRepository.findByEmployeeCodeAndCompanyIsNull(code)
+                : employeeRepository.findByEmployeeCodeAndCompanyId(code, companyId);
+    }
+
+    /** Blank is no code - stored as null, never as blank text that would collide on the unique key. */
+    private static String codeOrNull(String employeeCode) {
+        return employeeCode == null || employeeCode.isBlank() ? null : employeeCode.trim();
     }
 
     /**
@@ -561,6 +574,7 @@ public class EmployeeService {
     @Transactional(readOnly = true)
     public List<SalaryStructureRevision> getSalaryStructureRevisions(Long id) {
         Employee employee = getCompanyEmployeeById(id);
+        assertCanSeePayOf(employee.getUserId());
         return salaryStructureRevisionRepository.findByEmployeeIdOrderByCreatedAtDesc(employee.getUserId());
     }
 
@@ -569,6 +583,7 @@ public class EmployeeService {
     public List<SalaryRevision> getSalaryRevisions(Long id) {
         Employee employee = getCompanyEmployeeById(id);
         assertSelfOrManages(employee.getUserId());
+        assertCanSeePayOf(employee.getUserId());
         return salaryRevisionRepository.findByEmployeeIdOrderByEffectiveDateDescCreatedAtDesc(employee.getUserId());
     }
 
@@ -576,7 +591,7 @@ public class EmployeeService {
     public EmployeeResponse getById(Long id) {
         Employee employee = getCompanyEmployeeById(id);
         assertSelfOrManages(employee.getUserId());
-        return employeeMapper.toResponse(employee);
+        return forViewer(employee, payVisibility());
     }
 
     @Transactional(readOnly = true)
@@ -584,7 +599,7 @@ public class EmployeeService {
         Employee employee = getEntityByUserId(userId);
         assertNotContractorWorker(employee);
         assertSelfOrManages(employee.getUserId());
-        return employeeMapper.toResponse(employee);
+        return forViewer(employee, payVisibility());
     }
 
     /**
@@ -595,7 +610,8 @@ public class EmployeeService {
      */
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getVisible() {
-        return employeeMapper.toResponses(getVisibleEntities());
+        Predicate<String> seesPay = payVisibility();
+        return getVisibleEntities().stream().map(employee -> forViewer(employee, seesPay)).toList();
     }
 
     /**
@@ -663,7 +679,8 @@ public class EmployeeService {
     public List<EmployeeResponse> getTeamOf(String supervisorUserId) {
         getEntityByUserId(supervisorUserId);
         assertSelfOrManages(supervisorUserId);
-        return employeeMapper.toResponses(employeeRepository.findBySupervisorUserId(supervisorUserId).stream()
+        Predicate<String> seesPay = payVisibility();
+        return employeeRepository.findBySupervisorUserId(supervisorUserId).stream()
                 // A supervisor really does supervise the contractor's workers
                 // assigned to them, but this is the company team view and
                 // EmployeeResponse is the company shape (salary structure and
@@ -671,7 +688,8 @@ public class EmployeeService {
                 // contractor's name against each name, under the contractor
                 // module - see ContractorEmployeeService.
                 .filter(employee -> !employee.isContractorWorker())
-                .toList());
+                .map(employee -> forViewer(employee, seesPay))
+                .toList();
     }
 
     /**
@@ -918,6 +936,39 @@ public class EmployeeService {
                 });
     }
 
+    /**
+     * Whose pay the caller may see - salary and bank/statutory numbers,
+     * payroll, slips. Their own always; anyone else's only with {@code
+     * PAY_READ}. A data scope decides whose <em>records</em> a caller reaches,
+     * never whose pay: a supervisor sees their team, not what the team is paid.
+     * Decided once per call, so a list does not re-read the caller's roles per
+     * row. Service calls with no employee principal (tests, internal) see all.
+     */
+    public Predicate<String> payVisibility() {
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .filter(principal -> !authorizationService.effectivePermissions(principal)
+                        .contains(PermissionCode.PAY_READ.name()))
+                .<Predicate<String>>map(principal -> principal.getUsername()::equals)
+                .orElse(userId -> true);
+    }
+
+    /** True when the caller may see everyone's pay, not just their own. */
+    public boolean seesEveryonesPay() {
+        return payVisibility().test(null);
+    }
+
+    public void assertCanSeePayOf(String targetUserId) {
+        if (!payVisibility().test(targetUserId)) {
+            throw new AccessDeniedException("Pay is visible to the employee themselves and to PAY_READ only");
+        }
+    }
+
+    private EmployeeResponse forViewer(Employee employee, Predicate<String> seesPay) {
+        EmployeeResponse response = employeeMapper.toResponse(employee);
+        return seesPay.test(employee.getUserId()) ? response : response.withoutPay();
+    }
+
     /** Non-throwing form of {@link #assertSelfOrManages}, for filtering a list rather than rejecting a single lookup. */
     public boolean isSelfOrManages(String targetUserId) {
         return tenantContext.currentPrincipal()
@@ -1074,7 +1125,7 @@ public class EmployeeService {
 
     private void apply(Employee employee, EmployeeRequest request) {
         employee.setUserId(request.getUserId());
-        employee.setEmployeeCode(request.getEmployeeCode());
+        employee.setEmployeeCode(codeOrNull(request.getEmployeeCode()));
         employee.setEmployeeName(request.getEmployeeName());
         employee.setCompany(request.getCompanyId() == null ? null : companyService.getById(request.getCompanyId()));
         employee.setDepartment(request.getDepartmentId() == null ? null

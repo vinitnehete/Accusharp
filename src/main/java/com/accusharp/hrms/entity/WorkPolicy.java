@@ -4,8 +4,10 @@ import com.accusharp.hrms.enums.AttendanceTracking;
 import com.accusharp.hrms.enums.LeaveApprovalFlow;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.RuleScope;
+import com.accusharp.hrms.enums.StatutoryDeduction;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -25,6 +27,8 @@ import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.EnumSet;
+import java.util.Set;
 
 /**
  * Which process a population actually follows: whether their attendance is
@@ -114,6 +118,12 @@ public class WorkPolicy {
     @Enumerated(EnumType.STRING)
     @Column(name = "leave_approval", length = 30)
     private LeaveApprovalFlow leaveApproval;
+
+    /** Statutory deductions payroll leaves out for this population; empty means all are taken. */
+    @Convert(converter = StatutoryDeductionsConverter.class)
+    @Column(name = "excluded_deductions", length = 100)
+    @Builder.Default
+    private Set<StatutoryDeduction> excludedDeductions = EnumSet.noneOf(StatutoryDeduction.class);
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;

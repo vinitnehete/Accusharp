@@ -69,4 +69,13 @@ public record EmployeeResponse(
         boolean autoRostersDefaultShift,
         boolean salaryStructureOverridden
 ) {
+
+    /** The same record without salary, bank or statutory numbers - for a viewer who may not see pay. */
+    public EmployeeResponse withoutPay() {
+        return new EmployeeResponse(id, userId, employeeCode, employeeName, companyName, departmentName,
+                designationName, categoryName, employmentTypeId, employmentTypeName, supervisorUserId,
+                supervisorName, joiningDate, dateOfBirth, gender, status, recordStatus, role, email, phone,
+                null, null, null, null, null, null, null, null, null, null, null, null, null,
+                overtimeEligible, weekOffDays, autoRostersDefaultShift, salaryStructureOverridden);
+    }
 }

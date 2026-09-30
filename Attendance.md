@@ -700,6 +700,7 @@ Two ideas carry it, and both are borrowed from designs already in this repo:
 | `OVERTIME` | day | Who earns overtime, after how long, rounded to what block |
 | `EARLY_EXIT_BUDGET` | **month** | A monthly budget of early-exit minutes, then a penalty per occurrence |
 | `LATE_MARK_ACCUMULATION` | **month** | Nth late mark in a month costs a fraction of a day |
+| `SANDWICH_LEAVE` | **month** | A public holiday is paid only if the working day before or after it was worked |
 
 Five effects exist and no others: override the status, adjust overtime, credit
 comp-off, add LOP days, or nothing.
@@ -808,6 +809,43 @@ policyLopDays 0.0 | lopDays 1.0     (unchanged)
 Without that exclusion the same four days would have cost 1.5 days instead of
 1.0, and the extra half day would have been for lateness already paid for.
 
+### The sandwich leave rule
+
+A mandatory holiday is paid only to someone who worked the working day just
+before it **or** just after it. Switched on per company from **Rules → Sandwich
+leave** (a `COMPANY` rule); a group can be treated differently like any other
+rule. One option: `adjacentLeaveUnpaid` - whether paid leave on those two days
+is unpaid too.
+
+August 2026, the 15th a Saturday holiday; first with no weekly off, then with
+Sundays off:
+
+| The employee's days | With the rule on |
+|---|---|
+| Leave 14 · Holiday 15 · Leave 16 | 14, 15 and 16 unpaid (LOP 3) |
+| Absent 14 · Holiday 15 · Absent 16 | the holiday is LOP too (LOP 3) |
+| Leave 14 · Holiday 15 · Worked 16 | all paid - one working day is enough |
+| One leave 14-16 | all paid; the holiday is used as leave (3 days off the balance) |
+| Leave Fri 14 · Holiday · Sunday off · Worked Mon 17 | all paid - the weekly off is looked past |
+| Leave Fri 14 · Holiday · Sunday off · Leave Mon 17 | 14, 15, 17 unpaid; the Sunday stays paid |
+
+- **Only mandatory holidays on a working day.** Optional holidays, plain
+  weekly offs, and a holiday falling on a weekly off never trigger it.
+- **Worked** means `PRESENT`, `HALF_DAY` or `INVALID_PUNCH` (invariant 5), and
+  working the holiday itself keeps it.
+- **Unknown is never charged.** A day with no stored row - a neighbouring month
+  not generated yet, a joiner's first day - stops the check. Each lost day is
+  charged in its own month (a holiday on the 1st charges the leave on the 31st
+  to the previous month).
+- **Pay, never balances.** The leave stays approved and used.
+- The lost holiday is stored as `sandwich_holiday_days` on the summary, inside
+  `lop_days`. Payroll reads it so the holiday is not also read as unpaid leave,
+  and a day-wise worker is not paid it on top of attended days.
+
+Code: `SandwichLeaveEvaluator` (a pure function over the days), tests
+`SandwichLeaveEvaluatorTest` and `SandwichLeavePayrollTest`. Existing databases
+need `docs/migrations/2026-09-28-sandwich-leave.sql` once.
+
 ### The single most damaging misconfiguration
 
 Section 2's is `overtime_window_minutes = 0`. This engine's is worse, for one
@@ -885,7 +923,8 @@ Things the system guarantees, each covered by a test:
     which exists to rescue a day the device broke.
 15. A policy rule is resolved by the attendance date, never by today - so a rule
     written in September cannot re-price August.
-16. Loss of pay can never exceed the days the employee was expected to work.
+16. Loss of pay can never exceed the days the employee was expected to work,
+    plus the holidays a sandwich rule took.
 17. A day already docked for lateness is not also counted as a late mark.
 
 ## 13. Not covered

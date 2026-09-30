@@ -70,7 +70,8 @@ public class Employee {
     @Column(name = "user_id", nullable = false, length = 50)
     private String userId;
 
-    @Column(name = "employee_code", nullable = false, length = 50)
+    /** Optional - null when the company does not number its staff. Unique per company when given. */
+    @Column(name = "employee_code", length = 50)
     private String employeeCode;
 
     @Column(name = "employee_name", nullable = false)
