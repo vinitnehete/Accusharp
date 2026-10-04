@@ -163,8 +163,9 @@ public class ShiftScheduleController {
     public List<ShiftScheduleResponse> getRoster(
             @PathVariable String userId,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate) {
-        return shiftSchedulingService.getRoster(userId, fromDate, toDate);
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(defaultValue = "false") boolean includeUsual) {
+        return shiftSchedulingService.getRoster(userId, fromDate, toDate, includeUsual);
     }
 
     /**

@@ -246,11 +246,13 @@ class ContractorWorkforceHttpTest {
                 {"userId": "ACME001", "employeeCode": "AC-001", "employeeName": "Ravi Kumar",
                  "joiningDate": "2031-01-01"}""", hrToken);
 
-        // No userIds means "everybody" - and everybody is the company's own staff.
+        // No userIds means "everybody" - and everybody is the company's own staff, bar the
+        // caller's own row: nobody generates their own attendance, the admin does. So HR's
+        // run covers the supervisor and the employee, not HR, and no contractor worker.
         Resp companyRun = send("POST", "/api/attendance/generate",
                 "{\"month\": \"2031-01\", \"generatedBy\": \"CTRHR01\", \"dryRun\": true}", hrToken);
         assertThat(companyRun.status()).isEqualTo(200);
-        assertThat(companyRun.body().get("employeesProcessed").asInt()).isEqualTo(3);
+        assertThat(companyRun.body().get("employeesProcessed").asInt()).isEqualTo(2);
         assertThat(userIdList(companyRun.body().get("employeesWithoutRoster"))).doesNotContain("ACME001");
 
         Resp contractorRun = send("POST",

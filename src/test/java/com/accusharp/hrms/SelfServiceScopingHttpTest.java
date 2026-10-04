@@ -208,15 +208,16 @@ class SelfServiceScopingHttpTest {
     }
 
     @Test
-    @DisplayName("A supervisor's payroll-period list is filtered to their own team, not the whole company")
+    @DisplayName("A supervisor's payroll-period list holds only their own row - not their team's pay, not the company's")
     void payrollPeriodIsFilteredForSupervisor() {
+        payrollRepository.save(minimalPayroll("SSSUP01"));
         payrollRepository.save(minimalPayroll("SSTEAM01"));
         payrollRepository.save(minimalPayroll("SSB001"));
 
         Resp period = send("GET", "/api/payroll?month=5&year=2031", null, supXToken);
         assertThat(period.status()).isEqualTo(200);
         assertThat(period.body().size()).isEqualTo(1);
-        assertThat(period.body().get(0).get("employeeId").asString()).isEqualTo("SSTEAM01");
+        assertThat(period.body().get(0).get("employeeId").asString()).isEqualTo("SSSUP01");
     }
 
     // ---- helpers -----------------------------------------------------------

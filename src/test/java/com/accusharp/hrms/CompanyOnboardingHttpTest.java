@@ -80,8 +80,8 @@ class CompanyOnboardingHttpTest {
 
         String body = """
                 {"companyCode": "NEWCO", "companyName": "New Co Industries", "companyEmail": "hr@newco.example",
-                 "adminUserId": "NEWCO-ADMIN", "adminEmployeeCode": "NC-ADMIN-1", "adminName": "First Admin",
-                 "adminEmail": "admin@newco.example", "adminGrossSalary": 50000, "adminPfBasic": 15000}""";
+                 "adminUserId": "NEWCO-ADMIN", "adminName": "First Admin",
+                 "adminEmail": "admin@newco.example"}""";
         Resp onboarded = send("POST", "/api/companies/onboard", body, platformToken);
         assertThat(onboarded.status()).isEqualTo(201);
         assertThat(onboarded.body().get("company").get("companyCode").asString()).isEqualTo("NEWCO");
@@ -113,13 +113,33 @@ class CompanyOnboardingHttpTest {
     }
 
     @Test
+    @DisplayName("the admin is a company account: onboarding asks for no salary or employee code and stores none")
+    void onboardingCreatesAdminWithNoPay() {
+        String platformToken = login("owner1", PLATFORM_PASSWORD);
+
+        Resp onboarded = send("POST", "/api/companies/onboard", """
+                {"companyCode": "BAREADMIN", "companyName": "Bare Admin Co", "adminUserId": "BARE-ADMIN",
+                 "adminName": "Owner", "adminEmail": "owner@bare.example"}""", platformToken);
+
+        assertThat(onboarded.status()).isEqualTo(201);
+        assertThat(onboarded.body().get("admin").get("role").asString()).isEqualTo("ADMIN");
+        var admin = employeeRepository.findByUserId("BARE-ADMIN").orElseThrow();
+        assertThat(admin.getEmployeeCode()).isNull();
+        assertThat(admin.getGrossSalary()).isNull();
+        assertThat(admin.getGrossSalaryWage()).isNull();
+        assertThat(admin.isMustChangePassword()).isTrue();
+        // ...and they can still sign in and run the company.
+        assertThat(login("BARE-ADMIN", onboarded.body().get("temporaryPassword").asString())).isNotBlank();
+    }
+
+    @Test
     @DisplayName("HR/ADMIN can reset an employee's password - the old one stops working, the new one logs in")
     void adminCanResetAnEmployeesPassword() {
         String platformToken = login("owner1", PLATFORM_PASSWORD);
         String setupBody = """
                 {"companyCode": "RESETCO", "companyName": "Reset Co", "companyEmail": "hr@resetco.example",
-                 "adminUserId": "RESETCO-ADMIN", "adminEmployeeCode": "RC-ADMIN-1", "adminName": "Admin",
-                 "adminEmail": "admin@resetco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
+                 "adminUserId": "RESETCO-ADMIN", "adminName": "Admin",
+                 "adminEmail": "admin@resetco.example"}""";
         Resp onboarded = send("POST", "/api/companies/onboard", setupBody, platformToken);
         String adminToken = login("RESETCO-ADMIN", onboarded.body().get("temporaryPassword").asString());
 
@@ -152,8 +172,8 @@ class CompanyOnboardingHttpTest {
         login("owner1", PLATFORM_PASSWORD);
         String setupBody = """
                 {"companyCode": "OTHERCO", "companyName": "Other Co", "companyEmail": "hr@otherco.example",
-                 "adminUserId": "OTHERCO-ADMIN", "adminEmployeeCode": "OC-ADMIN-1", "adminName": "Admin",
-                 "adminEmail": "admin@otherco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
+                 "adminUserId": "OTHERCO-ADMIN", "adminName": "Admin",
+                 "adminEmail": "admin@otherco.example"}""";
         Resp onboarded = send("POST", "/api/companies/onboard", setupBody, login("owner1", PLATFORM_PASSWORD));
         String temporaryPassword = onboarded.body().get("temporaryPassword").asString();
         String companyAdminToken = login("OTHERCO-ADMIN", temporaryPassword);
@@ -168,8 +188,8 @@ class CompanyOnboardingHttpTest {
         String platformToken = login("owner1", PLATFORM_PASSWORD);
         String setupBody = """
                 {"companyCode": "AUDITCO", "companyName": "Audit Co", "companyEmail": "hr@auditco.example",
-                 "adminUserId": "AUDITCO-ADMIN", "adminEmployeeCode": "AC-ADMIN-1", "adminName": "Admin",
-                 "adminEmail": "admin@auditco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
+                 "adminUserId": "AUDITCO-ADMIN", "adminName": "Admin",
+                 "adminEmail": "admin@auditco.example"}""";
         Resp onboarded = send("POST", "/api/companies/onboard", setupBody, platformToken);
         long companyId = onboarded.body().get("company").get("id").asLong();
 
@@ -196,8 +216,8 @@ class CompanyOnboardingHttpTest {
         String platformToken = login("owner1", PLATFORM_PASSWORD);
         String setupBody = """
                 {"companyCode": "PURGECO", "companyName": "Purge Co", "companyEmail": "hr@purgeco.example",
-                 "adminUserId": "PURGECO-ADMIN", "adminEmployeeCode": "PC-ADMIN-1", "adminName": "Admin",
-                 "adminEmail": "admin@purgeco.example", "adminGrossSalary": 40000, "adminPfBasic": 12000}""";
+                 "adminUserId": "PURGECO-ADMIN", "adminName": "Admin",
+                 "adminEmail": "admin@purgeco.example"}""";
         send("POST", "/api/companies/onboard", setupBody, platformToken);
 
         // Backdate the trail this test just generated. Previously this purged

@@ -22,7 +22,7 @@ authentication/authorization model see [SECURITY.md](SECURITY.md).
 Start the app (H2 is fine for practice - nothing touches your real database):
 
 ```bash
-cd /Users/vinitnehete/Downloads/Accusharp && ./mvnw spring-boot:run -Dspring-boot.run.profiles=h2
+cd Accusharp && ./mvnw spring-boot:run -Dspring-boot.run.profiles=h2
 ```
 
 Everything below is a `curl` command you can paste into a terminal. If you
@@ -263,10 +263,10 @@ no supervisor can schedule her.
 > `salaryStructureOverridden`, so a deliberate manual value is never
 > silently discarded by a rule-driven refresh.
 
-> **Granting `"role":"ADMIN"` requires an ADMIN caller.** HR otherwise has full
-> employee create/update rights, but cannot mint a new admin account or
-> promote itself to one - that request is rejected regardless of what
-> `$TOKEN` belongs to, unless it's already an ADMIN's.
+> **`"role":"ADMIN"` cannot be granted at all.** A company has one admin, the
+> account created when it was onboarded, and it is a company account rather than
+> an employee. Any create/update naming that role - or taking it away from the
+> admin - is rejected with a 400, whoever `$TOKEN` belongs to.
 
 ---
 
@@ -389,6 +389,12 @@ own supervisor, or being that person - a plain `EMPLOYEE` token can only ever
 read their own. `HR001`'s token bypasses this, which is why it's used
 throughout.)
 
+*Doing this mid-month?* The numbers are a blunt preview: every day that has not
+happened yet (and today, until the first punch) is `ABSENT` and is already counted
+in `absentDays` and `lopDays`. Read the totals once the month is over. The response
+also says `attendanceTracked: false` for anyone whose work policy leaves attendance
+untracked - their "absences" mean nothing.
+
 Reading this:
 
 - **25 working days** - 30 days, minus 1 holiday, minus 4 Sundays.
@@ -455,6 +461,10 @@ curl http://localhost:8080/api/leaves/pending/SUP001 -H "Authorization: Bearer $
 ```
  1  Priya Kulkarni  2026-09-22 -> 2026-09-23  PENDING
 ```
+
+Each request carries `approvalFlow`. Priya's is `SUPERVISOR_THEN_HR`, the usual
+two steps. A person whose work policy sends leave straight to HR shows up in this
+list too, as `HR_ONLY`, but the next step is refused for it - HR decides it alone.
 
 ---
 

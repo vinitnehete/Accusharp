@@ -19,6 +19,12 @@ and a [missing-punch scenario](docs/testing/device_logs_EMP005_missing_out_punch
 
 - **Stack**: Java 21, Spring Boot 4.1.0, MySQL, Lombok
 - **Base URL**: `http://localhost:8080`
+- **Commands** below assume you are in the workspace folder that holds `Accusharp/`
+  (this project), `Accusharpfrontend/` and `AccusharpMobile/`.
+- **Clients**: the React web app (`Accusharpfrontend/`) and the Muster mobile app
+  (`AccusharpMobile/`, Expo) - employees and supervisors only. Both read the same
+  API; what the mobile app depends on beyond the web app is listed in
+  [ARCHITECTURE.md](ARCHITECTURE.md#mobile-client-the-contract-it-relies-on).
 
 ---
 
@@ -49,7 +55,7 @@ missing; credentials are in
 [`application.properties`](src/main/resources/application.properties).
 
 ```bash
-cd /Users/vinitnehete/Downloads/Accusharp && ./mvnw spring-boot:run
+cd Accusharp && ./mvnw spring-boot:run
 ```
 
 ### Without MySQL (in-memory H2)
@@ -57,13 +63,13 @@ cd /Users/vinitnehete/Downloads/Accusharp && ./mvnw spring-boot:run
 Good for trying things out. Everything is wiped on restart.
 
 ```bash
-cd /Users/vinitnehete/Downloads/Accusharp && ./mvnw spring-boot:run -Dspring-boot.run.profiles=h2
+cd Accusharp && ./mvnw spring-boot:run -Dspring-boot.run.profiles=h2
 ```
 
 ### Run the tests
 
 ```bash
-cd /Users/vinitnehete/Downloads/Accusharp && ./mvnw test
+cd Accusharp && ./mvnw test
 ```
 
 ### What gets seeded
@@ -534,6 +540,22 @@ curl "http://localhost:8080/api/shift-schedules/planner?month=2026-09"
 Returns one row per employee and one column per date, with the shift code or
 `WO` for a weekly off. Add `&supervisorUserId=SUP001` for just one team.
 
+One person's roster:
+
+```bash
+curl "http://localhost:8080/api/shift-schedules/EMP001?fromDate=2026-09-01&toDate=2026-09-07"
+curl "http://localhost:8080/api/shift-schedules/EMP001?fromDate=2026-09-01&toDate=2026-09-07&includeUsual=true"
+```
+
+The first returns only the days somebody planned - for staff on a fixed shift
+that is often nothing, because their usual shift is assumed rather than stored.
+The second (`includeUsual=true`, needs both dates) fills the other days in the
+same way the attendance engine and the planner grid do, and flags those rows
+`"defaulted": true` (they have no `id`: they are derived, never saved). A person
+who is not on an automatic roster - contract and day-wise staff - gets nothing
+invented either way. It is the same scope as before: your own roster, or your
+team's.
+
 ---
 
 ## 5. Biometric punches
@@ -606,6 +628,16 @@ Returns the month's totals plus a day-by-day breakdown:
 | `lateCount`, `earlyExitCount` | Exception counts |
 | `invalidPunches` | **Check this first** - days with a single punch |
 | `totalHours`, `overtimeHours` | Measured against each day's own shift length |
+| `attendanceTracked` | `false` when the person's [work policy](ARCHITECTURE.md#work-policy-who-follows-the-process-at-all) leaves attendance untracked (a director). The days below are then a preview of nothing and say "absent" for everyone - show nobody that |
+| `sandwich` | The holidays and paid-leave days a sandwich rule made unpaid, by date (already inside `lopDays`). A holiday's own status stays `HOLIDAY` |
+
+**A month that has not been generated is a preview, and the preview is blunt**:
+every day that has not happened yet - and today, until the first punch - comes
+back `ABSENT` with no punches, and is counted in `absentDays` and `lopDays`. The
+totals only mean something once the month is over. Clients should show days up to
+today as they are, leave the days to come out, and hold back the unpaid total
+until the month ends (the mobile app and the web My Attendance page do). A single punch is `INVALID_PUNCH`
+even while the day is still going on.
 
 Day range instead of a whole month:
 
@@ -1075,11 +1107,11 @@ calendar day.
 | Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding, `?format=csv` for a downloadable credentials sheet; `POST /{id}/salary-revision`, `GET /{id}/salary-revisions` - hike/promotion history). Your own staff only - a labour contractor's workers are never returned here, and never accepted for a write |
 | Contractors | `/api/contractors` - labour contractors, the workforce they deploy, that workforce's attendance and the reports sent back to them. See [section 10.1](#101-contractor-attendance-reports) |
 | Shift master | `/api/shifts` |
-| Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all) |
+| Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all; `GET /{userId}?includeUsual=true` - one roster with the usual shift filled in) |
 | Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |
 | Attendance rules | `/api/attendance-rules` |
 | Holidays | `/api/holidays` |
-| Leave | `/api/leaves` (`POST /hr-create` - HR-direct already-approved entry; `POST /bulk-import` - its CSV bulk variant) |
+| Leave | `/api/leaves` (`POST /hr-create` - HR-direct already-approved entry; `POST /bulk-import` - its CSV bulk variant). Every response carries `approvalFlow`: `SUPERVISOR_THEN_HR`, `HR_ONLY` or `AUTO_APPROVE` |
 | Leave balances | `/api/leave-balances` |
 | Salary rules | `/api/salary-rules` |
 | Payroll | `/api/payroll` (`POST /bulk-generate` - CSV bulk run; `GET /debug` - full per-employee breakdown with live drift flags) |

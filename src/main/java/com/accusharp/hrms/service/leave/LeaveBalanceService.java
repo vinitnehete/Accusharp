@@ -53,8 +53,11 @@ public class LeaveBalanceService {
 
     @Transactional
     public List<LeaveBalanceResponse> getBalances(String userId, int year) {
-        employeeService.getEntityByUserId(userId);
+        Employee employee = employeeService.getEntityByUserId(userId);
         employeeService.assertSelfOrManages(userId);
+        if (employee.isCompanyAccount()) {
+            return List.of(); // the admin login has no leave - and nothing is created for it
+        }
         return Arrays.stream(LeaveType.values())
                 .map(type -> getOrCreate(userId, year, type))
                 .map(this::toResponse)
@@ -89,8 +92,11 @@ public class LeaveBalanceService {
 
     @Transactional
     public LeaveBalanceResponse setQuota(String userId, int year, LeaveType leaveType, BigDecimal quota) {
-        employeeService.getEntityByUserId(userId);
-        LeaveBalance balance = getOrCreate(userId, year, leaveType);
+        Employee employee = employeeService.getEntityByUserId(userId);
+        employeeService.assertNotCompanyAccount(employee);
+        employeeService.assertNotSelf(employee.getUserId());
+        // The stored id, so a typed "cvemp" updates CVEMP's row rather than starting a second one.
+        LeaveBalance balance = getOrCreate(employee.getUserId(), year, leaveType);
         if (quota.compareTo(balance.getUsed()) < 0) {
             throw new BusinessRuleException("Quota cannot be lower than the " + balance.getUsed()
                     + " days already used");

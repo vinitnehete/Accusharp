@@ -87,16 +87,14 @@ echo "  ok"
 log "Onboard Company A (Acme) and Company B (Globex)"
 call POST /api/companies/onboard "$PLATFORM_TOKEN" '{
   "companyCode": "SMOKE-ACME", "companyName": "Acme Corp",
-  "adminUserId": "ACME-ADMIN", "adminEmployeeCode": "ACME-E001", "adminName": "Acme Admin",
-  "adminGrossSalary": 60000, "adminPfBasic": 18000}'
+  "adminUserId": "ACME-ADMIN", "adminName": "Acme Admin"}'
 expect_status 201 "$STATUS" "Onboard Acme"
 ACME_ADMIN_PASSWORD=$(echo "$BODY" | jq -r .temporaryPassword)
 ACME_COMPANY_ID=$(echo "$BODY" | jq -r .company.id)
 
 call POST /api/companies/onboard "$PLATFORM_TOKEN" '{
   "companyCode": "SMOKE-GLOBEX", "companyName": "Globex Corp",
-  "adminUserId": "GLOBEX-ADMIN", "adminEmployeeCode": "GLOBEX-E001", "adminName": "Globex Admin",
-  "adminGrossSalary": 60000, "adminPfBasic": 18000}'
+  "adminUserId": "GLOBEX-ADMIN", "adminName": "Globex Admin"}'
 expect_status 201 "$STATUS" "Onboard Globex"
 GLOBEX_ADMIN_PASSWORD=$(echo "$BODY" | jq -r .temporaryPassword)
 GLOBEX_COMPANY_ID=$(echo "$BODY" | jq -r .company.id)

@@ -141,7 +141,8 @@ class DirectorScopeHttpTest {
     @Test
     @DisplayName("SCOPE_ALL_REPORTS opens everyone below a director - directory, reports and dashboard alike")
     void allReportsScopeOpensTheWholeSubtree() {
-        grant("DSDIR", "SCOPE_ALL_REPORTS");
+        // PAY_READ too: scope decides whose records a report holds, never whether it may show pay.
+        grant("DSDIR", "SCOPE_ALL_REPORTS", "PAY_READ");
 
         assertThat(userIds(get("/api/employees", directorToken)))
                 .containsExactlyInAnyOrder("DSDIR", "DSTL", "DSWORKER");
@@ -185,10 +186,12 @@ class DirectorScopeHttpTest {
     @DisplayName("SCOPE_COMPANY on a custom role opens the whole company to a plain employee")
     void companyScopeOpensEveryone() {
         String clerk = login("DSLEAD");
-        grant("DSLEAD", "SCOPE_COMPANY", "REPORT_READ");
+        grant("DSLEAD", "SCOPE_COMPANY", "REPORT_READ", "PAY_READ");
 
+        // The admin login is a company account, not staff - never in the directory.
         assertThat(userIds(get("/api/employees", clerk)))
-                .contains("DSADMIN", "DSDIR", "DSTL", "DSWORKER", "DSOUTSIDE", "DSLEAD");
+                .contains("DSDIR", "DSTL", "DSWORKER", "DSOUTSIDE", "DSLEAD")
+                .doesNotContain("DSADMIN");
         assertThat(userIds(get("/api/reports/payroll" + PERIOD, clerk)))
                 .containsExactlyInAnyOrder("DSDIR", "DSTL", "DSWORKER", "DSOUTSIDE");
         // Scope is reach, not power: deciding leave still needs LEAVE_APPROVE.
@@ -199,7 +202,7 @@ class DirectorScopeHttpTest {
     @DisplayName("HR and ADMIN still see the whole company with no custom role at all")
     void fixedRolesKeepTheirScope() {
         assertThat(userIds(get("/api/employees", adminToken)))
-                .contains("DSADMIN", "DSDIR", "DSTL", "DSWORKER", "DSOUTSIDE", "DSLEAD", "DSLEDBY");
+                .containsExactlyInAnyOrder("DSDIR", "DSTL", "DSWORKER", "DSOUTSIDE", "DSLEAD", "DSLEDBY");
     }
 
     // ---- helpers -----------------------------------------------------------

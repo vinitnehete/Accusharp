@@ -832,7 +832,10 @@ public class AttendanceService {
         employeeService.assertSelfOrManages(userId);
         List<DailyAttendance> stored = storedDays(userId, month);
 
-        return stored.isEmpty() ? previewMonth(employee, month) : aggregateStored(employee, month, stored);
+        MonthlyAttendanceResponse report = stored.isEmpty()
+                ? previewMonth(employee, month)
+                : aggregateStored(employee, month, stored);
+        return report.withAttendanceTracked(workPolicyResolver.tracksAttendance(employee, month.atEndOfMonth()));
     }
 
     /** The stored attendance rows for a period. */
@@ -1356,7 +1359,7 @@ public class AttendanceService {
                 policyResult.lopDays(), policyResult.sandwich(),
                 compOffCreditDays, weekOffTally.paidDayOffDays(),
                 weekOffTally.workedDays(), weekOffTally.unrosteredPunchDays(),
-                policyResult.outcomes(), days);
+                policyResult.outcomes(), true, days);
     }
 
     /**

@@ -187,10 +187,13 @@ class CustomRoleCapabilityHttpTest {
     }
 
     @Test
-    @DisplayName("HR still approves anyone's leave, their own included - unchanged")
-    void hrApprovesAnyone() {
+    @DisplayName("HR still approves anyone else's leave - their own is for the admin")
+    void hrApprovesAnyoneButThemselves() {
         assertThat(approve(pendingLeave("CAPSUP"), hrToken).status()).isEqualTo(200);
-        assertThat(approve(pendingLeave("CAPHR"), hrToken).status()).isEqualTo(200);
+
+        long ownLeave = pendingLeave("CAPHR");
+        assertThat(approve(ownLeave, hrToken).status()).isEqualTo(404);
+        assertThat(approve(ownLeave, adminToken).status()).isEqualTo(200);
     }
 
     // ---- attendance --------------------------------------------------------
