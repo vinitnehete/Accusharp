@@ -284,8 +284,8 @@ class CustomRoleHttpTest {
         String platformToken = login("owner1", PLATFORM_PASSWORD);
         String body = """
                 {"companyCode": "%s", "companyName": "%s Corp", "companyEmail": "hr@%s",
-                 "adminUserId": "%s-ADMIN", "adminEmployeeCode": "%s-ADM-1", "adminName": "Admin",
-                 "adminEmail": "admin@%s", "adminGrossSalary": 50000, "adminPfBasic": 15000}
+                 "adminUserId": "%s-ADMIN", "adminName": "Admin",
+                 "adminEmail": "admin@%s"}
                 """.formatted(companyCode, companyCode, domain, companyCode, companyCode, domain);
         Resp onboarded = send("POST", "/api/companies/onboard", body, platformToken);
         String temporaryPassword = onboarded.body().get("temporaryPassword").asString();

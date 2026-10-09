@@ -17,9 +17,10 @@ approved leave and is absent once without leave.
 | [`docs/testing/multi-company-smoke-test.sh`](docs/testing/multi-company-smoke-test.sh) | A separate curl-based script proving multi-company isolation and self-service scoping over real HTTP - see SECURITY.md |
 
 **This is a manual/Postman walkthrough of one payroll cycle, not the
-automated test suite.** The app also has 133 JUnit tests
-(`./mvnw test`, or `./mvnw test -Dtest=ClassName` for one class) across 20
-classes under `src/test/java/com/accusharp/hrms/` - unit tests for the
+automated test suite.** The app also has 638 JUnit tests
+(`./mvnw test`, or `./mvnw test -Dtest=ClassName` for one class) across 79
+classes under `src/test/java/com/accusharp/hrms/` (count as of 2026-10-03; the
+number grows with every change, so treat it as an order of magnitude) - unit tests for the
 calculation services (`calculation/`) and pure CSV parsing (`util/EmployeeCsvParserTest`),
 full-flow integration tests (`PayrollFlowIntegrationTest`,
 `AttendanceRegularisationTest`, `NightShiftMonthBoundaryTest`,
@@ -27,7 +28,8 @@ full-flow integration tests (`PayrollFlowIntegrationTest`,
 random port (`AuthApiHttpTest`, `TenantIsolationHttpTest`,
 `SelfServiceScopingHttpTest`, `CompanyOnboardingHttpTest`, `AuditLogHttpTest`,
 `AttendanceApiHttpTest`, `AttendanceRuleHttpTest`, `LeaveHrDirectHttpTest`,
-`EmployeeSalaryStructureHttpTest`, `EmployeeSalaryRevisionHttpTest`) that log
+`EmployeeSalaryStructureHttpTest`, `EmployeeSalaryRevisionHttpTest`,
+`MobileClientContractHttpTest`, `CaseVariantUserIdHttpTest`) that log
 in over the wire the same way this document does, then drive the API with a
 real `HttpClient`. Those run on every change and are the first thing to
 check if something here stops matching reality; this document is for a
@@ -106,7 +108,7 @@ confusing `400`. Attendance uses `month=2026-09`; payroll uses `month=9&year=202
 Start the app:
 
 ```bash
-cd /Users/vinitnehete/Downloads/Accusharp && ./mvnw spring-boot:run
+cd Accusharp && ./mvnw spring-boot:run
 ```
 
 That uses MySQL (`alsama` on `localhost:3306`, `root`/`root`). To try it without
@@ -573,6 +575,13 @@ GET  http://localhost:8080/api/shift-schedules/planner?month=2026-09&supervisorU
 
 `WO` = weekly off. The 14th is missing entirely — that is the holiday.
 
+One person's roster is `GET /api/shift-schedules/EMP005?fromDate=2026-09-01&toDate=2026-09-30`
+and returns only what somebody planned. Add `&includeUsual=true` and the days
+nobody planned are filled with the person's usual shift or weekly off, each
+flagged `"defaulted": true` with no `id` (needs both dates; nothing is invented for
+staff who are not on an automatic roster). The mobile app reads its own roster this
+way. `MobileClientContractHttpTest` covers it.
+
 ---
 
 ## Step 5 — Load punches (DB, not API)
@@ -700,6 +709,14 @@ The 17th: 12.5 hours between punches − 1 hour break = **11.5 worked**, of whic
 Possible `status` values: `PRESENT`, `HALF_DAY`, `ABSENT`, `ON_LEAVE`,
 `WEEKLY_OFF`, `HOLIDAY`, `INVALID_PUNCH`.
 
+The response also carries `attendanceTracked` (`true` here; `false` for a person
+whose work policy is `NOT_TRACKED`, whose "days" are a preview of nothing) and
+`sandwich` (the holidays and paid-leave days a sandwich rule made unpaid, empty
+here). Neither changes any figure above. For a month that is still running, every
+day that has not happened (and today, before a punch) reads `ABSENT` and is counted
+in `absentDays`/`lopDays` - so totals read mid-month are not "so far" figures; see
+README.md section 6.
+
 ---
 
 ## Step 7 — Apply for leave
@@ -760,6 +777,11 @@ Headers: Authorization: Bearer <token>, Content-Type: application/json
 
 **Keep the `id`** — you need it for the next two calls. (The Postman collection
 stores it in a `leaveId` variable automatically.)
+
+Every leave response also carries `"approvalFlow"` - here `SUPERVISOR_THEN_HR`.
+It is `HR_ONLY` for a population whose work policy sends leave straight to HR (the
+supervisor's queue still lists the request, but endorsing it is a 400) and
+`AUTO_APPROVE` for one that needs no approval (the response is already `APPROVED`).
 
 `leaveType`: `CASUAL_LEAVE` | `SICK_LEAVE` | `LEAVE_WITHOUT_PAY`
 `duration`: `FULL_DAY` | `FIRST_HALF` | `SECOND_HALF` — halves need

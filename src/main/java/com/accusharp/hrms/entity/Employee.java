@@ -135,6 +135,17 @@ public class Employee {
         return contractor != null;
     }
 
+    /**
+     * True for the company's ADMIN login, which is a company account, not a member
+     * of its staff: no salary, attendance, leave or payslip of its own, and never
+     * part of payroll, the directory or a headcount. Like a contractor's worker it
+     * is a row in this table only because the login lives here; see
+     * {@code EmployeeService#getActiveEntities}, which leaves it out.
+     */
+    public boolean isCompanyAccount() {
+        return role == Role.ADMIN;
+    }
+
     @Column(name = "joining_date")
     private LocalDate joiningDate;
 

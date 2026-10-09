@@ -56,10 +56,14 @@ public class LeaveService {
     @Transactional
     public LeaveResponse apply(LeaveRequestPayload payload) {
         Employee employee = employeeService.getEntityByUserId(payload.getUserId());
+        // From here on the person's stored id, never the typed one: the request, the
+        // balance and every guard that later compares ids must all say "CVHR", not "cvhr".
+        String userId = employee.getUserId();
+        employeeService.assertNotCompanyAccount(employee);
         // Also blocks a plain EMPLOYEE filing leave as an unrelated coworker -
         // a SUPERVISOR may still file on behalf of their own directly-supervised
         // team, same relation this app already uses for approvals and scheduling.
-        employeeService.assertSelfOrManages(payload.getUserId());
+        employeeService.assertSelfOrManages(userId);
 
         if (payload.getFromDate().isAfter(payload.getToDate())) {
             throw new BusinessRuleException("fromDate must be on or before toDate");
@@ -69,13 +73,13 @@ public class LeaveService {
             throw new BusinessRuleException("A half day leave must start and end on the same date");
         }
         assertWithinOneLeaveYear(employee, payload.getFromDate(), payload.getToDate());
-        assertNoOverlap(payload.getUserId(), payload.getFromDate(), payload.getToDate());
+        assertNoOverlap(userId, payload.getFromDate(), payload.getToDate());
 
         BigDecimal totalDays = leaveCalculationService.countDays(
                 payload.getFromDate(), payload.getToDate(), payload.getDuration());
 
         // Fail early rather than letting the approver hit an empty balance.
-        assertBalanceAvailable(payload.getUserId(), payload.getLeaveType(),
+        assertBalanceAvailable(userId, payload.getLeaveType(),
                 leaveYearOf(employee, payload.getFromDate()), totalDays);
 
         // Who has to agree, for this employee's population - the two-step flow
@@ -84,7 +88,7 @@ public class LeaveService {
         boolean autoApproved = flow == LeaveApprovalFlow.AUTO_APPROVE;
 
         LeaveRequest request = LeaveRequest.builder()
-                .userId(payload.getUserId())
+                .userId(userId)
                 .leaveType(payload.getLeaveType())
                 .fromDate(payload.getFromDate())
                 .toDate(payload.getToDate())
@@ -101,18 +105,18 @@ public class LeaveService {
             // Balance moves here for the same reason it moves on approval: this
             // *is* the approval. Every check above has already run, so automatic
             // approval is never a way around an empty balance or an overlap.
-            leaveBalanceService.consume(payload.getUserId(),
+            leaveBalanceService.consume(userId,
                     leaveYearOf(employee, payload.getFromDate()), payload.getLeaveType(), totalDays);
             request.setDecidedAt(Instant.now());
             request.setApprovalComments("Approved automatically - this population's leave needs no approval");
         }
 
-        log.info("leave.apply userId={} type={} from={} to={} days={} flow={}", payload.getUserId(),
+        log.info("leave.apply userId={} type={} from={} to={} days={} flow={}", userId,
                 payload.getLeaveType(), payload.getFromDate(), payload.getToDate(), totalDays, flow);
         LeaveResponse response = toResponse(leaveRequestRepository.save(request));
         if (autoApproved) {
             auditService.record("LEAVE_AUTO_APPROVE", "LeaveRequest", String.valueOf(response.id()),
-                    AuditOutcome.SUCCESS, "userId=" + payload.getUserId() + " days=" + totalDays);
+                    AuditOutcome.SUCCESS, "userId=" + userId + " days=" + totalDays);
         }
         return response;
     }
@@ -134,8 +138,9 @@ public class LeaveService {
     @Transactional
     public LeaveResponse hrDirectCreate(LeaveHrDirectRequest request) {
         Employee employee = employeeService.getEntityByUserId(request.getUserId()); // tenant check, same as assertTargetAccessible
+        String userId = employee.getUserId(); // the stored id, whatever case was typed - see apply
         assertActorCan(request.getApproverId(), PermissionCode.LEAVE_APPROVE, "Entering an approved leave");
-        employeeService.assertManages(request.getUserId());
+        employeeService.assertManages(userId);
 
         if (request.getFromDate().isAfter(request.getToDate())) {
             throw new BusinessRuleException("fromDate must be on or before toDate");
@@ -145,18 +150,18 @@ public class LeaveService {
             throw new BusinessRuleException("A half day leave must start and end on the same date");
         }
         assertWithinOneLeaveYear(employee, request.getFromDate(), request.getToDate());
-        assertNoOverlap(request.getUserId(), request.getFromDate(), request.getToDate());
+        assertNoOverlap(userId, request.getFromDate(), request.getToDate());
 
         BigDecimal totalDays = leaveCalculationService.countDays(
                 request.getFromDate(), request.getToDate(), request.getDuration());
-        assertBalanceAvailable(request.getUserId(), request.getLeaveType(),
+        assertBalanceAvailable(userId, request.getLeaveType(),
                 leaveYearOf(employee, request.getFromDate()), totalDays);
 
-        leaveBalanceService.consume(request.getUserId(), leaveYearOf(employee, request.getFromDate()),
+        leaveBalanceService.consume(userId, leaveYearOf(employee, request.getFromDate()),
                 request.getLeaveType(), totalDays);
 
         LeaveRequest entity = LeaveRequest.builder()
-                .userId(request.getUserId())
+                .userId(userId)
                 .leaveType(request.getLeaveType())
                 .fromDate(request.getFromDate())
                 .toDate(request.getToDate())
@@ -172,11 +177,11 @@ public class LeaveService {
                 .build();
 
         log.info("leave.hrDirectCreate userId={} type={} from={} to={} days={} by={}",
-                request.getUserId(), request.getLeaveType(), request.getFromDate(), request.getToDate(),
+                userId, request.getLeaveType(), request.getFromDate(), request.getToDate(),
                 totalDays, request.getApproverId());
         LeaveRequest saved = leaveRequestRepository.save(entity);
         auditService.record("LEAVE_HR_DIRECT_CREATE", "LeaveRequest", String.valueOf(saved.getId()),
-                AuditOutcome.SUCCESS, "userId=" + request.getUserId() + " days=" + totalDays);
+                AuditOutcome.SUCCESS, "userId=" + userId + " days=" + totalDays);
         return toResponse(saved);
     }
 
@@ -397,7 +402,10 @@ public class LeaveService {
      */
     private void assertSupervisorOf(String approverId, String userId) {
         Employee approver = employeeService.getEntityByUserId(approverId);
-        if (!employeeService.managesEmployee(approver, userId)) {
+        // Stored forms on both sides: "cvhr" is HR's own record, however it was typed
+        // - or stored, by a request written before the id was normalised.
+        if (approver.getUserId().equals(employeeService.storedUserId(userId))
+                || !employeeService.managesEmployee(approver, userId)) {
             throw new BusinessRuleException("Approver " + approverId + " does not manage " + userId);
         }
     }
@@ -416,16 +424,18 @@ public class LeaveService {
     }
 
     private LeaveResponse toResponse(LeaveRequest request) {
-        String employeeName = employeeService.getEntityByUserId(request.getUserId()).getEmployeeName();
+        Employee employee = employeeService.getEntityByUserId(request.getUserId());
         // Self-service scoping: reads (getById/getHistory/getPendingFor/getByStatus/
         // getCalendar) all funnel through here, so one check covers all of them. A
         // no-op for the HR/ADMIN-only decision methods and for supervisorApprove
         // (assertSupervisorOf already enforced the identical rule before mutation).
         employeeService.assertSelfOrManages(request.getUserId());
-        return new LeaveResponse(request.getId(), request.getUserId(), employeeName, request.getLeaveType(),
-                request.getFromDate(), request.getToDate(), request.getDuration(), request.getTotalDays(),
-                request.getReason(), request.getStatus(), request.getOrigin(), request.getSupervisorId(),
-                request.getApproverId(), request.getApprovalComments(), request.getAppliedAt(), request.getDecidedAt());
+        return new LeaveResponse(request.getId(), request.getUserId(), employee.getEmployeeName(),
+                request.getLeaveType(), request.getFromDate(), request.getToDate(), request.getDuration(),
+                request.getTotalDays(), request.getReason(), request.getStatus(), request.getOrigin(),
+                request.getSupervisorId(), request.getApproverId(), request.getApprovalComments(),
+                request.getAppliedAt(), request.getDecidedAt(),
+                workPolicyResolver.leaveApprovalFlow(employee, request.getFromDate()));
     }
 
     /**

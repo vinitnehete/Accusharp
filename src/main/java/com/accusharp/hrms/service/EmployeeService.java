@@ -23,6 +23,7 @@ import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.PlatformUserRepository;
 import com.accusharp.hrms.repository.RefreshTokenRepository;
 import com.accusharp.hrms.repository.SalaryRevisionRepository;
 import com.accusharp.hrms.repository.SalaryStructureRevisionRepository;
@@ -67,6 +68,7 @@ import java.util.function.Predicate;
 public class EmployeeService {
 
     private final EmployeeRepository employeeRepository;
+    private final PlatformUserRepository platformUserRepository;
     private final CompanyService companyService;
     private final DepartmentService departmentService;
     private final DesignationService designationService;
@@ -93,7 +95,10 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeCreationResponse create(EmployeeRequest request) {
-        if (employeeRepository.existsByUserId(request.getUserId())) {
+        // A platform account's name is taken too, and refused in the same words: login looks in the
+        // employee table first, so an employee by that name would lock the platform owner out.
+        if (employeeRepository.existsByUserId(request.getUserId())
+                || platformUserRepository.existsByUsernameIgnoreCase(request.getUserId())) {
             throw new ConflictException("Employee already exists with userId " + request.getUserId());
         }
         if (employeeCodeInUse(request.getCompanyId(), request.getEmployeeCode())) {
@@ -126,7 +131,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeCreationResponse resetPassword(Long id) {
-        Employee employee = getCompanyEmployeeById(id);
+        Employee employee = getEditableEmployeeById(id);
         String temporaryPassword = TemporaryPasswordGenerator.generate();
         employee.setPasswordHash(passwordEncoder.encode(temporaryPassword));
         employee.setMustChangePassword(true);
@@ -156,7 +161,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse unlockAccount(Long id) {
-        Employee employee = getCompanyEmployeeById(id);
+        Employee employee = getEditableEmployeeById(id);
         boolean wasLocked = employee.isAccountLocked();
         employee.setAccountLocked(false);
         employee.setFailedLoginAttempts(0);
@@ -168,13 +173,16 @@ public class EmployeeService {
 
     @Transactional
     public EmployeeResponse update(Long id, EmployeeRequest request) {
-        Employee employee = getCompanyEmployeeById(id);
+        Employee employee = getEditableEmployeeById(id);
 
         employeeRepository.findByUserId(request.getUserId())
                 .filter(other -> !other.getId().equals(id))
                 .ifPresent(other -> {
                     throw new ConflictException("Another employee already uses userId " + request.getUserId());
                 });
+        if (platformUserRepository.existsByUsernameIgnoreCase(request.getUserId())) {
+            throw new ConflictException("Another employee already uses userId " + request.getUserId());
+        }
         findByEmployeeCodeInCompany(request.getCompanyId(), request.getEmployeeCode())
                 .filter(other -> !other.getId().equals(id))
                 .ifPresent(other -> {
@@ -225,7 +233,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse updateSalaryStructure(Long id, SalaryStructureRequest request, String revisedBy) {
-        Employee employee = getCompanyEmployeeById(id);
+        Employee employee = getEditableEmployeeById(id);
         // Snapshotted before anything is written: the employee row is about to
         // be overwritten in place, and without this the previous components are
         // simply gone. See SalaryStructureRevision's Javadoc.
@@ -268,7 +276,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse regenerateSalaryStructure(Long id, String revisedBy) {
-        Employee employee = getCompanyEmployeeById(id);
+        Employee employee = getEditableEmployeeById(id);
         // Going back onto the company rule discards a hand-set structure just as
         // surely as setting one does, so it is recorded the same way.
         StructureSnapshot before = StructureSnapshot.of(employee);
@@ -320,7 +328,7 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse reviseSalary(Long id, SalaryRevisionRequest request, String revisedBy) {
-        Employee employee = getCompanyEmployeeById(id);
+        Employee employee = getEditableEmployeeById(id);
         BigDecimal previousGross = salaryCalculationService.scaled(employee.getGrossSalary());
 
         if (employee.isSalaryStructureOverridden()) {
@@ -661,11 +669,16 @@ public class EmployeeService {
      */
     @Transactional(readOnly = true)
     public List<Employee> getAllEntities() {
-        return tenantContext.currentCompanyId()
+        return staff(tenantContext.currentCompanyId()
                 .map(employeeRepository::findByCompanyIdAndContractorIsNull)
                 .orElseGet(() -> employeeRepository.findAll().stream()
                         .filter(employee -> !employee.isContractorWorker())
-                        .toList());
+                        .toList()));
+    }
+
+    /** Drops the admin login: a company account is not part of the staff every process here runs over. */
+    private static List<Employee> staff(List<Employee> employees) {
+        return employees.stream().filter(employee -> !employee.isCompanyAccount()).toList();
     }
 
     /**
@@ -771,6 +784,7 @@ public class EmployeeService {
         // which additionally enforces that their supervisor is one of this
         // company's own employees - a rule this endpoint has no way to apply.
         assertNotContractorWorker(employee);
+        assertMayChange(employee);
         Employee supervisor = supervisorUserId == null ? null : getEntityByUserId(supervisorUserId);
         if (supervisor != null) {
             assertNotContractorWorker(supervisor);
@@ -791,7 +805,10 @@ public class EmployeeService {
      */
     @Transactional
     public EmployeeResponse deactivate(Long id) {
-        Employee employee = getCompanyEmployeeById(id);
+        Employee employee = getEditableEmployeeById(id);
+        if (employee.isCompanyAccount()) {
+            throw new BusinessRuleException("The admin account cannot be deactivated - the company would have no one in charge");
+        }
         employee.setRecordStatus(RecordStatus.INACTIVE);
         employee.setAccountEnabled(false);
         if (employee.getRelievingDate() == null) {
@@ -822,6 +839,30 @@ public class EmployeeService {
         return employee;
     }
 
+    /** {@link #getCompanyEmployeeById} for a write - see {@link #assertMayChange}. */
+    private Employee getEditableEmployeeById(Long id) {
+        Employee employee = getCompanyEmployeeById(id);
+        assertMayChange(employee);
+        return employee;
+    }
+
+    /**
+     * Whose record the caller may change. An ADMIN may change anyone's; everyone else who
+     * holds {@code EMPLOYEE_UPDATE} - HR, or anyone given it through a custom role - may
+     * change everyone's but their own, and never the admin's. Your own pay, role and
+     * account are for somebody else to decide, and the admin is the one account no one
+     * else may touch. A no-op with no employee principal, as every check here.
+     */
+    private void assertMayChange(Employee target) {
+        tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .filter(principal -> !Role.ADMIN.name().equals(principal.getRole()))
+                .filter(principal -> target.isCompanyAccount() || principal.getUsername().equals(target.getUserId()))
+                .ifPresent(principal -> {
+                    throw new AccessDeniedException("Only an ADMIN may change this record");
+                });
+    }
+
     private void assertNotContractorWorker(Employee employee) {
         if (employee.isContractorWorker()) {
             throw NotFoundException.of("Employee", "userId " + employee.getUserId());
@@ -833,6 +874,19 @@ public class EmployeeService {
         Employee employee = employeeRepository.findById(id).orElseThrow(() -> NotFoundException.of("Employee", id));
         assertAccessible(employee);
         return employee;
+    }
+
+    /**
+     * The id as it is stored, for one somebody typed. The database compares user
+     * ids without regard to case (MySQL's default collation), so a typed
+     * {@code hr001} finds the row {@code HR001} - and every guard that asks "is the
+     * target the caller?" must compare the stored forms, or {@code hr001} reads as
+     * somebody else while every read and write lands on the caller's own record.
+     * An id nobody has comes back as typed: the lookup that follows reports it.
+     */
+    @Transactional(readOnly = true)
+    public String storedUserId(String typedUserId) {
+        return employeeRepository.findByUserId(typedUserId).map(Employee::getUserId).orElse(typedUserId);
     }
 
     @Transactional(readOnly = true)
@@ -876,10 +930,10 @@ public class EmployeeService {
      */
     @Transactional(readOnly = true)
     public List<Employee> getActiveEntities() {
-        return tenantContext.currentCompanyId()
+        return staff(tenantContext.currentCompanyId()
                 .map(companyId -> employeeRepository
                         .findByRecordStatusAndCompanyIdAndContractorIsNull(RecordStatus.ACTIVE, companyId))
-                .orElseGet(() -> employeeRepository.findByRecordStatusAndContractorIsNull(RecordStatus.ACTIVE));
+                .orElseGet(() -> employeeRepository.findByRecordStatusAndContractorIsNull(RecordStatus.ACTIVE)));
     }
 
     /**
@@ -985,13 +1039,15 @@ public class EmployeeService {
      * ADMIN/HR manage the whole company, a SUPERVISOR their direct reports, and
      * anyone else nobody.
      *
-     * <p>Unlike {@link #assertSelfOrManages}, a SUPERVISOR's own record is not
-     * included. A custom role handing a supervisor {@code ATTENDANCE_CORRECT} or
-     * {@code LEAVE_APPROVE} must not let them correct their own attendance or
-     * approve their own leave. ADMIN/HR, who could always do both, still can.
+     * <p>Unlike {@link #assertSelfOrManages}, the caller's own record is never
+     * included, whatever their scope: a custom role handing a supervisor
+     * {@code ATTENDANCE_CORRECT} or {@code LEAVE_APPROVE}, or HR's company scope,
+     * must not let anyone correct their own attendance or approve their own
+     * leave. That is for the admin, or the person's own supervisor.
      *
      * <p>404 on failure and a no-op with no employee principal, both exactly as
-     * {@link #assertSelfOrManages}.
+     * {@link #assertSelfOrManages}. The admin login is the exception to "the whole
+     * company": it is nobody's to manage, having no attendance or leave to act on.
      */
     public void assertManages(String targetUserId) {
         tenantContext.currentPrincipal()
@@ -1000,7 +1056,37 @@ public class EmployeeService {
                     if (!manages(principal, scopeOf(principal), targetUserId)) {
                         throw NotFoundException.of("Employee", "userId " + targetUserId);
                     }
+                    assertNotCompanyAccount(getEntityByUserId(targetUserId));
                 });
+    }
+
+    /** For processes {@link #assertManages} does not gate: nobody runs one on their own record. */
+    public void assertNotSelf(String targetUserId) {
+        tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .filter(principal -> principal.getUsername().equals(storedUserId(targetUserId)))
+                .ifPresent(principal -> {
+                    throw new AccessDeniedException("Not on your own record - the admin does this");
+                });
+    }
+
+    /** {@link #getActiveEntities()} without the caller's own record - whose payroll the caller may run. */
+    @Transactional(readOnly = true)
+    public List<Employee> getActiveEntitiesExceptCaller() {
+        List<Employee> active = getActiveEntities();
+        return tenantContext.currentPrincipal()
+                .filter(principal -> principal.getType() == PrincipalType.EMPLOYEE)
+                .map(principal -> active.stream()
+                        .filter(employee -> !principal.getUsername().equals(employee.getUserId())).toList())
+                .orElse(active);
+    }
+
+    /** The admin login is a company account with no pay, attendance or leave - refused as the subject of any of them. */
+    public void assertNotCompanyAccount(Employee employee) {
+        if (employee.isCompanyAccount()) {
+            throw new BusinessRuleException(employee.getUserId()
+                    + " is the company's admin account, not an employee - it has no pay, attendance or leave");
+        }
     }
 
     /** {@link #getActiveEntities()} narrowed to the employees the caller manages - see {@link #assertManages}. */
@@ -1089,7 +1175,8 @@ public class EmployeeService {
     }
 
     private boolean isVisibleTo(UserPrincipal principal, DataScope scope, String targetUserId) {
-        return principal.getUsername().equals(targetUserId) || manages(principal, scope, targetUserId);
+        String stored = storedUserId(targetUserId);
+        return principal.getUsername().equals(stored) || managesStored(principal, scope, stored);
     }
 
     /** Same rule, for an employee already loaded. */
@@ -1098,10 +1185,15 @@ public class EmployeeService {
     }
 
     private boolean manages(UserPrincipal principal, DataScope scope, String targetUserId) {
+        return managesStored(principal, scope, storedUserId(targetUserId));
+    }
+
+    /** {@link #manages(UserPrincipal, DataScope, String)} for an id already in its stored form. */
+    private boolean managesStored(UserPrincipal principal, DataScope scope, String storedUserId) {
         return switch (scope) {
-            case COMPANY -> true;
-            case ALL_REPORTS -> reportsUpTo(principal.getUsername(), getEntityByUserId(targetUserId));
-            case DIRECT_REPORTS -> supervises(principal.getUsername(), targetUserId);
+            case COMPANY -> !principal.getUsername().equals(storedUserId);
+            case ALL_REPORTS -> reportsUpTo(principal.getUsername(), getEntityByUserId(storedUserId));
+            case DIRECT_REPORTS -> supervises(principal.getUsername(), storedUserId);
             case SELF -> false;
         };
     }
@@ -1109,7 +1201,7 @@ public class EmployeeService {
     /** Same rule as {@link #manages(UserPrincipal, DataScope, String)}, for an employee already loaded. */
     private boolean manages(UserPrincipal principal, DataScope scope, Employee target) {
         return switch (scope) {
-            case COMPANY -> true;
+            case COMPANY -> !principal.getUsername().equals(target.getUserId());
             case ALL_REPORTS -> reportsUpTo(principal.getUsername(), target);
             case DIRECT_REPORTS -> target.getSupervisor() != null
                     && principal.getUsername().equals(target.getSupervisor().getUserId());
@@ -1124,6 +1216,10 @@ public class EmployeeService {
     }
 
     private void apply(Employee employee, EmployeeRequest request) {
+        if (request.getRole() != null && (request.getRole() == Role.ADMIN) != employee.isCompanyAccount()) {
+            throw new BusinessRuleException("A company has one admin - the account created when it was onboarded. "
+                    + "That role can be neither given to anyone else nor taken away");
+        }
         employee.setUserId(request.getUserId());
         employee.setEmployeeCode(codeOrNull(request.getEmployeeCode()));
         employee.setEmployeeName(request.getEmployeeName());

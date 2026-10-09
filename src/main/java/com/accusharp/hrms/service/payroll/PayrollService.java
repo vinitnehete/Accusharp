@@ -152,7 +152,7 @@ public class PayrollService {
      */
     @Transactional(readOnly = true)
     public List<String> pendingGenerationEmployeeIds(int month, int year) {
-        List<Employee> employees = employeeService.getActiveEntities();
+        List<Employee> employees = employeeService.getActiveEntitiesExceptCaller();
 
         // One IN-clause query for "who's already generated this period" instead
         // of one findBy... per employee.
@@ -319,6 +319,8 @@ public class PayrollService {
 
     private Payroll build(PayrollRequest request, int revision) {
         Employee employee = employeeService.getEntityByUserId(request.getEmployeeId());
+        employeeService.assertNotCompanyAccount(employee);
+        employeeService.assertNotSelf(employee.getUserId());
         // The employee's own company's rule, not the caller's - correct regardless of who is asking.
         SalaryRule rule = salaryRuleService.getActiveRuleForCompany(employee.getCompany());
         YearMonth period = YearMonth.of(request.getYear(), request.getMonth());

@@ -10,6 +10,9 @@ import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.repository.AttendanceRuleRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
+import com.accusharp.hrms.repository.CustomRolePermissionRepository;
+import com.accusharp.hrms.repository.CustomRoleRepository;
+import com.accusharp.hrms.repository.EmployeeCustomRoleRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
 import com.accusharp.hrms.repository.LeaveBalanceRepository;
 import com.accusharp.hrms.repository.LeaveRequestRepository;
@@ -17,6 +20,7 @@ import com.accusharp.hrms.repository.MonthlyAttendanceSummaryRepository;
 import com.accusharp.hrms.repository.PayrollRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -60,6 +64,9 @@ class SupervisorReportScopingHttpTest {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private CompanyRepository companyRepository;
     @Autowired private EmployeeRepository employeeRepository;
+    @Autowired private EmployeeCustomRoleRepository employeeCustomRoleRepository;
+    @Autowired private CustomRolePermissionRepository customRolePermissionRepository;
+    @Autowired private CustomRoleRepository customRoleRepository;
     @Autowired private LeaveRequestRepository leaveRequestRepository;
     @Autowired private LeaveBalanceRepository leaveBalanceRepository;
     @Autowired private PayrollRepository payrollRepository;
@@ -71,11 +78,15 @@ class SupervisorReportScopingHttpTest {
 
     private final HttpClient http = HttpClient.newHttpClient();
 
+    private String adminToken;
     private String hrToken;
     private String supervisorToken;
 
     @BeforeEach
     void setUp() {
+        employeeCustomRoleRepository.deleteAll();
+        customRolePermissionRepository.deleteAll();
+        customRoleRepository.deleteAll();
         leaveRequestRepository.deleteAll();
         leaveBalanceRepository.deleteAll();
         payrollRepository.deleteAll();
@@ -91,6 +102,7 @@ class SupervisorReportScopingHttpTest {
         Company company = companyRepository.save(Company.builder()
                 .companyCode("RPT-SCOPE").companyName("Report Scope Co").status(RecordStatus.ACTIVE).build());
 
+        saveEmployee("RSADM01", Role.ADMIN, company, null, RecordStatus.ACTIVE);
         saveEmployee("RSHR01", Role.HR, company, null, RecordStatus.ACTIVE);
         Employee supervisor = saveEmployee("RSSUP01", Role.SUPERVISOR, company, null, RecordStatus.ACTIVE);
         saveEmployee("RSTEAM01", Role.EMPLOYEE, company, supervisor, RecordStatus.ACTIVE);
@@ -101,8 +113,17 @@ class SupervisorReportScopingHttpTest {
             payrollRepository.save(payroll(userId));
         }
 
+        adminToken = login("RSADM01");
         hrToken = login("RSHR01");
         supervisorToken = login("RSSUP01");
+    }
+
+    @AfterEach
+    void tearDown() {
+        // Custom roles reference employees; leave none behind for the next test class.
+        employeeCustomRoleRepository.deleteAll();
+        customRolePermissionRepository.deleteAll();
+        customRoleRepository.deleteAll();
     }
 
     @Test
@@ -117,6 +138,7 @@ class SupervisorReportScopingHttpTest {
     @Test
     @DisplayName("payroll and statutory reports hold only the supervisor's team - rows and totals")
     void payrollReportsAreOwnTeam() {
+        grantPayRead("RSSUP01");
         assertThat(userIds(get("/api/reports/payroll" + PERIOD, supervisorToken)))
                 .containsExactlyInAnyOrder("RSSUP01", "RSTEAM01");
         assertThat(userIds(get("/api/reports/statutory/pf" + PERIOD, supervisorToken)))
@@ -171,11 +193,25 @@ class SupervisorReportScopingHttpTest {
     @Test
     @DisplayName("a supervisor cannot drill into the day-wise audit of someone outside their team")
     void auditDrillDownOutsideTeamIsNotFound() {
+        grantPayRead("RSSUP01");
         assertThat(send("GET", "/api/reports/payroll/audit/RSOTHER01/days" + PERIOD, null, supervisorToken).status())
                 .isEqualTo(404);
     }
 
     // ---- helpers -----------------------------------------------------------
+
+    /**
+     * Pay is the employee's own, or for whoever holds PAY_READ - so a supervisor's team-scoped pay
+     * reports are only reachable once a custom role grants it. Scope then decides whose rows.
+     */
+    private void grantPayRead(String userId) {
+        long roleId = send("POST", "/api/roles", "{\"name\": \"Pay for " + userId + "\"}", adminToken)
+                .body().get("id").asLong();
+        assertThat(send("PUT", "/api/roles/" + roleId + "/permissions", "{\"permissionCodes\": [\"PAY_READ\"]}",
+                adminToken).status()).isEqualTo(200);
+        assertThat(send("POST", "/api/roles/" + roleId + "/employees/" + userId, null, adminToken).status())
+                .isEqualTo(204);
+    }
 
     private record Resp(int status, JsonNode body) {
     }

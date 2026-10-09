@@ -443,6 +443,34 @@ what needs fixing.
 `overwriteManual: true` discards corrections deliberately. There is no way to do
 it by accident.
 
+### Reading a month that is not generated yet
+
+`GET /api/attendance/{userId}/monthly` on a month with no stored days returns a
+preview computed from the punches. It is honest about the past and blunt about
+the rest: a day that has not happened has no punches, so it is `ABSENT`, and it is
+counted in `absentDays` and `lopDays` - as is today until the first punch.
+Totals read mid-month are therefore not "so far" figures. A client that shows
+them should show days up to today as they are, leave the coming days out, and wait
+for the month to end before showing the unpaid total (the mobile app and the web My
+Attendance page both do). One punch is `INVALID_PUNCH`
+by the rules above, including on a day that is still going on.
+
+The same response says whether the person is tracked at all
+(`attendanceTracked`, from the work policy - see ARCHITECTURE.md). For an untracked
+person the days below it are a preview of nothing: no roster is expected and no
+day should be read as an absence.
+
+### Generating a month that is still running
+
+`POST /api/attendance/generate` stores **every day of the month** - from the 1st to
+the last - whatever today is. Generate on the 3rd and the 4th to the 31st are stored
+too, each as a blank `ABSENT` (or `WEEKLY_OFF` / `HOLIDAY` / `ON_LEAVE` where that
+already applies), and a later run rewrites them as the days pass. That is deliberate
+in one respect - payroll needs the whole month stored - but it means a client that
+lists stored records (`GET /{userId}/records`) must not present the days to come as
+absences. The web Records console leaves out the ones the engine wrote as `ABSENT`
+and nobody touched; its CSV export keeps all of them.
+
 ### Reads never write
 
 `GET /{userId}/monthly` returns the stored rows once generated. Before that it

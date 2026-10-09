@@ -58,6 +58,22 @@ public record MonthlyAttendanceResponse(
         /** One row per month-scoped rule that produced a penalty, each with the numbers it used. */
         List<AttendancePolicyOutcome> policyOutcomes,
 
+        /**
+         * False when the employee's work policy leaves attendance untracked - a
+         * director paid a fixed salary punches nothing, so the absent days below
+         * are not a finding and must not be shown to them as one. Always true in
+         * the roll-up payroll reads; only the read endpoint sets it, so a
+         * generation run does not resolve a policy per employee for nothing.
+         */
+        boolean attendanceTracked,
+
         List<DailyAttendanceResponse> days
 ) {
+
+    public MonthlyAttendanceResponse withAttendanceTracked(boolean tracked) {
+        return new MonthlyAttendanceResponse(userId, employeeName, month, workingDays, presentDays, absentDays,
+                halfDays, leaveDays, holidayDays, weekOffDays, lateCount, earlyExitCount, invalidPunches,
+                totalHours, overtimeHours, lopDays, policyLopDays, sandwich, compOffCreditDays, paidDayOffDays,
+                weekOffWorkedDays, weekOffUnrosteredPunchDays, policyOutcomes, tracked, days);
+    }
 }

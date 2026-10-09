@@ -175,7 +175,8 @@ class PayVisibilityHttpTest {
     void payReportsAreRefused() {
         for (String path : List.of("/api/reports/payroll?" + MAY, "/api/reports/statutory/pf?" + MAY,
                 "/api/reports/payroll/register?" + MAY, "/api/reports/payroll/bank-transfer?" + MAY,
-                "/api/reports/attendance/overtime-register?" + MAY)) {
+                // This one takes month=yyyy-MM: with month=5&year=2031 it 400s while binding, before the pay gate runs.
+                "/api/reports/attendance/overtime-register?month=2031-05")) {
             assertThat(send("GET", path, null, supToken).status()).as(path).isEqualTo(403);
         }
         assertThat(send("GET", "/api/reports/attendance/monthly?month=2031-05", null, supToken).status())

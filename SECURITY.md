@@ -12,7 +12,8 @@ employee logins, admin-triggered password reset, full audit coverage, and
 audit log retention/export), **Phase 10** (dynamic role/permission
 management), **Phase 14** (reports and dashboard scoped to a supervisor's
 team), **Phase 15** (custom roles effective end to end) and **Phase 16**
-(data scope as a grantable permission) of a multi-phase
+(data scope as a grantable permission), **Phase 17** (the admin is a company
+account) and **Phase 18** (platform account names are reserved) of a multi-phase
 security rollout. Read this
 alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
@@ -136,12 +137,9 @@ bypass the controller) still control them directly.
 
 ### Self-escalation guard
 
-Granting the `ADMIN` role is itself ADMIN-only: `EmployeeController` rejects
-a create/update where `role: ADMIN` is requested by a caller who isn't
-already ADMIN, even though HR otherwise has full `EMPLOYEE_CREATE`/`_UPDATE`
-rights. Enforced in the controller (not `EmployeeService`) so the many
-existing service-level tests that call `EmployeeService` directly - with no
-`SecurityContext` populated - are unaffected.
+*Superseded by Phase 17:* this was once "granting ADMIN is ADMIN-only", enforced in
+`EmployeeController`. A company now has exactly one admin, so `EmployeeService`
+refuses the role to everyone - see "A company has one admin" below.
 
 ### Where things are
 
@@ -1030,6 +1028,231 @@ never acts on their own record (Phase 15).
 **Proof:** `DirectorScopeHttpTest` (6 tests), plus the frontend's
 `access.test.js` and `navConfig.test.js`, where the Team screens now ask for a
 scope rather than a role name.
+
+## The admin is a company account, and edits are the admin's (Phase 17)
+
+### The ADMIN login is not an employee
+
+Company onboarding creates the first `ADMIN` as a login, not a member of staff:
+no salary, employee code or joining date is asked for or stored
+(`CompanyOnboardingRequest` no longer carries them). `Employee.isCompanyAccount()`
+(`role == ADMIN`) is what every process reads, and it lives in the same two choke
+points the contractor split uses:
+
+- `EmployeeService.getActiveEntities()` / `getAllEntities()` leave it out, so
+  payroll runs, attendance generation, the dashboard, every report, the roster
+  planner and the employee directory never see it - no headcount, no payslip, no
+  attendance.
+- It is refused as the *subject* of an employee process: leave applied for or
+  entered (`LeaveService.apply`, `assertManages` for HR-direct entry and every
+  decision), attendance generated or corrected (`assertManages`), payroll by name
+  (`PayrollService.build`) and leave quotas. Leave balances read as empty rather
+  than showing the fallback 12 casual / 8 sick days.
+- It is still an actor, with the whole company as its scope: it creates and edits
+  staff, approves leave, runs payroll. Only its own workspace is gone - the UI
+  drops "My Workspace" for it (`ACCESS.workspace`).
+
+### A company has one admin
+
+The account onboarding creates is the only `ADMIN`. `EmployeeService.apply` refuses
+to give the role to anyone (create, update, bulk import) and refuses to take it away
+from the admin, and `deactivate` refuses the admin - either would leave the company
+with nobody, or a second person, in charge. It is a 400 whoever asks. The UI's role
+dropdown and CSV template no longer offer ADMIN.
+
+### Whose record may be changed
+
+`EmployeeService.assertMayChange` runs on every write to an employee record - edit,
+salary revision, structure override/regenerate, password reset, unlock,
+deactivate, supervisor reassignment. An `ADMIN` may change anyone's. Everyone else
+who holds `EMPLOYEE_UPDATE` - HR, or anyone given it through a custom role - may
+change everyone's **but their own and the admin's** (403). Your own pay, role and
+account are for somebody else to decide, and the admin is the one account HR must
+not be able to reset, demote or deactivate.
+
+The rule is about the record, not the role name, so it holds for a custom role
+exactly as for HR.
+
+### Nobody runs attendance, leave or payroll on their own record
+
+The same principle for the processes themselves. `EmployeeService.manages` - the
+one "may act on this person" check behind attendance generation, correction and
+unlock, and every leave decision and HR-direct entry - no longer treats the
+caller's own row as theirs, even with company scope; HR's own leave, attendance
+and pay are for the admin (or, for endorsement and rostering, their own supervisor).
+Two processes are not gated by `manages`, so they get `assertNotSelf`: payroll
+(`PayrollService.build`, so generate, regenerate and bulk runs alike) and leave
+quotas (`LeaveBalanceService.setQuota`). A whole-company payroll run by HR simply
+leaves HR's own row out of the run (`getActiveEntitiesExceptCaller`), for the admin's
+run to pay - and a whole-company attendance generation by HR likewise skips HR's own
+row, so month-end needs the admin's run to cover them. Endorsing your own leave is refused in `LeaveService.assertSupervisorOf`.
+Applying for your own leave is unchanged - the deciding is what moves.
+
+Rostering (`ShiftSchedulingService`) still goes through `managesEmployee`, which is
+unchanged: HR may still roster their own shifts.
+
+**Proof:** `CompanyAccountHttpTest` (18 tests), `CompanyOnboardingHttpTest.onboardingCreatesAdminWithNoPay`, and on
+the frontend `access.test.js`, `navConfig.test.js`, `enums.test.js`, `LeaveLayout.test.js`,
+`OnboardCompany.test.jsx`, `EmployeeDetail.test.jsx`, `EmployeeList.test.jsx`,
+`PendingApprovals.test.jsx`.
+
+## Platform account names are reserved (Phase 18)
+
+### The problem
+
+Employees and platform users share one login form, and `AuthService.dispatchLogin`
+looks in the **employee table first**: only if no employee has that userId does it try
+the platform table. Nothing stopped an employee being created with a platform
+account's name - so a company admin (or HR, or a custom role holding `EMPLOYEE_CREATE`,
+or a CSV import) could add an employee called `platform_owner`. That employee gained
+nothing: their session is an employee session with their company role, and the
+platform-only permissions (`COMPANY_CREATE` and the rest) cannot be granted to a
+company user at all. But the platform owner's own login now landed on the employee row,
+was checked against that employee's password, and failed - a company could lock the
+platform owner out of the platform. (Found live in the 2026-09-19 review.)
+
+### The fix
+
+A platform username is unavailable as an employee userId, on every route that gives an
+employee row its userId:
+
+| Route | Where |
+|---|---|
+| Create an employee, and CSV bulk import (which calls it per row) | `EmployeeService.create` |
+| Rename an employee | `EmployeeService.update` |
+| Create or rename a contractor's worker | `ContractorEmployeeService.create` / `update` - a worker has no login, but the row would still answer the name |
+| Onboard a company whose admin has that name | `CompanyOnboardingService.onboard` |
+
+The check is `PlatformUserRepository.existsByUsernameIgnoreCase`, so it holds however
+the name is capitalised - and, because the comparison runs in the database like the
+login lookup does, on MySQL's default collation for accent variants too.
+
+The refusal is a 409 carrying **exactly the message a plain duplicate userId gets**
+("Employee already exists with userId ..."), so it does not tell a caller that the
+name belongs to a platform account. Platform accounts are only ever created by the
+seeder, never through the API, so there is no route in the other direction to close.
+
+### Databases that already have a clash
+
+The fix stops new clashes; it does not repair an old one. To check:
+
+```sql
+select user_id, company_id from employee
+where lower(user_id) in (select lower(username) from platform_user);
+```
+
+No rows means nothing to do. A row means that company's employee is answering the
+platform owner's login: have the company rename that employee (the edit is now
+permitted, and refuses only names that are still reserved), or rename the row in the
+database. Until then the platform owner cannot sign in.
+
+Login precedence itself is unchanged (employees are still looked up first); with the
+names reserved it can no longer matter for new data.
+
+**Proof:** `ReservedUserIdHttpTest` (4 tests) - each route above, in two letter cases,
+the identical-message check, and that the platform owner can still sign in afterwards.
+
+## The mobile client (Phase 19)
+
+The Muster app (`AccusharpMobile/`) is a native client of this same API for
+employees and supervisors. It introduces no endpoint and no privilege; what it
+changes is who is on the other end of the login screen, which is worth writing
+down.
+
+### How it holds the session
+
+- The **access token** (15 minutes) lives in memory only. The **refresh token**
+  (7 days) is read from the httpOnly `Set-Cookie` header by the app itself - a
+  phone has no cookie jar it can rely on, and iOS drops a `Secure` cookie that
+  arrived over plain http - kept in the Keychain / Android Keystore
+  (`expo-secure-store`), and replayed as a `Cookie` header on `/auth/refresh` and
+  `/auth/logout` only, which is the narrowing `Path=/api/auth` gives a browser. It
+  is never sent to a business endpoint.
+- Refresh rotation is **single-use**, and a replayed token ends the session. The
+  app therefore shares one refresh between concurrent requests. The converse is
+  an accepted cost: if a refresh succeeds on the server but the response never
+  reaches a phone (a dead spot), the retry replays the old token and the person
+  signs in again.
+- `permissions` in the login/refresh body decides what the app shows, and the same
+  list is what the API enforces. A role or custom-role change therefore reaches a
+  phone within one access-token lifetime.
+- **The company ADMIN is signed in as an `EMPLOYEE` principal holding every
+  permission** (Phase 17 made it a company account, not an employee). A client
+  must not infer a workspace from permissions: the mobile app and the web app both
+  key on the role, and send the admin to the web app / no workspace.
+
+### What was checked, live
+
+A script (`AccusharpMobile/scripts/contract-smoke.mjs`, `npm run contract`) signs in
+as an admin, HR, a supervisor, an employee and a director on a scratch backend and
+asserts: the cookie's shape and rotation, replay refused, logout clearing the
+cookie, a colleague's attendance 404, a supervisor's team list carrying no pay or
+bank fields, a supervisor refused a team member's slip (403), supervisor reject and
+employee cancel refused (403), the admin refused leave (400), and the lock after
+five wrong passwords. It creates a company, so it refuses a non-local address unless
+told otherwise.
+
+### Things to know when running it for a workforce
+
+- **The login throttle is per source address** (`security.login-rate-limit.*`,
+  15 failures in 5 minutes by default, cleared by a successful login from that
+  address). A factory on one Wi-Fi shares one address, and people who read slowly
+  mistype: fifteen wrong attempts across the whole floor would hold everyone off for
+  a few minutes. Raise `max-failures` for such a site, or leave it - the per-account
+  lock (five tries) is the control that matters. Behind a proxy, `APP_TRUSTED_PROXIES`
+  must name it, or every phone shares the proxy's address (`deploy/docker-compose.yml`
+  does).
+- **A locked account is cleared by HR/ADMIN only** (password reset). The app says so
+  in the person's language; there is no self-service recovery (see below).
+- **The server address is baked into a release build** (`EXPO_PUBLIC_API_URL`);
+  release builds block plain http. A build made without one has no server and says so
+  rather than calling localhost.
+- **`includeUsual` and `approvalFlow` widen nothing**: the roster read keeps its
+  self-or-manages scope (a colleague's roster is a 404 with or without the flag), and
+  the approval flow of a request is only ever returned to those who can already read
+  the request.
+
+## A user id typed in another case is still the same person (Phase 20)
+
+### The problem
+
+Phase 17 stopped HR (and anyone holding company-wide scope through a custom role)
+acting on their own record: approving their own leave, entering leave for themselves,
+setting their own leave quota, generating, correcting or unlocking their own
+attendance. The guards decided "is the target the caller?" by comparing the caller's
+stored id with the id in the request using a case-sensitive `equals`.
+
+The production database is MySQL, and its default collation (`utf8mb4_0900_ai_ci`)
+compares user ids without regard to case - and accents. So `cvhr` finds the row
+`CVHR`: every read and write resolves to HR's own record, while the guard saw a
+different string and treated it as somebody else. HR signed in as `CVHR` could apply
+for leave as `cvhr`, approve it, raise their own quota and rewrite their own
+attendance. The tests could not see it, because H2 compares case-sensitively. (Found
+in the 2026-10-03 security review; the owner's rule was incomplete, no new capability
+was added - before Phase 17 HR could do all of this with the exact id.)
+
+### The fix
+
+- `EmployeeService.storedUserId(typed)` returns the id as it is stored. Every guard that
+  compares ids now compares stored forms: `assertNotSelf`, `assertManages`,
+  `assertSelfOrManages` (so also the leave, attendance and quota paths that call them)
+  and `LeaveService.assertSupervisorOf`. The supervisor and director scopes already
+  compared stored ids on both sides.
+- `LeaveService.apply`, `hrDirectCreate` and `LeaveBalanceService.setQuota` write the
+  person's stored id, so a typed `cvemp` produces a request and a balance for `CVEMP`,
+  not a second row. Requests written before this keep whatever case was typed; the
+  guards handle them too (`aLegacyRowStoredUnderTheTypedIdIsStillGuarded`).
+- `CaseVariantUserIdHttpTest` (10 tests) runs on an H2 database created with
+  `IGNORECASE=TRUE`, which behaves like MySQL here, and checks the exact same requests
+  with a lower-case id: HR is refused on their own record and still works for everyone
+  else however their id is typed.
+
+### Known and left alone
+
+Rules that name one person (`EMPLOYEE`-scope work policies and attendance policy rules)
+match `scopeRef` against the stored id with a case-sensitive `equals`, so a rule saved
+as `dir001` does not apply to `DIR001`. That is a correctness gap, not an access one:
+it can only make a rule not apply. Roster self-assignment is unchanged, as before.
 
 ## Not yet built (next phases)
 

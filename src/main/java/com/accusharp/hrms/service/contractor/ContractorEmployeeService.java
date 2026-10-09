@@ -13,6 +13,7 @@ import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.mapper.ContractorMapper;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.PlatformUserRepository;
 import com.accusharp.hrms.security.TenantContext;
 import com.accusharp.hrms.service.AuditService;
 import com.accusharp.hrms.service.DesignationService;
@@ -66,6 +67,7 @@ import java.util.List;
 public class ContractorEmployeeService {
 
     private final EmployeeRepository employeeRepository;
+    private final PlatformUserRepository platformUserRepository;
     private final ContractorService contractorService;
     private final EmployeeService employeeService;
     private final DesignationService designationService;
@@ -77,7 +79,9 @@ public class ContractorEmployeeService {
     public ContractorEmployeeResponse create(Long contractorId, ContractorEmployeeRequest request) {
         Contractor contractor = requireActiveContractor(contractorId);
 
-        if (employeeRepository.existsByUserId(request.getUserId())) {
+        if (employeeRepository.existsByUserId(request.getUserId())
+                || platformUserRepository.existsByUsernameIgnoreCase(request.getUserId())) {
+            // A platform account's name is refused here too - a worker row would answer its login.
             // Deliberately the same message an ordinary employee create gives.
             // userId is unique platform-wide because the device feed resolves a
             // punch by it alone, so the clash may well be with a row this caller
@@ -118,6 +122,9 @@ public class ContractorEmployeeService {
                     throw new ConflictException("Another worker or employee already uses userId "
                             + request.getUserId());
                 });
+        if (platformUserRepository.existsByUsernameIgnoreCase(request.getUserId())) {
+            throw new ConflictException("Another worker or employee already uses userId " + request.getUserId());
+        }
         employeeRepository
                 .findByEmployeeCodeAndCompanyId(request.getEmployeeCode(), contractor.getCompany().getId())
                 .filter(other -> !other.getId().equals(id))

@@ -16,8 +16,6 @@ import com.accusharp.hrms.dto.SalaryStructureRequest;
 import com.accusharp.hrms.entity.SalaryRevision;
 import com.accusharp.hrms.entity.SalaryStructureRevision;
 import com.accusharp.hrms.enums.PrincipalType;
-import com.accusharp.hrms.enums.Role;
-import com.accusharp.hrms.exception.AuthenticationFailedException;
 import com.accusharp.hrms.security.UserPrincipal;
 import com.accusharp.hrms.service.EmployeeService;
 import com.accusharp.hrms.util.EmployeeCredentialsCsvWriter;
@@ -31,7 +29,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -55,7 +52,6 @@ public class EmployeeController {
     @PostMapping
     public ResponseEntity<EmployeeCreationResponse> create(@AuthenticationPrincipal UserPrincipal principal,
                                                             @Valid @RequestBody EmployeeRequest request) {
-        assertNotGrantingAdminUnlessAdmin(principal, request);
         applyTenantScope(principal, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(employeeService.create(request));
     }
@@ -63,7 +59,7 @@ public class EmployeeController {
     /**
      * Bulk onboarding from a CSV upload (see {@link EmployeeCsvParser} for the
      * expected header). Every row is attempted independently through the same
-     * {@link #create} path - same admin-escalation guard, same tenant scoping,
+     * {@link #create} path - same one-admin rule, same tenant scoping,
      * same one-time temporary password per employee - so one bad row (a
      * duplicate userId, a missing required column) fails only that row; the
      * rest of the file still gets created and returned in {@code succeeded}.
@@ -98,7 +94,6 @@ public class EmployeeController {
                 continue;
             }
             try {
-                assertNotGrantingAdminUnlessAdmin(principal, request);
                 applyTenantScope(principal, request);
                 succeeded.add(employeeService.create(request));
             } catch (RuntimeException e) {
@@ -136,7 +131,6 @@ public class EmployeeController {
     @PutMapping("/{id}")
     public EmployeeResponse update(@AuthenticationPrincipal UserPrincipal principal,
                                    @PathVariable Long id, @Valid @RequestBody EmployeeRequest request) {
-        assertNotGrantingAdminUnlessAdmin(principal, request);
         applyTenantScope(principal, request);
         return employeeService.update(id, request);
     }
@@ -416,24 +410,6 @@ public class EmployeeController {
     @PostMapping("/{id}/reset-password")
     public EmployeeCreationResponse resetPassword(@PathVariable Long id) {
         return employeeService.resetPassword(id);
-    }
-
-    /**
-     * Self-escalation guard (HRMS spec §7): granting the ADMIN role is
-     * itself an ADMIN-only action, so HR - which otherwise has full
-     * EMPLOYEE_CREATE/UPDATE rights - cannot mint a new admin account or
-     * promote itself to one. Kept here rather than in EmployeeService so the
-     * many existing service-level tests that call
-     * {@code EmployeeService.create/update} directly (with no
-     * SecurityContext populated) are unaffected.
-     */
-    private void assertNotGrantingAdminUnlessAdmin(UserPrincipal principal, EmployeeRequest request) {
-        if (principal == null) {
-            throw new AuthenticationFailedException("Authentication is required");
-        }
-        if (request.getRole() == Role.ADMIN && !Role.ADMIN.name().equals(principal.getRole())) {
-            throw new AccessDeniedException("Only an ADMIN may grant the ADMIN role");
-        }
     }
 
     /**

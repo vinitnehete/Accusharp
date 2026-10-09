@@ -12,7 +12,7 @@ import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.mapper.EmployeeMapper;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
-import com.accusharp.hrms.service.calculation.SalaryCalculationService;
+import com.accusharp.hrms.repository.PlatformUserRepository;
 import com.accusharp.hrms.util.TemporaryPasswordGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,15 +20,13 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.time.LocalDate;
-
 /**
  * Platform-only company onboarding: creates the {@link Company} and its
- * first {@code ADMIN} employee together, atomically. Everything after this
+ * first {@code ADMIN} account together, atomically. Everything after this
  * is ordinary company-scoped administration by that admin - this class only
- * covers the bootstrap step nothing else can, since a company with zero
- * employees has nobody able to call {@code EMPLOYEE_CREATE}.
+ * covers the bootstrap step nothing else can, since a company with no
+ * accounts has nobody able to call {@code EMPLOYEE_CREATE}. The admin is a
+ * company account, not an employee - see {@link Employee#isCompanyAccount()}.
  */
 @Service
 @RequiredArgsConstructor
@@ -37,8 +35,7 @@ public class CompanyOnboardingService {
 
     private final CompanyRepository companyRepository;
     private final EmployeeRepository employeeRepository;
-    private final SalaryRuleService salaryRuleService;
-    private final SalaryCalculationService salaryCalculationService;
+    private final PlatformUserRepository platformUserRepository;
     private final EmployeeMapper employeeMapper;
     private final PasswordEncoder passwordEncoder;
     private final AuditService auditService;
@@ -48,13 +45,10 @@ public class CompanyOnboardingService {
         if (companyRepository.existsByCompanyCode(request.getCompanyCode())) {
             throw new ConflictException("Company already exists with code " + request.getCompanyCode());
         }
-        if (employeeRepository.existsByUserId(request.getAdminUserId())) {
+        if (employeeRepository.existsByUserId(request.getAdminUserId())
+                || platformUserRepository.existsByUsernameIgnoreCase(request.getAdminUserId())) {
             throw new ConflictException("Employee already exists with userId " + request.getAdminUserId());
         }
-        // No employeeCode pre-check here: it's unique per company (see Employee's
-        // uk_employee_company_code), and this company doesn't exist yet, so there
-        // is nothing for the admin's code to collide with - a code already used by
-        // another company's employee is expected, not an error.
 
         Company company = companyRepository.save(Company.builder()
                 .companyCode(request.getCompanyCode())
@@ -67,28 +61,21 @@ public class CompanyOnboardingService {
 
         String temporaryPassword = TemporaryPasswordGenerator.generate();
 
+        // A company account, not an employee: no code, no joining date, no pay.
         Employee admin = Employee.builder()
                 .userId(request.getAdminUserId())
-                .employeeCode(request.getAdminEmployeeCode())
                 .employeeName(request.getAdminName())
                 .company(company)
-                .joiningDate(LocalDate.now())
                 .status(EmployeeStatus.PERMANENT)
                 .recordStatus(RecordStatus.ACTIVE)
                 .role(Role.ADMIN)
                 .email(request.getAdminEmail())
-                .grossSalary(request.getAdminGrossSalary())
-                .pfBasic(request.getAdminPfBasic())
-                .medicalAllowance(BigDecimal.ZERO)
-                .otherAllowance(BigDecimal.ZERO)
-                .overtimeEligible(false)
                 .passwordHash(passwordEncoder.encode(temporaryPassword))
                 .accountEnabled(true)
                 .accountLocked(false)
                 .failedLoginAttempts(0)
                 .mustChangePassword(true)
                 .build();
-        salaryCalculationService.applyCalculatedFields(admin, salaryRuleService.getActiveRuleForCompany(company));
         admin = employeeRepository.save(admin);
 
         log.info("company.onboard companyCode={} adminUserId={}", company.getCompanyCode(), admin.getUserId());

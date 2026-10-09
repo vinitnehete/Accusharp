@@ -124,23 +124,25 @@ class PayrollGenerateAllHttpTest {
                 "/api/payroll/generate-all?month=" + PERIOD.getMonthValue() + "&year=" + PERIOD.getYear(),
                 null, hrToken);
 
-        // 3 active employees in the roster (HR400, EMP400, EMP401) - only
-        // EMP400 has attendance generated in setUp(), so HR400 and EMP401
-        // both fail the same "attendance not generated" guard as EMP401.
+        // 3 active employees in the roster (HR400, EMP400, EMP401), but HR400 is
+        // the one running this, and nobody runs payroll on their own record - the
+        // admin does - so the run covers EMP400 and EMP401. Only EMP400 has
+        // attendance generated in setUp(), so EMP401 fails the "attendance not
+        // generated" guard.
         assertThat(response.status()).isEqualTo(200);
-        assertThat(response.body().get("totalRows").asInt()).isEqualTo(3);
+        assertThat(response.body().get("totalRows").asInt()).isEqualTo(2);
         assertThat(response.body().get("successCount").asInt()).isEqualTo(1);
-        assertThat(response.body().get("failureCount").asInt()).isEqualTo(2);
+        assertThat(response.body().get("failureCount").asInt()).isEqualTo(1);
 
         JsonNode succeeded = response.body().get("succeeded");
         assertThat(succeeded.size()).isEqualTo(1);
         assertThat(succeeded.get(0).get("employeeId").asString()).isEqualTo(GOOD_EMPLOYEE);
 
         JsonNode errors = response.body().get("errors");
-        assertThat(errors.size()).isEqualTo(2);
+        assertThat(errors.size()).isEqualTo(1);
         List<String> failedIdentifiers = new ArrayList<>();
         errors.forEach(e -> failedIdentifiers.add(e.get("identifier").asString()));
-        assertThat(failedIdentifiers).containsExactlyInAnyOrder(BAD_EMPLOYEE, HR);
+        assertThat(failedIdentifiers).containsExactly(BAD_EMPLOYEE);
         errors.forEach(e -> assertThat(e.get("message").asString()).contains("Attendance has not been generated"));
 
         // The critical assertion: the good employee's payroll is actually

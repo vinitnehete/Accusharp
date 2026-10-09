@@ -493,6 +493,41 @@ rather than accepting a step that means nothing. The column is nullable and null
 reads as `SUPERVISOR_THEN_HR`, so policies written before it existed keep the
 flow they were written under.
 
+### Mobile client: the contract it relies on
+
+The Muster app (`AccusharpMobile/`) is a second first-party consumer of this API,
+for employees and supervisors; admin and HR work stays in the web app. It adds no
+endpoints of its own. Everything it needs beyond what the web app already used is
+small, additive and ignored by the web app:
+
+| Need | What the API gives it |
+|---|---|
+| Not showing a director a month of "absent" | `MonthlyAttendanceResponse.attendanceTracked` - false when the work policy says `NOT_TRACKED`. Set on the read endpoint only, so a generation run does not resolve a policy per employee. The web My Attendance page reads it too |
+| Not telling a supervisor "no shift today" | `GET /shift-schedules/{userId}?includeUsual=true` returns the usual shift too, flagged `defaulted` (the team planner never lists a supervisor's own row, so the grid could not answer this). Opt-in, so every existing caller is unchanged |
+| Saying who a leave is waiting for, and not offering an endorse button the server refuses | `LeaveResponse.approvalFlow`, the work policy in force on the first day of leave |
+| Explaining unpaid holidays | `MonthlyAttendanceResponse.sandwich` (already existed; the app now reads it) |
+
+Behaviour the app is built around, which is easy to break from here:
+
+- **The ADMIN login is an `EMPLOYEE` principal holding every permission.** The
+  server then refuses its leave (400), has no payslip for it (404) and returns a
+  month of absences for it. A client must look at the role, not the permissions;
+  the web app does (`ACCESS.workspace`), and so does the mobile app.
+- **The refresh token travels only as an httpOnly cookie** and is single-use. A
+  phone reads `Set-Cookie`, keeps the value in the Keychain/Keystore and replays
+  it as a `Cookie` header on `/auth/refresh` and `/auth/logout` only. Two refreshes
+  at once would replay a rotated token, which is treated as theft and ends the
+  session - the app shares one refresh between concurrent requests.
+- **A supervisor's team list carries no pay or bank details** and slips are
+  self-only; the app relies on both.
+- **A supervisor cannot reject and an employee cannot cancel** (`LEAVE_APPROVE`),
+  so the app hides those buttons rather than offering a 403.
+
+`AccusharpMobile/scripts/contract-smoke.mjs` (`npm run contract`) signs in as each
+kind of person against a running backend and asserts all of the above, so a change
+here that the app would trip over is caught on the backend side rather than on a
+worker's phone. Run it against a scratch server.
+
 ### Employment types are configurable
 
 `EmployeeStatus` is a fixed enum of four, and one line -
@@ -838,11 +873,21 @@ Full detail lives in [SECURITY.md](SECURITY.md) (a phase-by-phase build log)
 and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) (an independent audit pass) - this
 is the summary.
 
+- **The company `ADMIN` is an account, not an employee** (Phase 17). It is the login
+  onboarding creates: no salary, no attendance, no leave, no payslip, and never counted
+  in payroll, the directory or a headcount (`Employee.isCompanyAccount()`, read at the
+  same two choke points as the contractor split). It can do everything but has no
+  workspace of its own, and it is the company's only admin. Everyone else, HR included,
+  is refused when they edit their own record or the admin's, and when they run attendance,
+  leave decisions or payroll on their own record - the admin does those for them; see
+  SECURITY.md Phase 17.
 - **Two principal types.** An `Employee` (a company user - `ADMIN`, `HR`,
   `SUPERVISOR`, or `EMPLOYEE`) or a `PlatformUser` (`PLATFORM_OWNER`/
   `PLATFORM_ADMIN`, not tied to any company). Both authenticate through the
   same `POST /api/auth/login`, and the JWT carries which type of principal
-  issued it.
+  issued it. Login tries the employee table first, so a platform account's name is
+  reserved: no employee, contractor worker or onboarded admin may take it (SECURITY.md
+  Phase 18).
 - **Every `/api/**` endpoint** requires that JWT and a specific permission via
   `@PreAuthorize("@authz.can('...')")`, resolved from a data-driven
   `Permission`/`RolePermission` grant table (`PermissionRegistry`,

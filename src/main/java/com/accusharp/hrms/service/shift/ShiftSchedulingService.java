@@ -351,12 +351,30 @@ public class ShiftSchedulingService {
 
     @Transactional(readOnly = true)
     public List<ShiftScheduleResponse> getRoster(String userId, LocalDate fromDate, LocalDate toDate) {
-        employeeService.getEntityByUserId(userId);
+        return getRoster(userId, fromDate, toDate, false);
+    }
+
+    /**
+     * One employee's roster. With {@code includeUsual} the days nobody planned are
+     * filled in the way the attendance engine and the planner grid fill them (see
+     * {@link DefaultRosterResolver}) and flagged {@code defaulted} - what a person
+     * reading their own roster needs, since for staff on a fixed shift a stored
+     * row is the exception. It needs a bounded range: an open-ended one has no
+     * last day to fill up to, so it keeps returning stored rows only.
+     */
+    @Transactional(readOnly = true)
+    public List<ShiftScheduleResponse> getRoster(String userId, LocalDate fromDate, LocalDate toDate,
+                                                 boolean includeUsual) {
+        Employee employee = employeeService.getEntityByUserId(userId);
         employeeService.assertSelfOrManages(userId);
-        List<ShiftSchedule> schedules = (fromDate == null || toDate == null)
-                ? shiftScheduleRepository.findAllByUserIdOrderByShiftDateAsc(userId)
-                : shiftScheduleRepository.findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
-                        userId, fromDate, toDate);
+        boolean bounded = fromDate != null && toDate != null;
+        List<ShiftSchedule> schedules = bounded
+                ? shiftScheduleRepository.findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(
+                        userId, fromDate, toDate)
+                : shiftScheduleRepository.findAllByUserIdOrderByShiftDateAsc(userId);
+        if (includeUsual && bounded) {
+            schedules = defaultRosterResolver.merge(employee, schedules, fromDate, toDate);
+        }
         return schedules.stream().map(this::toResponse).toList();
     }
 
@@ -534,6 +552,6 @@ public class ShiftSchedulingService {
         Shift shift = schedule.getShift();
         return new ShiftScheduleResponse(schedule.getId(), schedule.getUserId(), schedule.getShiftDate(),
                 shift.getShiftCode(), shift.getShiftName(), shift.getStartTime(), shift.getEndTime(),
-                schedule.isWeekOff(), schedule.getAssignedBy());
+                schedule.isWeekOff(), schedule.getAssignedBy(), schedule.isDefaulted());
     }
 }
