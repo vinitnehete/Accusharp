@@ -132,6 +132,13 @@ re-deriving those four fields on every later employee write (a plain update,
 or a rule change), leaving them exactly as set - only `grossSalaryWage` keeps
 refreshing, since medical/other allowance can still change underneath it.
 
+The override request also accepts optional `medicalAllowance`,
+`otherAllowance` and `pfBasic`; a supplied non-negative amount updates that
+fixed input, omitted or `null` leaves it as it is, and `0` clears it.
+`SalaryStructureRevision` and the audit detail record their before/after
+values. The PF-basic history columns are nullable for records written before
+PF basic was included. PF basic remains outside the gross-wage sum.
+
 Because the derivation is skipped rather than never run, a `SalaryRule`
 change is picked up automatically by every employee **not** overridden the
 next time each is saved - but nothing pushes that recompute out on its own,

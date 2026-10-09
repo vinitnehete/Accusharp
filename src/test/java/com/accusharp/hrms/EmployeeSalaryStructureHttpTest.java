@@ -6,6 +6,7 @@ import com.accusharp.hrms.enums.EmployeeStatus;
 import com.accusharp.hrms.enums.RecordStatus;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.repository.AttendanceRuleRepository;
+import com.accusharp.hrms.repository.AuditLogRepository;
 import com.accusharp.hrms.repository.CompanyRepository;
 import com.accusharp.hrms.repository.DepartmentRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
@@ -14,6 +15,7 @@ import com.accusharp.hrms.repository.LeaveBalanceRepository;
 import com.accusharp.hrms.repository.LeaveRequestRepository;
 import com.accusharp.hrms.repository.PayrollRepository;
 import com.accusharp.hrms.repository.SalaryRuleRepository;
+import com.accusharp.hrms.repository.SalaryStructureRevisionRepository;
 import com.accusharp.hrms.repository.ShiftRepository;
 import com.accusharp.hrms.repository.ShiftScheduleRepository;
 import com.accusharp.hrms.service.SalaryRuleService;
@@ -52,7 +54,9 @@ class EmployeeSalaryStructureHttpTest {
     @Autowired private CompanyRepository companyRepository;
     @Autowired private EmployeeRepository employeeRepository;
     @Autowired private SalaryRuleRepository salaryRuleRepository;
+    @Autowired private SalaryStructureRevisionRepository salaryStructureRevisionRepository;
     @Autowired private AttendanceRuleRepository attendanceRuleRepository;
+    @Autowired private AuditLogRepository auditLogRepository;
     @Autowired private HolidayRepository holidayRepository;
     @Autowired private DepartmentRepository departmentRepository;
     @Autowired private ShiftRepository shiftRepository;
@@ -80,6 +84,7 @@ class EmployeeSalaryStructureHttpTest {
         leaveRequestRepository.deleteAll();
         leaveBalanceRepository.deleteAll();
         shiftScheduleRepository.deleteAll();
+        salaryStructureRevisionRepository.deleteAll();
         employeeRepository.deleteAll();
         shiftRepository.deleteAll();
         companyRepository.deleteAll();
@@ -110,6 +115,9 @@ class EmployeeSalaryStructureHttpTest {
         assertThat(overridden.body().get("basicDA").asDouble()).isEqualTo(11000.0);
         assertThat(overridden.body().get("hra").asDouble()).isEqualTo(5000.0);
         assertThat(overridden.body().get("salaryStructureOverridden").asBoolean()).isTrue();
+        assertThat(overridden.body().get("medicalAllowance").asDouble()).isEqualTo(1000.0);
+        assertThat(overridden.body().get("otherAllowance").asDouble()).isEqualTo(0.0);
+        assertThat(overridden.body().get("pfBasic").asDouble()).isEqualTo(8000.0);
 
         // A plain employee update must not silently discard the override.
         Resp updated = send("PUT", "/api/employees/" + worker.getId(), """
@@ -130,6 +138,111 @@ class EmployeeSalaryStructureHttpTest {
         assertThat(regenerated.body().get("salaryStructureOverridden").asBoolean()).isFalse();
         assertThat(regenerated.body().get("basicDA").asDouble()).isEqualTo(10000.0);
         assertThat(regenerated.body().get("hra").asDouble()).isEqualTo(4000.0);
+    }
+
+    @Test
+    @DisplayName("an override saves medical, other and PF basic together and records their before/after values")
+    void overrideSavesCompleteSalaryPicture() {
+        Resp overridden = send("PUT", "/api/employees/" + worker.getId() + "/salary-structure", """
+                {"basicDA": 11000.126, "hra": 5000, "conveyanceAllowance": 900, "educationAllowance": 900,
+                 "medicalAllowance": 1450.554, "otherAllowance": 275.126, "pfBasic": 8123.456}""",
+                hrToken);
+
+        assertThat(overridden.status()).isEqualTo(200);
+        assertThat(overridden.body().get("medicalAllowance").asDouble()).isEqualTo(1450.55);
+        assertThat(overridden.body().get("otherAllowance").asDouble()).isEqualTo(275.13);
+        assertThat(overridden.body().get("pfBasic").asDouble()).isEqualTo(8123.46);
+        // PF basic is a deduction base, never one of the six earning components.
+        assertThat(overridden.body().get("grossSalaryWage").asDouble()).isEqualTo(19525.81);
+
+        Employee saved = employeeRepository.findById(worker.getId()).orElseThrow();
+        assertThat(saved.getMedicalAllowance()).isEqualByComparingTo("1450.55");
+        assertThat(saved.getOtherAllowance()).isEqualByComparingTo("275.13");
+        assertThat(saved.getPfBasic()).isEqualByComparingTo("8123.46");
+        assertThat(saved.getGrossSalary()).isEqualByComparingTo("20000");
+        assertThat(saved.isSalaryStructureOverridden()).isTrue();
+
+        Resp history = send("GET", "/api/employees/" + worker.getId() + "/salary-structure-revisions",
+                null, hrToken);
+        assertThat(history.status()).isEqualTo(200);
+        assertThat(history.body().size()).isEqualTo(1);
+        JsonNode revision = history.body().get(0);
+        assertThat(revision.get("previousMedicalAllowance").asDouble()).isEqualTo(1000.0);
+        assertThat(revision.get("newMedicalAllowance").asDouble()).isEqualTo(1450.55);
+        assertThat(revision.get("previousOtherAllowance").asDouble()).isEqualTo(0.0);
+        assertThat(revision.get("newOtherAllowance").asDouble()).isEqualTo(275.13);
+        assertThat(revision.get("previousPfBasic").asDouble()).isEqualTo(8000.0);
+        assertThat(revision.get("newPfBasic").asDouble()).isEqualTo(8123.46);
+        assertThat(revision.get("revisedBy").asString()).isEqualTo("HR001");
+
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> company.getId().equals(log.getCompanyId())
+                        && "EMPLOYEE_SALARY_STRUCTURE_OVERRIDE".equals(log.getAction()))
+                .singleElement()
+                .satisfies(log -> {
+                    assertThat(log.getActor()).isEqualTo("HR001");
+                    assertThat(log.getDetail()).contains("pfBasic 8000.00->8123.46");
+                });
+
+        Resp regenerated = send("POST", "/api/employees/" + worker.getId() + "/salary-structure/regenerate",
+                null, hrToken);
+        assertThat(regenerated.status()).isEqualTo(200);
+        assertThat(regenerated.body().get("medicalAllowance").asDouble()).isEqualTo(1450.55);
+        assertThat(regenerated.body().get("otherAllowance").asDouble()).isEqualTo(275.13);
+        assertThat(regenerated.body().get("pfBasic").asDouble()).isEqualTo(8123.46);
+    }
+
+    @Test
+    @DisplayName("explicit zero clears medical, other and PF basic in an override")
+    void overrideAcceptsZeroAllowancesAndPfBasic() {
+        Resp overridden = send("PUT", "/api/employees/" + worker.getId() + "/salary-structure", """
+                {"basicDA": 11000, "hra": 5000, "conveyanceAllowance": 900, "educationAllowance": 900,
+                 "medicalAllowance": 0, "otherAllowance": 0, "pfBasic": 0}""", hrToken);
+
+        assertThat(overridden.status()).isEqualTo(200);
+        assertThat(overridden.body().get("medicalAllowance").asDouble()).isEqualTo(0.0);
+        assertThat(overridden.body().get("otherAllowance").asDouble()).isEqualTo(0.0);
+        assertThat(overridden.body().get("pfBasic").asDouble()).isEqualTo(0.0);
+        assertThat(overridden.body().get("grossSalaryWage").asDouble()).isEqualTo(17800.0);
+        assertThat(employeeRepository.findById(worker.getId()).orElseThrow().getPfBasic())
+                .isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("null medical, other and PF basic preserve the existing salary inputs")
+    void overrideWithNullOptionalInputsPreservesExistingAmounts() {
+        Resp overridden = send("PUT", "/api/employees/" + worker.getId() + "/salary-structure", """
+                {"basicDA": 11000, "hra": 5000, "conveyanceAllowance": 900, "educationAllowance": 900,
+                 "medicalAllowance": null, "otherAllowance": null, "pfBasic": null}""", hrToken);
+
+        assertThat(overridden.status()).isEqualTo(200);
+        assertThat(overridden.body().get("medicalAllowance").asDouble()).isEqualTo(1000.0);
+        assertThat(overridden.body().get("otherAllowance").asDouble()).isEqualTo(0.0);
+        assertThat(overridden.body().get("pfBasic").asDouble()).isEqualTo(8000.0);
+        assertThat(overridden.body().get("grossSalaryWage").asDouble()).isEqualTo(18800.0);
+    }
+
+    @Test
+    @DisplayName("negative medical, other or PF basic is rejected without changing the employee")
+    void overrideRejectsNegativeOptionalInputs() {
+        for (String field : new String[]{"medicalAllowance", "otherAllowance", "pfBasic"}) {
+            Resp rejected = send("PUT", "/api/employees/" + worker.getId() + "/salary-structure", """
+                    {"basicDA": 11000, "hra": 5000, "conveyanceAllowance": 900, "educationAllowance": 900,
+                     "%s": -0.01}""".formatted(field), hrToken);
+
+            assertThat(rejected.status()).as(field).isEqualTo(400);
+            assertThat(rejected.body().get("message").asString()).contains(field);
+        }
+
+        Employee unchanged = employeeRepository.findById(worker.getId()).orElseThrow();
+        assertThat(unchanged.getMedicalAllowance()).isEqualByComparingTo("1000");
+        assertThat(unchanged.getOtherAllowance()).isEqualByComparingTo("0");
+        assertThat(unchanged.getPfBasic()).isEqualByComparingTo("8000");
+        assertThat(unchanged.isSalaryStructureOverridden()).isFalse();
+        Resp history = send("GET", "/api/employees/" + worker.getId() + "/salary-structure-revisions",
+                null, hrToken);
+        assertThat(history.status()).isEqualTo(200);
+        assertThat(history.body().size()).isEqualTo(0);
     }
 
     @Test

@@ -251,6 +251,12 @@ gives. Override them by hand:
 curl -X PUT http://localhost:8080/api/employees/3/salary-structure -H 'Content-Type: application/json' -d '{"basicDA":12500,"hra":5200,"conveyanceAllowance":1100,"educationAllowance":1100}'
 ```
 
+The same request can also carry `medicalAllowance`, `otherAllowance` and
+`pfBasic` to update those fixed inputs together. Each is optional and
+non-negative: omitted or `null` keeps the employee's current value, while
+`0` clears it. PF basic is a deduction base and is not part of
+`grossSalaryWage`, which remains the sum of the six earning components.
+
 This marks the employee as overridden - `grossSalaryWage` still refreshes
 (so a later change to `medicalAllowance`/`otherAllowance` is reflected), but
 the four components above no longer move, even across a plain `PUT

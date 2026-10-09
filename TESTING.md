@@ -395,7 +395,10 @@ Headers: Authorization: Bearer <token>, Content-Type: application/json
   "basicDA": 13500,
   "hra": 5400,
   "conveyanceAllowance": 1350,
-  "educationAllowance": 1350
+  "educationAllowance": 1350,
+  "medicalAllowance": 1250,
+  "otherAllowance": 0,
+  "pfBasic": 9500
 }
 ```
 
@@ -405,6 +408,14 @@ Headers: Authorization: Bearer <token>, Content-Type: application/json
 `PUT /api/employees/5` nor a `SalaryRule` change will touch those four
 fields — only `grossSalaryWage` keeps refreshing if you edit
 `medicalAllowance`/`otherAllowance`.
+
+`medicalAllowance`, `otherAllowance` and `pfBasic` are optional on this
+endpoint: omitted or `null` preserves the existing amount, `0` sets it to
+zero, and a negative amount returns **400** without applying the override.
+PF basic is not added to `grossSalaryWage`. All supplied amounts are rounded
+to two decimal places (half up). The structure history returned by
+`GET /api/employees/5/salary-structure-revisions` includes
+`previousPfBasic`/`newPfBasic`; those fields are `null` on older history rows.
 
 To go back to what `SalaryRule` derives — either to undo the override, or to
 pick up a rule change:
