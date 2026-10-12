@@ -99,5 +99,6 @@ public class SalaryRuleService {
         rule.setStandardHoursPerDay(request.getStandardHoursPerDay());
         rule.setOvertimeRateMultiplier(request.getOvertimeRateMultiplier());
         rule.setMlwfAmount(request.getMlwfAmount());
+        rule.setRecoveryMinimumNetPercent(request.getRecoveryMinimumNetPercent());
     }
 }

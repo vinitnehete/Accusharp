@@ -262,7 +262,7 @@ class EmployeeSalaryStructureHttpTest {
                  "educationPercent": 10, "pfPercent": 12, "esicPercent": 0.75, "esicWageCeiling": 21000,
                  "ptUpperThreshold": 10001, "ptUpperAmount": 200, "ptLowerThreshold": 7501, "ptLowerAmount": 175,
                  "dayWiseDaysInMonth": 26, "standardHoursPerDay": 8, "overtimeRateMultiplier": 1.0,
-                 "mlwfAmount": 0}""", hrToken);
+                 "mlwfAmount": 0, "recoveryMinimumNetPercent": 0}""", hrToken);
 
         // Not reflected yet - stale until regenerated.
         Resp staleSecond = send("GET", "/api/employees/" + secondWorker.getId(), null, hrToken);

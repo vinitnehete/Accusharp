@@ -94,6 +94,8 @@ The second flow rejoins the first at "Shift scheduling" and leaves it before
 | `EmploymentType` | `employment_type` | The payroll behaviour a population is paid by - pay basis, payable-days cap, whether LOP applies, which overtime formula. One row per company plus a shared catalog. `Employee.employmentType` is nullable: null falls back to the legacy `EmployeeStatus` semantics |
 | `AttendancePolicyRule` | `attendance_policy_rule` | Per-population attendance policy, append-only and effective-dated - see "Attendance policy" above |
 | `Payroll` | `payroll` | Immutable snapshot per employee/month/year/revision |
+| `EmployeeRecovery` | `employee_recovery` | Loan, advance, fine or other principal, installment, start period and outstanding balance |
+| `RecoveryTransaction` | `recovery_transaction` | Append-only issues, repayments, reversals, waivers and adjustments linked to the recovery and, for payroll repayments, its payroll revision |
 
 ### Salary structure
 
@@ -361,6 +363,39 @@ supersedes the old revision rather than editing it.
 Monthly summaries remain a cache, but now of the stored days rather than of raw
 punches, so LOP and payroll inherit corrections automatically.
 
+### Employees who do not punch
+
+Attendance is derived from punches, so an employee who is not on the biometric
+device at all derives as `ABSENT` on every rostered working day - a full month
+of loss of pay for the most senior people in the company. The calculation is
+not wrong; it is being asked a question it has no evidence for.
+
+`Employee.attendanceExempt` answers it differently. Generation and previews read that
+employee's day straight off the roster - approved leave, holiday, weekly off,
+or otherwise present for the shift's own hours - with no overtime and no
+late/early-exit minutes, because there is no clock-in to measure them against.
+The precedence is deliberately identical to the punch path's, so approved
+unpaid leave still contributes LOP; paid leave continues to offset it. Rows are written
+`GENERATED`, so they recompute freely and a hand correction still overrides
+them.
+
+A standing flag rather than a monthly upload because "does not punch" is a
+property of the person, not a recurring event - a process that pays correctly
+only when somebody remembers to upload a sheet will eventually not. The bulk
+upload (`POST /api/attendance/bulk-upload`) exists for the exceptions on top:
+a day one of them was genuinely absent, or any stretch a device outage left
+without punches for anyone. It is the batched form of a correction's
+forced-status mode, takes a date range so a whole month is one row, and
+reports every day it declined to write - locked, already on approved leave, a
+non-working day, or unrostered - rather than dropping them. See
+[`Attendance.md`](Attendance.md) §3.1 and §6.1. Before applying the range,
+the upload generates each affected month once through the existing pipeline,
+preserving manual and locked rows. This retains approved unpaid leave in the
+complete baseline instead of accidentally omitting it from payroll's denominator.
+Default roster resolution and month policies are reused, and traces for days
+replaced by the upload are cleared. `NOT_TRACKED` work-policy populations remain
+outside this workflow; use their fixed-monthly payroll mode.
+
 ### Loss of pay
 
 Never entered by hand:
@@ -401,7 +436,8 @@ salary structure.
 ```
 earn<component>  = component x payableDays / prorationBase
 totalEarnings    = sum of earnings + bonus + incentive + overtime
-totalDeduction   = PF + ESIC + PT + MLWF + TDS + advance + loan + canteen
+totalDeduction   = PF + ESIC + PT + MLWF + TDS + canteen
+                   + advance + loan + fine + other deduction
 netSalary        = totalEarnings - totalDeduction
 ```
 
@@ -583,6 +619,66 @@ Per-company plus a shared catalog, the Phase 6 pattern. `POST
 /api/employment-types/seed-defaults` creates the four types reproducing today's
 behaviour as a starting point — idempotent, and it never overwrites a type a
 company has already customised.
+
+### Recoveries: loans, advances and fines
+
+A loan, a salary advance, a fine or any other recoverable amount is held as a
+**balance** (`EmployeeRecovery`) with an append-only ledger behind it
+(`RecoveryTransaction`), not as a figure retyped on the payroll screen each
+month. Before this, `Payroll.loanDeduction` and `advanceDeduction` were exactly
+that figure - with no principal, no running balance, no answer to "how much is
+left", and nothing for the whole-company `generate-all` run to deduct, so a
+bulk run recovered nothing from anybody.
+
+Issuance is independent of attendance generation and payroll. A past, current
+or future `issuedOn` is recorded as supplied (today when omitted). A loan
+defaults to repayment from the next month; other types default to the issue
+month. Explicit `startMonth` and `startYear` must arrive together and cannot
+precede the issue month. Recording a loan after a payroll run changes the
+ledger, never that existing payroll snapshot.
+
+Payroll now reads the balance rather than being told it. The four amounts on
+`PayrollRequest` are nullable and *null does not mean zero*: null takes the
+scheduled instalment, a value overrides it for that period, and an explicit `0`
+skips it. That single distinction is what makes `generate-all` and a bare
+`employeeId`-only CSV recover anything at all.
+
+Two properties shape the whole design:
+
+**Regeneration must not recover twice.** Payroll is immutable - a regeneration
+supersedes the old revision and inserts a new one - while a balance is mutable.
+The two only stay consistent if every superseded recovery is explicitly handed
+back, which is what `PayrollService.regenerate` does before recomputing. Each
+`REPAYMENT` row carries the `payroll_id` that made it, so the reversal is a
+*lookup of what was taken*, never a re-derivation of what should have been:
+those differ the moment affordability, an attendance correction or a mid-period
+salary revision is involved. Without it, `regenerate=true` on a CSV bulk run
+would double-recover across an entire company in one call.
+
+**An unaffordable recovery must not vanish.** Statutory and fixed deductions
+settle first and in full; whatever remains above the net-pay floor
+(`SalaryRule.recoveryMinimumNetPercent`, `0` by default, which still forbids a
+negative net) is the budget the types compete for, in
+`RecoveryType.recoveryOrder()`: `ADVANCE -> LOAN -> FINE -> OTHER`. What
+doesn't fit stays outstanding and is taken next period, recorded on the payroll
+as `recoveryCarriedForward` so a short recovery is visible rather than
+appearing as a balance that merely failed to move. An *ad-hoc* fine typed onto
+the generate screen with nothing on file behind it gets the same treatment: the
+unaffordable part is raised as a recovery for next month instead of being
+dropped, and is withdrawn again if the payroll that created it is superseded.
+
+Every payroll row snapshots the opening and closing balance per type, for the
+same reason it snapshots everything else - a slip reprinted next year has to
+show what was owed *then*, not what the ledger says today. See
+`RecoveryService` and
+[`PayrollRecoveryTest`](src/test/java/com/accusharp/hrms/PayrollRecoveryTest.java).
+
+The deployment migration
+[`2026-10-10-recoveries-attendance-exemption.sql`](docs/migrations/2026-10-10-recoveries-attendance-exemption.sql)
+adds defaults for the new non-null `attendance_exempt` and
+`recovery_minimum_net_percent` fields on populated databases. New nullable
+ledger-reference and historical payroll balance fields remain null on older
+rows; that means unknown, not an invented zero balance.
 
 ### Immutable payroll history
 

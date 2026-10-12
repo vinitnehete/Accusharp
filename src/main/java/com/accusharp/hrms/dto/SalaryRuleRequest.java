@@ -61,4 +61,12 @@ public class SalaryRuleRequest {
     /** Flat MLWF amount deducted from the employee in June and December only; 0 means not applicable. */
     @NotNull @DecimalMin("0")
     private BigDecimal mlwfAmount;
+
+    /**
+     * Share of total earnings that loan/advance/fine/other recoveries may
+     * never eat into. 0 - the default - still guarantees net pay never goes
+     * negative; anything higher protects a minimum take-home.
+     */
+    @NotNull @DecimalMin("0") @DecimalMax("100")
+    private BigDecimal recoveryMinimumNetPercent;
 }

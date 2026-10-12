@@ -296,7 +296,7 @@ constraints are single-column (`department_code`, `shift_code`, ...), and
 widening them to a composite `(company_id, code)` constraint safely on an
 *existing* database needs a real migration tool. This project only has
 `ddl-auto=update`, which reliably adds columns but does not reliably alter
-or drop an existing unique index - see README §13, which already documents
+or drop an existing unique index - see README §14, which already documents
 this same limitation for the schema generally.
 
 **Concrete risk today:** any company's HR can edit or delete a `Shift`
@@ -389,3 +389,14 @@ test/.../CompanyOnboardingHttpTest.java      test-isolation cleanup-order fix
 Nothing in this pass changed any public API contract, request/response
 shape, or existing business rule - every fix closes a gap in *enforcement*
 of rules the app already claimed to have.
+
+## Implementation addendum — 2026-10-10
+
+This remains the historical 2026-08-07 audit; its test count and findings are
+not a claim about the current branch. Restored recovery operations use
+`RECOVERY_MANAGE` for writes and `RECOVERY_READ` for scoped reads, with
+authenticated actor identity and an append-only balance ledger. Bulk attendance
+uses the existing `ATTENDANCE_CORRECT` capability and managed-target guards,
+including the rule against HR changing their own attendance. Current behavior
+and regression coverage are documented in [SECURITY.md](SECURITY.md) and
+[TESTING.md](TESTING.md); authentication and security configuration are unchanged.

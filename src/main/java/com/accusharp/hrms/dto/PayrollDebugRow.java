@@ -68,10 +68,29 @@ public record PayrollDebugRow(
         BigDecimal tds,
         BigDecimal advanceDeduction,
         BigDecimal loanDeduction,
+        BigDecimal fine,
+        BigDecimal otherDeduction,
         BigDecimal canteen,
         BigDecimal lopDeduction,
         BigDecimal totalDeduction,
         BigDecimal netSalary,
+
+        // ---- recovery balances either side of this period -------------------
+        // Null on any payroll generated before recoveries were tracked - a
+        // zero there would claim the employee owed nothing, which isn't the
+        // same statement.
+        BigDecimal loanOpeningBalance,
+        BigDecimal loanClosingBalance,
+        BigDecimal advanceOpeningBalance,
+        BigDecimal advanceClosingBalance,
+        BigDecimal fineOpeningBalance,
+        BigDecimal fineClosingBalance,
+        BigDecimal otherOpeningBalance,
+        BigDecimal otherClosingBalance,
+        /** Due this period but unaffordable under the net-pay floor - still owed, taken next period. */
+        BigDecimal recoveryCarriedForward,
+        /** What the ledger says is outstanding right now, across every type - the live counterpart to the closing balances above. */
+        BigDecimal liveTotalOutstanding,
 
         // ---- employee master data: as stored on the payroll vs. right now --
         BigDecimal storedGrossSalary,
@@ -95,6 +114,9 @@ public record PayrollDebugRow(
         /** Multiplies overtimeHours x perHour into otAllowance for every overtime-eligible employee. */
         BigDecimal storedRuleOvertimeRateMultiplier,
         BigDecimal liveRuleOvertimeRateMultiplier,
+        /** The net-pay floor recoveries were held to. Null on a payroll generated before recoveries were tracked. */
+        BigDecimal storedRuleRecoveryMinimumNetPercent,
+        BigDecimal liveRuleRecoveryMinimumNetPercent,
 
         /** True when the employee's master salary data changed after this payroll was generated. */
         boolean masterDataDrifted,

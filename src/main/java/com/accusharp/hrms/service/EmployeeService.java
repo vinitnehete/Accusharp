@@ -1286,6 +1286,9 @@ public class EmployeeService {
         if (request.getWeekOffDays() != null) {
             employee.setWeekOffDays(request.getWeekOffDays());
         }
+        if (request.getAttendanceExempt() != null) {
+            employee.setAttendanceExempt(request.getAttendanceExempt());
+        }
         applyStructureOverride(employee, request);
     }
 

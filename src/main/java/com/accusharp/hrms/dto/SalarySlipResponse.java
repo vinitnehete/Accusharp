@@ -23,11 +23,27 @@ public record SalarySlipResponse(
         BigDecimal totalDeductions,
         BigDecimal netSalary,
         String netSalaryInWords,
+        /** Loan/advance/fine/other balances either side of this period; empty when nothing was owed or recovered. */
+        List<RecoveryBalance> recoveryBalances,
         int revision,
         Instant generatedAt
 ) {
 
     public record Line(String label, BigDecimal amount) {
+    }
+
+    /**
+     * What the employee owed before this period, what it recovered, and what
+     * is left - the "opening balance / deduction / remaining" line a loan
+     * needs on the slip, straight from the payroll snapshot so a reprint
+     * shows the balance as it stood then.
+     */
+    public record RecoveryBalance(
+            String label,
+            BigDecimal openingBalance,
+            BigDecimal recovered,
+            BigDecimal closingBalance
+    ) {
     }
 
     public record AttendanceSummary(

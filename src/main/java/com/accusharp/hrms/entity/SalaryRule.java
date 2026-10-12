@@ -130,6 +130,22 @@ public class SalaryRule {
     @Column(name = "mlwf_amount", nullable = false, precision = 15, scale = 2)
     private BigDecimal mlwfAmount;
 
+    /**
+     * The share of a period's total earnings that loan, advance, fine and
+     * other recoveries are never allowed to eat into. Zero - the default -
+     * still means recoveries can never push net pay below zero; raising it
+     * protects a guaranteed take-home (30 leaves the employee at least 30% of
+     * what they earned that month, whatever they owe).
+     *
+     * <p>Whatever a period cannot recover under this floor is not lost: it
+     * stays outstanding on the recovery and the next period takes it. Without
+     * a floor of some kind, a month with heavy LOP could hand an employee a
+     * zero - or a negative - net salary purely to service a loan, which is
+     * both a payroll bug and, in most jurisdictions, unlawful.
+     */
+    @Column(name = "recovery_minimum_net_percent", nullable = false, precision = 6, scale = 2)
+    private BigDecimal recoveryMinimumNetPercent;
+
     /** Sane starting values for a new rule row - the global default, or a fresh per-company one. */
     public static SalaryRule defaultRule() {
         return SalaryRule.builder()
@@ -149,6 +165,7 @@ public class SalaryRule {
                 .standardHoursPerDay(new BigDecimal("8"))
                 .overtimeRateMultiplier(new BigDecimal("1.00"))
                 .mlwfAmount(BigDecimal.ZERO)
+                .recoveryMinimumNetPercent(BigDecimal.ZERO)
                 .build();
     }
 }

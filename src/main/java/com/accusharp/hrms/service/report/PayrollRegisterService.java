@@ -3,11 +3,14 @@ package com.accusharp.hrms.service.report;
 import com.accusharp.hrms.dto.ReportDtos;
 import com.accusharp.hrms.dto.ReportFilter;
 import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.entity.EmployeeRecovery;
 import com.accusharp.hrms.entity.LeaveBalance;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.entity.SalaryRevision;
 import com.accusharp.hrms.entity.SalaryRule;
 import com.accusharp.hrms.enums.PayrollStatus;
+import com.accusharp.hrms.enums.RecoveryStatus;
+import com.accusharp.hrms.repository.EmployeeRecoveryRepository;
 import com.accusharp.hrms.repository.LeaveBalanceRepository;
 import com.accusharp.hrms.repository.PayrollRepository;
 import com.accusharp.hrms.repository.SalaryRevisionRepository;
@@ -54,6 +57,7 @@ public class PayrollRegisterService {
 
     private final PayrollService payrollService;
     private final PayrollRepository payrollRepository;
+    private final EmployeeRecoveryRepository employeeRecoveryRepository;
     private final SalaryRevisionRepository salaryRevisionRepository;
     private final LeaveBalanceRepository leaveBalanceRepository;
     private final SalaryRuleService salaryRuleService;
@@ -98,8 +102,10 @@ public class PayrollRegisterService {
                             payroll.getTotalEarnings(),
                             payroll.getPfDeduction(), payroll.getEsic(), payroll.getProfessionalTax(),
                             payroll.getMlwf(), payroll.getTds(), payroll.getAdvanceDeduction(),
-                            payroll.getLoanDeduction(), payroll.getCanteen(), payroll.getTotalDeduction(),
-                            payroll.getNetSalary());
+                            payroll.getLoanDeduction(), payroll.getFine(), payroll.getOtherDeduction(),
+                            payroll.getCanteen(), payroll.getTotalDeduction(), payroll.getNetSalary(),
+                            payroll.getLoanClosingBalance(), payroll.getAdvanceClosingBalance(),
+                            payroll.getRecoveryCarriedForward());
                 })
                 .toList();
     }
@@ -113,8 +119,9 @@ public class PayrollRegisterService {
                 "Gross Salary", "Gross Wage", "PF Basic", "Payable Days", "LOP Days",
                 "Basic+DA", "HRA", "Conveyance", "Education", "Medical", "Other", "Overtime",
                 "Bonus", "Incentive", "Total Earnings",
-                "PF", "ESIC", "Professional Tax", "MLWF", "TDS", "Advance", "Loan", "Canteen",
-                "Total Deductions", "Net Salary");
+                "PF", "ESIC", "Professional Tax", "MLWF", "TDS", "Advance", "Loan", "Fine",
+                "Other Deduction", "Canteen", "Total Deductions", "Net Salary",
+                "Loan Balance", "Advance Balance", "Carried Forward");
 
         for (ReportDtos.PayrollRegisterRow row : payrollRegister(month, year, filter)) {
             csv.row(row.employeeCode(), row.userId(), row.employeeName(), row.departmentName(),
@@ -125,8 +132,9 @@ public class PayrollRegisterService {
                     row.earnMedical(), row.earnOther(), row.otAllowance(), row.bonus(), row.incentive(),
                     row.totalEarnings(),
                     row.pfDeduction(), row.esic(), row.professionalTax(), row.mlwf(), row.tds(),
-                    row.advanceDeduction(), row.loanDeduction(), row.canteen(), row.totalDeductions(),
-                    row.netSalary());
+                    row.advanceDeduction(), row.loanDeduction(), row.fine(), row.otherDeduction(),
+                    row.canteen(), row.totalDeductions(), row.netSalary(),
+                    row.loanClosingBalance(), row.advanceClosingBalance(), row.recoveryCarriedForward());
         }
         return csv.build();
     }
@@ -411,6 +419,18 @@ public class PayrollRegisterService {
 
         Map<String, BigDecimal> paidLeaveBalances = paidLeaveBalancesFor(leavers);
 
+        // What each leaver still owes today, not what their last payroll
+        // happened to recover - a loan that was mid-repayment when they left
+        // is the single most common thing a full and final gets wrong, and
+        // the last run's instalment says nothing about how much of it is
+        // left. One IN-clause query for the whole batch, same shape as the
+        // payroll lookup above.
+        Map<String, BigDecimal> outstanding = employeeRecoveryRepository
+                .findAllByEmployeeIdInAndStatusIn(userIds, List.of(RecoveryStatus.ACTIVE, RecoveryStatus.ON_HOLD)).stream()
+                .collect(Collectors.groupingBy(EmployeeRecovery::getEmployeeId,
+                        Collectors.reducing(BigDecimal.ZERO, EmployeeRecovery::getOutstandingAmount,
+                                BigDecimal::add)));
+
         return leavers.stream()
                 .sorted(Comparator.comparing(Employee::getRelievingDate).reversed())
                 .map(employee -> {
@@ -446,6 +466,8 @@ public class PayrollRegisterService {
                                     BigDecimal.ZERO.setScale(DAY_SCALE)),
                             last == null ? null : last.getAdvanceDeduction(),
                             last == null ? null : last.getLoanDeduction(),
+                            outstanding.getOrDefault(employee.getUserId(),
+                                    BigDecimal.ZERO.setScale(SalaryCalculationService.SCALE)),
                             gratuityEligible,
                             statutoryReportService.gratuityAccrual(employee.getBasicDA(), completedYears));
                 })

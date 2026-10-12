@@ -134,9 +134,16 @@ public final class ReportDtos {
             BigDecimal tds,
             BigDecimal advanceDeduction,
             BigDecimal loanDeduction,
+            BigDecimal fine,
+            BigDecimal otherDeduction,
             BigDecimal canteen,
             BigDecimal totalDeductions,
-            BigDecimal netSalary
+            BigDecimal netSalary,
+            /** Loan still owed after this period - null on a payroll generated before recoveries were tracked. */
+            BigDecimal loanClosingBalance,
+            BigDecimal advanceClosingBalance,
+            /** Due this period but unaffordable under the net-pay floor; recovered from the next one. */
+            BigDecimal recoveryCarriedForward
     ) {
     }
 
@@ -241,6 +248,14 @@ public final class ReportDtos {
             BigDecimal paidLeaveBalanceDays,
             BigDecimal lastRunAdvanceDeduction,
             BigDecimal lastRunLoanDeduction,
+            /**
+             * Still owed on the day the worksheet is drawn, across every
+             * recovery type - the figure the settlement has to actually
+             * recover, as distinct from what the last payroll happened to
+             * take. A leaver's outstanding loan is the single most common
+             * thing a full and final gets wrong.
+             */
+            BigDecimal outstandingRecoveries,
             boolean gratuityEligible,
             BigDecimal gratuityAccrued
     ) {

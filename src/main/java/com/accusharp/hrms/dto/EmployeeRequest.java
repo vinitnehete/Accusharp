@@ -124,6 +124,13 @@ public class EmployeeRequest {
      */
     private Set<DayOfWeek> weekOffDays;
 
+    /**
+     * Senior staff who are not on the biometric device at all. Their
+     * attendance is read from the roster instead of from punches - see
+     * {@link com.accusharp.hrms.entity.Employee#isAttendanceExempt()}.
+     */
+    private Boolean attendanceExempt;
+
     // ---- optional structure override - provide all four or none, see class Javadoc ----
 
     @DecimalMin(value = "0")

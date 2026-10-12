@@ -61,6 +61,8 @@ public class SalarySlipService {
         addLine(deductions, "TDS", payroll.getTds());
         addLine(deductions, "Advance", payroll.getAdvanceDeduction());
         addLine(deductions, "Loan", payroll.getLoanDeduction());
+        addLine(deductions, "Fine", payroll.getFine());
+        addLine(deductions, "Other Deduction", payroll.getOtherDeduction());
         addLine(deductions, "Canteen", payroll.getCanteen());
 
         SalarySlipResponse.AttendanceSummary attendance = new SalarySlipResponse.AttendanceSummary(
@@ -83,8 +85,48 @@ public class SalarySlipService {
                 payroll.getTotalDeduction(),
                 payroll.getNetSalary(),
                 AmountInWords.convert(payroll.getNetSalary()),
+                recoveryBalances(payroll),
                 payroll.getRevision(),
                 payroll.getGeneratedAt());
+    }
+
+    /**
+     * The loan/advance/fine/other balances either side of this period, read
+     * straight off the payroll snapshot.
+     *
+     * <p>Omitted entirely when the employee owed nothing and nothing was
+     * recovered, so an ordinary slip is unchanged - and omitted for any
+     * payroll generated before recoveries were tracked, whose balances are
+     * null rather than zero (a null there means "not recorded", which is not
+     * the same claim as "owed nothing").
+     */
+    private List<SalarySlipResponse.RecoveryBalance> recoveryBalances(Payroll payroll) {
+        List<SalarySlipResponse.RecoveryBalance> balances = new ArrayList<>();
+        addBalance(balances, "Advance", payroll.getAdvanceOpeningBalance(),
+                payroll.getAdvanceDeduction(), payroll.getAdvanceClosingBalance());
+        addBalance(balances, "Loan", payroll.getLoanOpeningBalance(),
+                payroll.getLoanDeduction(), payroll.getLoanClosingBalance());
+        addBalance(balances, "Fine", payroll.getFineOpeningBalance(),
+                payroll.getFine(), payroll.getFineClosingBalance());
+        addBalance(balances, "Other Deduction", payroll.getOtherOpeningBalance(),
+                payroll.getOtherDeduction(), payroll.getOtherClosingBalance());
+        return balances;
+    }
+
+    private void addBalance(List<SalarySlipResponse.RecoveryBalance> balances, String label,
+                            BigDecimal opening, BigDecimal recovered, BigDecimal closing) {
+        if (opening == null && closing == null) {
+            return;
+        }
+        boolean nothingToShow = signum(opening) == 0 && signum(recovered) == 0 && signum(closing) == 0;
+        if (nothingToShow) {
+            return;
+        }
+        balances.add(new SalarySlipResponse.RecoveryBalance(label, opening, recovered, closing));
+    }
+
+    private int signum(BigDecimal value) {
+        return value == null ? 0 : value.signum();
     }
 
     /**
@@ -139,6 +181,19 @@ public class SalarySlipService {
                 slip.totalEarnings()));
         html.append("<h2>Deductions</h2>").append(amountTable(slip.deductions(), "Total Deductions",
                 slip.totalDeductions()));
+
+        if (!slip.recoveryBalances().isEmpty()) {
+            html.append("<h2>Loans &amp; Recoveries</h2><table>")
+                    .append("<tr><th>Type</th><th>Opening Balance</th><th>Recovered</th><th>Balance</th></tr>");
+            for (SalarySlipResponse.RecoveryBalance balance : slip.recoveryBalances()) {
+                html.append("<tr><td>").append(escape(balance.label()))
+                        .append("</td><td class=\"amt\">").append(orZero(balance.openingBalance()))
+                        .append("</td><td class=\"amt\">").append(orZero(balance.recovered()))
+                        .append("</td><td class=\"amt\">").append(orZero(balance.closingBalance()))
+                        .append("</td></tr>");
+            }
+            html.append("</table>");
+        }
 
         html.append("<div class=\"net\">Net Salary: ").append(slip.netSalary()).append("</div>")
                 .append("<div class=\"muted\">").append(escape(slip.netSalaryInWords())).append("</div>")
@@ -203,6 +258,10 @@ public class SalarySlipService {
 
     private String orDash(String value) {
         return value == null || value.isBlank() ? "-" : value;
+    }
+
+    private String orZero(BigDecimal value) {
+        return value == null ? "0.00" : value.toPlainString();
     }
 
     private String csvCell(String value) {

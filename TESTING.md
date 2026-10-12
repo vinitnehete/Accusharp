@@ -2,9 +2,10 @@
 
 Everything you need to run one full payroll cycle in Postman and MySQL.
 
-**Every response below is real output** captured from an actual run — not
-examples written from the spec. If you follow the steps in order you will see
-these exact numbers.
+The original walkthrough responses were captured from a September 2026
+fixture. Recovery and attendance sections describe the current restored
+contracts; dates, configured policies and a current employee's outstanding
+balance can change the result of a new run.
 
 **Scenario**: Priya Kulkarni (`EMP005`), machine operator, gross ₹26,000,
 September 2026. She works 22 days, does one long overtime day, takes 2 days
@@ -17,23 +18,36 @@ approved leave and is absent once without leave.
 | [`docs/testing/multi-company-smoke-test.sh`](docs/testing/multi-company-smoke-test.sh) | A separate curl-based script proving multi-company isolation and self-service scoping over real HTTP - see SECURITY.md |
 
 **This is a manual/Postman walkthrough of one payroll cycle, not the
-automated test suite.** The app also has 638 JUnit tests
-(`./mvnw test`, or `./mvnw test -Dtest=ClassName` for one class) across 79
-classes under `src/test/java/com/accusharp/hrms/` (count as of 2026-10-03; the
-number grows with every change, so treat it as an order of magnitude) - unit tests for the
-calculation services (`calculation/`) and pure CSV parsing (`util/EmployeeCsvParserTest`),
-full-flow integration tests (`PayrollFlowIntegrationTest`,
-`AttendanceRegularisationTest`, `NightShiftMonthBoundaryTest`,
-`DayWisePayrollOvertimeTest`), and real-HTTP tests spinning up the app on a
-random port (`AuthApiHttpTest`, `TenantIsolationHttpTest`,
-`SelfServiceScopingHttpTest`, `CompanyOnboardingHttpTest`, `AuditLogHttpTest`,
-`AttendanceApiHttpTest`, `AttendanceRuleHttpTest`, `LeaveHrDirectHttpTest`,
-`EmployeeSalaryStructureHttpTest`, `EmployeeSalaryRevisionHttpTest`,
-`MobileClientContractHttpTest`, `CaseVariantUserIdHttpTest`) that log
-in over the wire the same way this document does, then drive the API with a
-real `HttpClient`. Those run on every change and are the first thing to
+automated test suite.** Run `./mvnw test`, or
+`./mvnw test -Dtest=ClassName` for one class. The suite includes calculation
+and CSV-parser unit tests, full-flow integration tests
+(`PayrollFlowIntegrationTest`, `AttendanceRegularisationTest`,
+`NightShiftMonthBoundaryTest`, `DayWisePayrollOvertimeTest`,
+`PayrollRecoveryTest`, `AttendanceExemptAndBulkUploadTest`) and real-HTTP tests
+(`AuthApiHttpTest`, `TenantIsolationHttpTest`, `SelfServiceScopingHttpTest`,
+`CompanyOnboardingHttpTest`, `AuditLogHttpTest`, `EmployeeSalaryStructureHttpTest`,
+`EmployeeSalaryRevisionHttpTest`, `RecoveryHttpTest`,
+`AttendanceBulkUploadHttpTest`, `MobileClientContractHttpTest`,
+`CaseVariantUserIdHttpTest`). HTTP tests start the app on a random port, log
+in over the wire and exercise the API with a real `HttpClient`. These are the
+first checks to
 check if something here stops matching reality; this document is for a
 human working through the same cycle by hand.
+
+The restoration regressions cover loan registration with past/current/future
+dates and after a payroll exists, validation shared by single and CSV issuance,
+per-loan instalment allocation, regeneration reversals, paused balances in
+statements/payroll/final settlements, and closing a fully settled paused loan.
+`RecoveryAccessHttpTest` checks pay visibility, managed targets and tenancy.
+`EmployeeUpdateHttpTest` checks that an omitted or null attendance exemption
+preserves the saved flag; the bulk-attendance tests retain approved unpaid
+leave and complete-month payroll denominators.
+
+Final verification on 2026-10-12: `./mvnw test` passed all **700 tests**, with
+zero failures, errors or skips. The matching frontend passed **226 tests** in
+30 suites and its production build. These are automated checks against the
+test environment; the existing-database migration was documented, not run
+against a production database.
 
 ---
 
@@ -55,6 +69,7 @@ human working through the same cycle by hand.
 - [Step 9 — HR approves](#step-9--hr-approves)
 - [Step 10 — Attendance AFTER approval](#step-10--attendance-after-approval)
 - [Step 11 — Generate payroll](#step-11--generate-payroll)
+- [Step 11b — Loans, advances and fines](#step-11b--loans-advances-and-fines)
 - [Step 12 — Salary slip](#step-12--salary-slip)
 - [Step 13 — Reports](#step-13--reports)
 - [Step 14 — Correct a mistake](#step-14--correct-a-mistake)
@@ -104,6 +119,11 @@ confusing `400`. Attendance uses `month=2026-09`; payroll uses `month=9&year=202
 ---
 
 ## Setup
+
+On a populated database, prepare the new defaulted fields with
+[`2026-10-10-recoveries-attendance-exemption.sql`](docs/migrations/2026-10-10-recoveries-attendance-exemption.sql)
+before startup. Existing payroll snapshots are retained; their new balance
+columns remain null. Fresh H2 tests create their schema from the entities.
 
 Start the app:
 
@@ -936,6 +956,12 @@ Headers: Authorization: Bearer <token>, Content-Type: application/json
 
 Note `month` and `year` are **separate numbers** here, not `2026-09`.
 
+`advanceDeduction` above is an **override**, not the only way to deduct one.
+Omit it (along with `loanDeduction`, `fine` and `otherDeduction`) and payroll
+recovers whatever the employee's loan/advance/fine balance schedules for the
+period — see [Step 11b](#step-11b--loans-advances-and-fines) below. EMP005 has
+nothing on file here, so the 2000 is taken as a one-off for this month.
+
 **201 Created**
 
 ```json
@@ -988,15 +1014,28 @@ Note `month` and `year` are **separate numbers** here, not `2026-09`.
   "tds": 0.0,
   "advanceDeduction": 2000.0,
   "loanDeduction": 0.0,
+  "fine": 0.0,
+  "otherDeduction": 0.0,
   "canteen": 450.0,
   "lopDeduction": 882.0,
   "totalDeduction": 3780.4,
+
+  "advanceOpeningBalance": 0.0,
+  "advanceClosingBalance": 0.0,
+  "loanOpeningBalance": 0.0,
+  "loanClosingBalance": 0.0,
+  "fineOpeningBalance": 0.0,
+  "fineClosingBalance": 0.0,
+  "otherOpeningBalance": 0.0,
+  "otherClosingBalance": 0.0,
+  "recoveryCarriedForward": 0.0,
 
   "netSalary": 18842.6,
 
   "ruleBasicDaPercent": 50.0,
   "rulePfPercent": 12.0,
   "ruleEsicPercent": 0.75,
+  "ruleRecoveryMinimumNetPercent": 0.0,
   "generatedAt": "2026-08-03T12:27:48.034809Z",
   "generatedBy": "HR001"
 }
@@ -1038,6 +1077,84 @@ netSalary = totalEarnings − totalDeduction
           = 18842.60
 ```
 
+## Step 11b — Loans, advances and fines
+
+Everything above deducted a number you typed. A loan cannot work that way —
+somebody has to remember the balance, and nobody does. Raise it once instead:
+
+```
+POST http://localhost:8080/api/recoveries
+Headers: Authorization: Bearer <token>, Content-Type: application/json
+```
+
+```json
+{
+  "employeeId": "EMP005",
+  "type": "LOAN",
+  "principalAmount": 60000,
+  "tenureMonths": 12,
+  "issuedOn": "2026-09-01",
+  "reason": "Home repair"
+}
+```
+
+**201 Created** — `installmentAmount` 5000, `outstandingAmount` 60000, and
+because a loan starts recovering the month *after* disbursement, `startMonth`
+10 / `startYear` 2026. The issue operation does not require attendance or
+payroll, and accepts past/current/future `issuedOn` dates. Supply
+`startMonth` and `startYear` together to choose the issue month or a later
+period; an incomplete pair or a start before the issue month returns 400.
+Issuing after payroll leaves that payroll snapshot unchanged. The next
+eligible generation or explicit regeneration applies the schedule.
+
+Now generate October attendance and review the full month, then generate or
+regenerate October with **no amounts at all** in the body:
+
+```json
+{ "employeeId": "EMP005", "month": 10, "year": 2026, "generatedBy": "HR001" }
+```
+
+and the payroll comes back carrying:
+
+```json
+{
+  "loanDeduction": 5000.0,
+  "loanOpeningBalance": 60000.0,
+  "loanClosingBalance": 55000.0,
+  "recoveryCarriedForward": 0.0
+}
+```
+
+Check the balance any time:
+
+```
+GET http://localhost:8080/api/recoveries/employee/EMP005/statement
+GET http://localhost:8080/api/recoveries/employee/EMP005/schedule?month=10&year=2026
+```
+
+The statement carries the ledger behind the balance. Regenerate October and
+watch it grow a `REVERSAL` between the two `REPAYMENT` rows — that is what
+stops a regeneration collecting the same instalment twice, and it is worth
+seeing once by hand:
+
+```
+ISSUE      60000  →  60000
+REPAYMENT   5000  →  55000
+REVERSAL    5000  →  60000
+REPAYMENT   5000  →  55000
+```
+
+Two behaviours worth trying deliberately:
+
+- **A fine bigger than the month can pay.** Send `"fine": 400000` on a
+  generate. Net salary floors at 0, the affordable part is deducted, and the
+  rest comes back as a new `FINE` recovery starting next month —
+  `recoveryCarriedForward` on the payroll says how much.
+- **Skipping an instalment.** Send `"loanDeduction": 0` explicitly. That is an
+  instruction, not an absent field: the month is skipped and the balance does
+  not move. Omitting the field entirely does the opposite — it takes the
+  scheduled 5000.
+
 ### Whole company at once
 
 ```
@@ -1049,9 +1166,10 @@ Body:    none
 (`generatedBy` is not a query parameter here - like every other actor field in
 this document, it's always the caller from the bearer token.)
 
-Skips anyone already generated, so it is safe to re-run. Uses **zero for all
-manual deductions** — generate anyone with an advance or canteen amount
-individually.
+Skips anyone already generated, so it is safe to re-run. Scheduled loans,
+advances, fines and other recoveries apply automatically when their request
+fields are omitted. Bonus, incentive, TDS and canteen default to zero; use a
+single-employee or CSV run when those amounts differ by employee.
 
 ---
 

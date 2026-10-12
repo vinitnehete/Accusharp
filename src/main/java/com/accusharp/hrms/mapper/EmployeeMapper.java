@@ -48,6 +48,7 @@ public class EmployeeMapper {
                 employee.isOvertimeEligible(),
                 employee.getWeekOffDays(),
                 employee.autoRostersDefaultShift(),
+                employee.isAttendanceExempt(),
                 employee.isSalaryStructureOverridden());
     }
 

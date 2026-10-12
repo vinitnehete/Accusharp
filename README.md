@@ -38,11 +38,12 @@ and a [missing-punch scenario](docs/testing/device_logs_EMP005_missing_out_punch
 6. [Check attendance](#6-check-attendance)
 7. [Leave](#7-leave)
 8. [Run payroll](#8-run-payroll)
-9. [Salary slips](#9-salary-slips)
-10. [Reports and dashboard](#10-reports-and-dashboard) (incl. [contractor reports](#101-contractor-attendance-reports))
-11. [Full API reference](#11-full-api-reference)
-12. [Troubleshooting](#12-troubleshooting)
-13. [Before going live](#13-before-going-live)
+9. [Loans, advances and fines](#9-loans-advances-and-fines)
+10. [Salary slips](#10-salary-slips)
+11. [Reports and dashboard](#11-reports-and-dashboard) (incl. [contractor reports](#111-contractor-attendance-reports))
+12. [Full API reference](#12-full-api-reference)
+13. [Troubleshooting](#13-troubleshooting)
+14. [Before going live](#14-before-going-live)
 
 ---
 
@@ -679,6 +680,63 @@ The row becomes `MANUAL` and **survives the next generation run** - rerun
 generation freely to pick up late-arriving punches without losing corrections.
 Pass `"overwriteManual": true` only when you deliberately want to discard them.
 
+### Staff who never punch
+
+Senior people are often not on the eSSL at all. Left alone, generation reads
+every one of their working days as having no punches and marks it `ABSENT` -
+a full month of loss of pay, and a near-zero net salary. Mark them once
+instead, on the employee record:
+
+```json
+{ "attendanceExempt": true }
+```
+
+The flag defaults to `false` for a new employee. On update, omitting it or
+sending `null` preserves the saved value; send `false` explicitly to clear it.
+
+Generation and read-only previews then read their day off the explicit or
+derived roster rather than from punches:
+present on every working day for the shift's own hours, with no overtime and
+no late minutes, while approved leave, holidays and weekly offs still apply
+normally. Nothing needs uploading, this month or any other. This is separate
+from a `NOT_TRACKED` / `FIXED_MONTHLY` work policy: that policy skips attendance
+entirely, while an exempt employee still has roster-based attendance and LOP.
+
+### Declaring days in bulk
+
+For the exceptions on top - a day an exempt director was genuinely absent, or
+any stretch the device missed for anyone - declare a range outright:
+
+```bash
+curl -X POST http://localhost:8080/api/attendance/bulk-upload -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"userId":"DIR001","fromDate":"2026-09-14","toDate":"2026-09-16","status":"ABSENT","remarks":"Unpaid personal leave"}'
+```
+
+Or a whole company from one CSV, one line per employee-period:
+
+```bash
+curl -X POST http://localhost:8080/api/attendance/bulk-upload/csv -H "Authorization: Bearer $TOKEN" -F "file=@attendance.csv;type=text/csv"
+```
+
+```
+userId,fromDate,toDate,status,remarks
+DIR001,2026-09-01,2026-09-30,,Management - exempt from biometric
+```
+
+`toDate` defaults to `fromDate` and `status` to `PRESENT`, so a whole month is
+one line and a single day is the same line with a column left blank. Unlike the
+single-day correction above, this **creates** days that do not exist yet, so a
+month can be uploaded without generating it first. The upload first generates
+a complete baseline for every affected month using the normal pipeline,
+preserving locked and manual days, then applies the requested range. Approved
+unpaid leave therefore stays in the month's working-day and LOP figures even
+when it is skipped by the override. Review the complete month before payroll.
+
+Days it declines to write come back in `skipped` with a reason rather than
+being silently dropped - `LOCKED` (payroll already ran), `ON_LEAVE` (approved
+leave already covers it), `NON_WORKING_DAY` (a Sunday inside a month-long
+range), `NOT_ROSTERED`. Read that list: a range that quietly skipped four days
+is a salary query a fortnight later.
+
 Resync the cached summaries from the stored days before reporting:
 
 ```bash
@@ -831,7 +889,7 @@ reviewed. Generating also locks the month, so the slip stays reproducible.
 ### One employee
 
 ```bash
-curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -d '{"employeeId":"EMP001","month":9,"year":2026,"advanceDeduction":1000,"loanDeduction":0,"tds":0,"canteen":300,"bonus":0,"incentive":0,"generatedBy":"HR001"}'
+curl -X POST http://localhost:8080/api/payroll/generate -H 'Content-Type: application/json' -d '{"employeeId":"EMP001","month":9,"year":2026,"tds":0,"canteen":300,"bonus":0,"incentive":0,"generatedBy":"HR001"}'
 ```
 
 To correct attendance after payroll has run: unlock, fix, regenerate.
@@ -841,7 +899,16 @@ curl -X POST "http://localhost:8080/api/attendance/EMP001/unlock?month=2026-09&a
 ```
 
 You supply **only** the manual amounts. Everything else - attendance, leave,
-LOP, proration, PF, ESIC, professional tax, overtime and net pay - is derived.
+LOP, proration, PF, ESIC, professional tax, overtime, loan/advance/fine
+recovery and net pay - is derived.
+
+Note what is *absent* from that body: `advanceDeduction`, `loanDeduction`,
+`fine` and `otherDeduction`. Those four are read from the employee's recovery
+ledger (§9), not typed here. Omitting one means "recover whatever is
+scheduled"; sending a number overrides it for that period only, and an
+explicit `0` deliberately skips the instalment. Omitting is not the same as
+sending `0` - that distinction is what lets the two bulk paths below collect
+anything at all.
 
 ### Everyone at once
 
@@ -851,24 +918,31 @@ Skips anyone whose period is already generated, so it is safe to re-run.
 curl -X POST "http://localhost:8080/api/payroll/generate-all?month=9&year=2026&generatedBy=HR001"
 ```
 
-Note this uses zero for all manual deductions. If someone has an advance or
-canteen amount, generate them individually.
+This uses zero for bonus, incentive, TDS and canteen - amounts that can't be
+derived from anything on file. Loans, advances and fines *are* recovered, from
+each employee's own outstanding balance.
 
 ### Bulk generate from CSV, with per-employee amounts
 
 `/generate-all` above is all-or-nothing on the manual amounts (always zero).
-When bonus/incentive/advance/canteen differ per employee for the month, upload
-a CSV instead - one row per employee, `month`/`year` apply to the whole file:
+When bonus/incentive/canteen differ per employee for the month, or you want to
+override a recovery for one person, upload a CSV instead - one row per
+employee, `month`/`year` apply to the whole file:
 
 ```bash
 curl -X POST "http://localhost:8080/api/payroll/bulk-generate?month=9&year=2026" -H "Authorization: Bearer $TOKEN" -F "file=@payroll.csv;type=text/csv"
 ```
 
-CSV header (only `employeeId` is required, every amount defaults to `0`):
+CSV header (only `employeeId` is required):
 
 ```
-employeeId,bonus,incentive,tds,advanceDeduction,loanDeduction,canteen
+employeeId,bonus,incentive,tds,canteen,advanceDeduction,loanDeduction,fine,otherDeduction
 ```
+
+`bonus`, `incentive`, `tds` and `canteen` default to `0` when blank. The four
+recovery columns do **not**: blank means "recover whatever this employee's
+ledger schedules", and a `0` there overrides the schedule to skip that
+instalment for the month. Leave them empty unless you mean to override.
 
 Same per-row behavior as the other bulk/CSV endpoints: an employee with no
 attendance generated for the period, or one already paid this month, fails
@@ -894,7 +968,10 @@ stray whitespace are stripped before parsing.
 | `esic` | 0.75% (configurable) of earned `basicDA` - **not** the full earned gross - while it stays at or under `esicWageCeiling`; zero above it |
 | `lopDeduction` | **Shown for transparency, not added to the total** |
 | `mlwf` | Labour Welfare Fund - non-zero only in the June and December payroll run |
-| `totalDeduction` | PF + ESIC + PT + MLWF + TDS + advance + loan + canteen |
+| `advanceDeduction`, `loanDeduction`, `fine`, `otherDeduction` | Recovered from the employee's outstanding balance (§9), capped at what the period can afford |
+| `loanOpeningBalance` / `loanClosingBalance` | What was owed before this run and what is left after it. Same pair for advance, fine and other |
+| `recoveryCarriedForward` | Due this period but unaffordable under the net-pay floor - still owed, and taken from the next period |
+| `totalDeduction` | PF + ESIC + PT + MLWF + TDS + canteen + advance + loan + fine + other deduction |
 | `netSalary` | `totalEarnings - totalDeduction` |
 
 `lopDeduction` is not subtracted because the earnings were already prorated down
@@ -955,7 +1032,125 @@ computed from, that data has since moved.
 
 ---
 
-## 9. Salary slips
+## 9. Loans, advances and fines
+
+Anything an employee owes the company - a loan, a salary advance, a fine, or
+any other recoverable amount - is held as a **balance**, not as a number
+retyped on the payroll screen every month. Payroll reads that balance, so a
+whole-company run recovers instalments with nobody entering an amount, and
+"how much is left on this loan?" always has an answer.
+
+### Giving a loan
+
+```bash
+curl -X POST http://localhost:8080/api/recoveries -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"employeeId":"EMP001","type":"LOAN","principalAmount":60000,"tenureMonths":12,"reason":"Home repair"}'
+```
+
+`type` is `LOAN`, `ADVANCE`, `FINE` or `OTHER`. Give either an
+`installmentAmount` or a `tenureMonths` to spread it evenly; give neither and
+the whole amount is recovered by the first payroll that can afford it - which
+is what a fine usually wants. A loan starts recovering the month *after* it was
+disbursed; everything else starts the month it was raised. Override with
+`startMonth`/`startYear`, supplied together.
+
+A loan can be recorded on any day, before or after a payroll run. `issuedOn`
+defaults to today and accepts past, current or future dates; issuing requires
+no generated attendance or payroll. An explicit start period may be the issue
+month or any later month, never an earlier one. The loan default remains the
+following month. Issuing or changing terms never rewrites an already-generated
+payroll or payslip: the next eligible run uses it, or an explicitly regenerated
+period recomputes it. Amounts must remain positive after rounding to two
+decimal places.
+
+Raise many at once from a CSV - a month's fine list, or a festival advance run:
+
+```bash
+curl -X POST http://localhost:8080/api/recoveries/bulk -H "Authorization: Bearer $TOKEN" -F "file=@loans.csv;type=text/csv"
+```
+
+```
+employeeId,type,principalAmount,installmentAmount,tenureMonths,startMonth,startYear,issuedOn,reason,remarks
+```
+
+### What payroll does with it
+
+Statutory and fixed deductions are settled first and in full - PF, ESIC, PT,
+MLWF, TDS and canteen are obligations, not negotiable against a loan
+instalment. Whatever is left above the net-pay floor is the budget recoveries
+compete for, in this order:
+
+```
+ADVANCE -> LOAN -> FINE -> OTHER
+```
+
+**Whatever the month cannot afford is not lost.** It stays outstanding and is
+taken from the next period, and the payroll row records the shortfall as
+`recoveryCarriedForward` so a short recovery is visible rather than showing up
+only as a balance that mysteriously failed to move. An ad-hoc `fine` or
+`otherDeduction` typed straight onto the generate screen with nothing on file
+behind it behaves the same way: the unaffordable part is raised as a recovery
+for next month instead of being silently dropped.
+
+The floor itself is `SalaryRule.recoveryMinimumNetPercent` (§3.1). At its
+default of `0`, recoveries simply can never push net pay below zero; set it to
+`30` and the employee always keeps at least 30% of what they earned that month,
+however much they owe.
+
+### Checking a balance
+
+```bash
+curl "http://localhost:8080/api/recoveries" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/api/recoveries/employee/EMP001/statement" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/api/recoveries/employee/EMP001/schedule?month=9&year=2026" -H "Authorization: Bearer $TOKEN"
+```
+
+The register lists everything the company is owed; the statement adds the full
+ledger behind each balance; the schedule says what the next run will take - it
+is what the Generate screen pre-fills so payroll is run seeing the amounts that
+are about to apply.
+
+An employee can read their own balance and their own slip shows it. Reading
+another person's recoveries follows the same scoped pay-visibility rules as
+salary data, including `PAY_READ`. `RECOVERY_MANAGE` authorizes a write, and
+the target must also be an employee the caller may manage; HR cannot change
+their own recoveries. Company admin accounts and contractor workers are not
+recovery subjects.
+
+### Settling one outside payroll
+
+```bash
+curl -X POST http://localhost:8080/api/recoveries/12/adjust -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"amount":5000,"remarks":"Paid by bank transfer"}'
+curl -X POST http://localhost:8080/api/recoveries/12/waive  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"amount":2000,"remarks":"Written off on separation"}'
+```
+
+`adjust` records money that came back another way; `waive` writes it off.
+Both need a reason and both write a ledger row - a balance is never edited in
+place. `PUT /api/recoveries/{id}` reschedules the instalment or puts it
+`ON_HOLD` (balance intact) while someone is on unpaid leave.
+Paused loans remain outstanding in statements, payroll balances and final
+settlements, but have no scheduled deduction. Settling the entire balance of
+an active or paused loan closes it and removes it from the open register.
+`POST /api/recoveries/{id}/cancel` withdraws one raised in error, and is
+refused once anything has been recovered against it - waive the remainder
+instead, so the ledger still explains where the money went.
+
+### Regenerating a period
+
+Payroll history is immutable: regenerating supersedes the old revision rather
+than editing it. A recovery is a mutable balance, so the two only stay
+consistent if every superseded recovery is explicitly handed back - which is
+what `/api/payroll/regenerate` does before it recomputes. The reversal reads
+the amount off the repayment row rather than recalculating it, because what a
+period actually took depends on what it could afford, and an attendance
+correction or a mid-period salary revision changes that.
+
+The upshot: **regenerating never recovers the same instalment twice**, and
+`regenerate=true` on a CSV bulk run is safe across a whole company. The
+statement shows it plainly - `ISSUE`, `REPAYMENT`, `REVERSAL`, `REPAYMENT`.
+
+---
+
+## 10. Salary slips
 
 ### Print-ready
 
@@ -985,7 +1180,7 @@ reprinting an old month always gives the same figures.
 
 ---
 
-## 10. Reports and dashboard
+## 11. Reports and dashboard
 
 ```bash
 curl "http://localhost:8080/api/dashboard?asOf=2026-09-15"
@@ -1023,7 +1218,7 @@ workers are excluded from all of them - including the PF, ESIC and
 professional-tax returns, which is the point: you do not file statutory
 returns for somebody else's staff. Their attendance has its own reports below.
 
-### 10.1 Contractor attendance reports
+### 11.1 Contractor attendance reports
 
 The whole point of registering a contractor's workers is to hand the
 contractor a defensible attendance sheet they can run their own payroll from.
@@ -1101,7 +1296,7 @@ calendar day.
 
 ---
 
-## 11. Full API reference
+## 12. Full API reference
 
 | Module | Base path |
 |---|---|
@@ -1111,16 +1306,17 @@ calendar day.
 | Designations | `/api/designations` |
 | Categories | `/api/categories` (employee grade - Worker, Supervisor, Manager, Director, ...; company-defined, same pattern as departments/designations) |
 | Employees | `/api/employees` (`POST /bulk-import` - CSV bulk onboarding, `?format=csv` for a downloadable credentials sheet; `POST /{id}/salary-revision`, `GET /{id}/salary-revisions` - hike/promotion history). Your own staff only - a labour contractor's workers are never returned here, and never accepted for a write |
-| Contractors | `/api/contractors` - labour contractors, the workforce they deploy, that workforce's attendance and the reports sent back to them. See [section 10.1](#101-contractor-attendance-reports) |
+| Contractors | `/api/contractors` - labour contractors, the workforce they deploy, that workforce's attendance and the reports sent back to them. See [section 11.1](#111-contractor-attendance-reports) |
 | Shift master | `/api/shifts` |
 | Shift scheduling | `/api/shift-schedules` (`POST /bulk/varied`, `POST /bulk/csv` - per-employee shift, unlike `/bulk`'s one-shift-for-all; `GET /{userId}?includeUsual=true` - one roster with the usual shift filled in) |
-| Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`) |
+| Attendance | `/api/attendance` (`POST /generate`, `GET /{userId}/records`, `PUT /{userId}/{date}`, `POST /{userId}/unlock`, `POST /bulk-upload` and `POST /bulk-upload/csv` - declare days with no punch times) |
 | Attendance rules | `/api/attendance-rules` |
 | Holidays | `/api/holidays` |
 | Leave | `/api/leaves` (`POST /hr-create` - HR-direct already-approved entry; `POST /bulk-import` - its CSV bulk variant). Every response carries `approvalFlow`: `SUPERVISOR_THEN_HR`, `HR_ONLY` or `AUTO_APPROVE` |
 | Leave balances | `/api/leave-balances` |
 | Salary rules | `/api/salary-rules` |
 | Payroll | `/api/payroll` (`POST /bulk-generate` - CSV bulk run; `GET /debug` - full per-employee breakdown with live drift flags) |
+| Loans & recoveries | `/api/recoveries` (`POST /bulk` - CSV bulk issue; `GET /employee/{id}/statement` - balances plus the full ledger; `GET /employee/{id}/schedule` - what the next run will take; `POST /{id}/waive`, `/adjust`, `/cancel`) |
 | Salary slips | `/api/salary-slips` |
 | Reports | `/api/reports` |
 | Dashboard | `/api/dashboard` |
@@ -1151,7 +1347,7 @@ Every failure returns the same shape:
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 **Everyone shows as absent, whole month is LOP**
 No shift roster for that month. Assign shifts, then re-read attendance.
@@ -1199,7 +1395,15 @@ Either the holiday is not in `/api/holidays`, or it is marked
 
 ---
 
-## 13. Before going live
+## 14. Before going live
+
+For an existing database, apply
+[`2026-10-10-recoveries-attendance-exemption.sql`](docs/migrations/2026-10-10-recoveries-attendance-exemption.sql)
+before starting this restored feature. It initializes the new employee
+`attendance_exempt` flag to false and the salary-rule recovery floor to zero,
+then enforces their defaults. Existing payroll recovery-balance snapshots stay
+null; no historical amount is guessed or recomputed. The script is supplied
+for deployment and has not been executed against a production database.
 
 **All `/api/**` endpoints require a bearer token, and each one requires a
 specific permission** (see [SECURITY.md](SECURITY.md) for the full matrix) -

@@ -230,6 +230,45 @@ The order matters: leave beats holiday beats weekly off. A lone punch outranks
 all of them, because it is evidence the person was there and evidence something
 went wrong - it must be surfaced for correction, not quietly written off.
 
+**This table is also why senior staff need an exemption.** An employee who is
+not on the biometric device at all lands on the last row of it every single
+working day - `ABSENT`, therefore loss of pay, therefore a near-zero net
+salary. Nothing about the calculation is wrong; it is being asked a question
+about somebody it has no evidence for. Section 3.1 is the answer.
+
+### Employees who do not punch
+
+An employee flagged `attendanceExempt` never reaches the table above. Their
+day is read off the roster instead:
+
+| Roster says | Then |
+|---|---|
+| Approved leave | `ON_LEAVE` |
+| Mandatory holiday | `HOLIDAY` |
+| Weekly off | `WEEKLY_OFF` |
+| Anything else | `PRESENT`, for the shift's own hours |
+
+Same precedence as the punch path, deliberately - leave still beats holiday
+beats weekly off, so a director's approved leave is still a leave day and
+still deducts. What is different is the last row: a working day with no
+evidence is *present* rather than absent, because for these people the absence
+of a punch is not evidence of anything.
+
+`firstIn`/`lastOut` are null, overtime is zero, and late/early-exit minutes are
+zero - there is no clock-in to measure any of them against, which is the whole
+point. Punches are ignored even if the employee happens to make some. Rows are
+written `GENERATED`, so they recompute on every run and a hand correction
+(`MANUAL`) still overrides them.
+
+A flag rather than a monthly upload because "does not punch" is a standing
+property of the person, not a recurring event - and a process that pays
+correctly only when somebody remembers to upload a sheet will eventually not.
+The upload still exists for the exceptions on top (section 6.1).
+
+Intended for salaried staff. `DAY_WISE` is paid per attended day, so exempting
+one means paying them for every rostered day with no record of attendance at
+all - permitted, but almost certainly not what was meant.
+
 ### Two or more punches
 
 ```
@@ -556,6 +595,55 @@ generated returns 404 - generate the month first. Correcting a day with no
 roster entry is impossible by construction: assign the shift first.
 
 ---
+
+### 6.1 Bulk upload: declaring days without punches
+
+```
+POST /api/attendance/bulk-upload          (one employee, JSON)
+POST /api/attendance/bulk-upload/csv      (many, multipart CSV)
+```
+
+The bulk form of a correction's forced-status mode. Same permission
+(`ATTENDANCE_CORRECT`), same mandatory `remarks`, same tenant and managed-target
+checks, and applied rows land `MANUAL` so they survive the next regeneration.
+The actor is the authenticated caller. HR cannot upload their own attendance,
+and `NOT_TRACKED` work-policy employees are outside this workflow.
+
+A date **range**, not a single day, because the case it exists for is "this
+director was present all September" and making that twenty-six rows is how a
+monthly chore stops getting done. `toDate` defaults to `fromDate`, so one day
+is the same shape with a column left blank; `status` defaults to `PRESENT`.
+
+```
+userId,fromDate,toDate,status,remarks
+DIR001,2026-09-01,2026-09-30,,Management - exempt from biometric
+```
+
+Unlike `correctDay`, an upload first generates a complete baseline for each
+affected month, once per employee, and then applies the range. It uses the
+normal explicit/derived roster, day policies and month-summary pipeline,
+preserves `MANUAL` and locked rows during baseline generation, and keeps
+approved unpaid leave in the LOP denominator. No separate generation call is
+needed, but review the complete month before payroll.
+
+Four kinds of day are reported back rather than manually overwritten. Their
+generated or existing baseline remains in place:
+
+| Skipped | Why |
+|---|---|
+| `LOCKED` | Payroll has run. Unlock the month first, exactly as a single-day correction refuses. |
+| `ON_LEAVE` | Approved leave already decided that day. A blanket "present all month" must not erase a deduction somebody approved. |
+| `NON_WORKING_DAY` | A week off or holiday. A month-long range would otherwise turn every Sunday into a working day; recording work on one is a deliberate single-day act, so it stays with `PUT /{userId}/{date}`. |
+| `NOT_ROSTERED` | No shift to declare hours against. |
+
+Reporting them is the point of the response shape. A row saying "present 1st
+to 30th" that quietly leaves four days untouched is exactly the thing that
+surfaces a fortnight later as a salary nobody can explain.
+
+No punch times, by design - hours follow the rostered shift and overtime is
+zero. Where real times *are* known (a device outage), the single-day
+`PUT /api/attendance/{userId}/{date}` still takes them and runs them through
+the normal calculation.
 
 ## 7. Locking and the payroll handoff
 
@@ -954,6 +1042,10 @@ Things the system guarantees, each covered by a test:
 16. Loss of pay can never exceed the days the employee was expected to work,
     plus the holidays a sandwich rule took.
 17. A day already docked for lateness is not also counted as a late mark.
+18. A rostered `attendanceExempt` employee is never `ABSENT` for want of a
+    punch, and automatic roster-only days earn no overtime or late minutes.
+19. A bulk upload never overwrites a locked day, an approved leave day, or a
+    non-working day - and says which ones it left alone.
 
 ## 13. Not covered
 
@@ -966,3 +1058,13 @@ Things the system guarantees, each covered by a test:
   mid-month is measured against whatever roster exists for them.
 - **No automatic regeneration** when leave is approved after attendance was
   generated. Approve leave *before* generating, or regenerate afterwards.
+
+## Deployment note — 2026-10-10
+
+For an existing populated employee table, use
+[`2026-10-10-recoveries-attendance-exemption.sql`](docs/migrations/2026-10-10-recoveries-attendance-exemption.sql)
+to introduce `attendance_exempt` with the false default. Existing staff keep
+their current biometric behavior unless the flag is explicitly changed. This
+is independent of `NOT_TRACKED` work policies and does not backfill or re-price
+historical attendance or payroll. The same migration prepares the salary-rule
+recovery floor; the operator guide is [README.md](README.md#9-loans-advances-and-fines).
