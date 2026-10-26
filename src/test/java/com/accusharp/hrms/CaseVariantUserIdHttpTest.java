@@ -42,19 +42,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * "Nobody acts on their own record" must hold when the id is typed in another
  * case.
  *
- * <p>The production database is MySQL, whose default collation compares user ids
- * without regard to case: {@code cvhr} finds the row {@code CVHR}. The guards that
+ * <p>User-id lookup is deliberately case-insensitive even though PostgreSQL text
+ * equality is case-sensitive by default: {@code cvhr} finds the row {@code CVHR}. The guards that
  * keep HR off their own leave, quota and attendance compared the caller's stored id
  * with the typed one using a case-sensitive {@code equals}, so {@code cvhr} looked
  * like somebody else while every read and write resolved to HR's own row. The normal
  * test database (H2) compares case-sensitively, which is why nothing caught it.
  *
- * <p>This class runs on its own in-memory database with {@code IGNORECASE=TRUE},
- * which behaves like MySQL here, so the same requests that were refused with the
- * exact id are checked with a lower-case one.
+ * <p>This class runs in PostgreSQL compatibility mode, so the repository's explicit
+ * case-insensitive lookup—not a database-wide collation—provides that behavior.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "spring.datasource.url=jdbc:h2:mem:hrms-ignorecase;DB_CLOSE_DELAY=-1;MODE=MySQL;IGNORECASE=TRUE")
+        properties = "spring.datasource.url=jdbc:h2:mem:hrms-ignorecase;DB_CLOSE_DELAY=-1;MODE=PostgreSQL")
 class CaseVariantUserIdHttpTest {
 
     private static final String PASSWORD = "Case-Variant-1";

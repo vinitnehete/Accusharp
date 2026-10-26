@@ -59,8 +59,8 @@
 		</dependency>
 
 		<dependency>
-			<groupId>com.mysql</groupId>
-			<artifactId>mysql-connector-j</artifactId>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
 		</dependency>
 
@@ -84,7 +84,7 @@
 			<version>2.20.0</version>
 		</dependency>
 
-		<!-- Lets the app boot without MySQL: -Dspring-boot.run.profiles=h2.
+		<!-- Lets the app boot without PostgreSQL: -Dspring-boot.run.profiles=h2.
 		     Kept at runtime scope so `spring-boot:run` and the test suite can both
 		     use it, but EXCLUDED from the repackaged jar below - a production
 		     artifact has no reason to carry a second database engine and its

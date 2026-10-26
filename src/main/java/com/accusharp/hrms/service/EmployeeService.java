@@ -97,7 +97,7 @@ public class EmployeeService {
     public EmployeeCreationResponse create(EmployeeRequest request) {
         // A platform account's name is taken too, and refused in the same words: login looks in the
         // employee table first, so an employee by that name would lock the platform owner out.
-        if (employeeRepository.existsByUserId(request.getUserId())
+        if (employeeRepository.existsByUserIdIgnoreCase(request.getUserId())
                 || platformUserRepository.existsByUsernameIgnoreCase(request.getUserId())) {
             throw new ConflictException("Employee already exists with userId " + request.getUserId());
         }
@@ -877,8 +877,8 @@ public class EmployeeService {
     }
 
     /**
-     * The id as it is stored, for one somebody typed. The database compares user
-     * ids without regard to case (MySQL's default collation), so a typed
+     * The id as it is stored, for one somebody typed. Repository lookup compares user
+     * ids without regard to case on PostgreSQL's case-sensitive text columns, so a typed
      * {@code hr001} finds the row {@code HR001} - and every guard that asks "is the
      * target the caller?" must compare the stored forms, or {@code hr001} reads as
      * somebody else while every read and write lands on the caller's own record.

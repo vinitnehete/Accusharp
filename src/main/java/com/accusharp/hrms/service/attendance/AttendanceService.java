@@ -537,12 +537,13 @@ public class AttendanceService {
         // userId at all, so an HR/ADMIN at any company could correct another company's attendance
         // by userId, having only proven they hold HR/ADMIN *somewhere*.
         Employee employee = employeeService.getEntityByUserId(userId);
+        userId = employee.getUserId();
         employeeService.assertManages(userId);
         Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
 
         DailyAttendance record = dailyAttendanceRepository.findByUserIdAndAttendanceDate(userId, date)
                 .orElseThrow(() -> NotFoundException.of("Attendance",
-                        userId + " on " + date + " - generate the month first"));
+                        employee.getUserId() + " on " + date + " - generate the month first"));
 
         if (record.isLocked()) {
             throw new BusinessRuleException("Attendance for " + userId + " on " + date
@@ -752,7 +753,8 @@ public class AttendanceService {
     @Transactional
     public int unlockMonth(String userId, YearMonth month, String actorId) {
         assertActorCan(actorId, PermissionCode.ATTENDANCE_UNLOCK, "Unlocking attendance");
-        employeeService.getEntityByUserId(userId);
+        Employee employee = employeeService.getEntityByUserId(userId);
+        userId = employee.getUserId();
         employeeService.assertManages(userId);
         log.info("attendance.unlock userId={} month={} by={}", userId, month, actorId);
         int updated = setLocked(userId, month, false);
@@ -782,6 +784,7 @@ public class AttendanceService {
     @Transactional(readOnly = true)
     public List<DailyAttendanceResponse> getDailyAttendance(String userId, LocalDate fromDate, LocalDate toDate) {
         Employee employee = employeeService.getEntityByUserId(userId);
+        userId = employee.getUserId();
         employeeService.assertSelfOrManages(userId);
         if (fromDate.isAfter(toDate)) {
             throw new BusinessRuleException("fromDate must be on or before toDate");
@@ -829,6 +832,7 @@ public class AttendanceService {
     @Transactional(readOnly = true)
     public MonthlyAttendanceResponse getMonthlyAttendance(String userId, YearMonth month) {
         Employee employee = employeeService.getEntityByUserId(userId);
+        userId = employee.getUserId();
         employeeService.assertSelfOrManages(userId);
         List<DailyAttendance> stored = storedDays(userId, month);
 
@@ -841,7 +845,8 @@ public class AttendanceService {
     /** The stored attendance rows for a period. */
     @Transactional(readOnly = true)
     public List<AttendanceRecordResponse> getRecords(String userId, YearMonth month) {
-        employeeService.getEntityByUserId(userId);
+        Employee employee = employeeService.getEntityByUserId(userId);
+        userId = employee.getUserId();
         employeeService.assertSelfOrManages(userId);
         return storedDays(userId, month).stream().map(AttendanceRecordResponse::of).toList();
     }

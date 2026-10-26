@@ -5,14 +5,14 @@ For the attendance engine in full - every rule, the punch windows, generation,
 corrections and locking - see **[Attendance.md](Attendance.md)**; this file only
 summarises it.
 
-- **Stack**: Java 21, Spring Boot 4.1.0 (Web, Data JPA, Validation), MySQL, Lombok
+- **Stack**: Java 21, Spring Boot 4.1.0 (Web, Data JPA, Validation), PostgreSQL, Lombok
 - **Package root**: `com.accusharp.hrms`
-- **Database**: MySQL schema `alsama`, Hibernate `ddl-auto=update`
+- **Database**: PostgreSQL database `alsama`, Hibernate `ddl-auto=update`
 
 ## Layering
 
 ```
-Controller  ->  Service  ->  Repository  ->  MySQL
+Controller  ->  Service  ->  Repository  ->  PostgreSQL
    (REST)      (business      (Spring
                + calculation)  Data JPA)
 ```
@@ -955,7 +955,7 @@ is the summary.
 ## Design decisions worth knowing
 
 - **Device integration is one-way.** `device_logs` is populated externally by the
-  biometric device's middleware writing straight to MySQL. There is deliberately
+  biometric device's middleware writing straight to PostgreSQL. There is deliberately
   no endpoint to create or edit a punch - HR corrections are recorded on the
   generated attendance day instead, so the raw device reading survives next to
   the correction and a device re-sync can never clobber it.
@@ -964,7 +964,7 @@ is the summary.
   queries plus grouping in Java, which is what lets the whole suite run on H2.
 - **`month` and `year` are quoted** in the payroll and summary tables - they are
   reserved words on several databases. Backtick quoting renders as the target
-  dialect's own quoting, so MySQL still sees the same column names.
+  dialect's own quoting, so PostgreSQL receives valid quoted identifiers.
 - **Salary slips are HTML, not PDF.** The print view is self-contained HTML that
   any browser can print or save as PDF, which avoids a server-side PDF
   dependency. A true PDF/Excel renderer and email delivery remain open.

@@ -17,7 +17,7 @@ Ready-to-use test assets: a [Postman collection](docs/testing/Accusharp-HRMS.pos
 (71 requests, 10 ordered folders), [punch SQL](docs/testing/device_logs_EMP005_2026-09.sql)
 and a [missing-punch scenario](docs/testing/device_logs_EMP005_missing_out_punch.sql).
 
-- **Stack**: Java 21, Spring Boot 4.1.0, MySQL, Lombok
+- **Stack**: Java 21, Spring Boot 4.1.0, PostgreSQL, Lombok
 - **Base URL**: `http://localhost:8080`
 - **Commands** below assume you are in the workspace folder that holds `Accusharp/`
   (this project), `Accusharpfrontend/` and `AccusharpMobile/`.
@@ -48,23 +48,34 @@ and a [missing-punch scenario](docs/testing/device_logs_EMP005_missing_out_punch
 
 ## 1. Starting the application
 
-### With MySQL (default)
+### With PostgreSQL (default)
 
-Needs MySQL on `localhost:3306`. The schema `alsama` is created automatically if
-missing; credentials are in
-[`application.properties`](src/main/resources/application.properties).
+Create the database first, then provide the connection and application secrets.
+PostgreSQL does not create a missing database from a JDBC connection URL.
 
 ```bash
+createdb alsama
+export SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/alsama
+export DB_USERNAME=postgres
+export DB_PASSWORD='your-password'
+export JWT_SECRET='at-least-32-bytes-of-random-secret-material'
+export APP_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+export HRMS_SEED_PLATFORM_OWNER_PASSWORD='choose-a-strong-initial-password'
+export APP_TRUSTED_PROXIES=''
 cd Accusharp && ./mvnw spring-boot:run
 ```
 
-### Without MySQL (in-memory H2)
+### Without PostgreSQL (in-memory H2)
 
 Good for trying things out. Everything is wiped on restart.
 
 ```bash
 cd Accusharp && ./mvnw spring-boot:run -Dspring-boot.run.profiles=h2
 ```
+
+> The SQL files under `docs/migrations/` describe legacy MySQL upgrades and
+> must not be executed against PostgreSQL. A fresh PostgreSQL database is
+> currently created from the JPA mappings by Hibernate.
 
 ### Run the tests
 
@@ -569,7 +580,7 @@ Columns: `device_log_id` (primary key), `device_id`, `user_id`, `log_date`.
 To test without a device, insert rows yourself:
 
 ```bash
-mysql -uroot -proot alsama -e "INSERT INTO device_logs (device_log_id, device_id, user_id, log_date) VALUES (900001,1,'EMP001','2026-09-01 06:00:00'),(900002,1,'EMP001','2026-09-01 15:00:00');"
+psql -h localhost -U postgres -d alsama -c "INSERT INTO device_logs (device_log_id, device_id, user_id, log_date) VALUES (900001,1,'EMP001','2026-09-01 06:00:00'),(900002,1,'EMP001','2026-09-01 15:00:00');"
 ```
 
 `user_id` here must match the employee's `userId` exactly.
@@ -1154,7 +1165,7 @@ No shift roster for that month. Assign shifts, then re-read attendance.
 Their `userId` does not match the `user_id` the device writes. Check with:
 
 ```bash
-mysql -uroot -proot alsama -e "SELECT DISTINCT user_id FROM device_logs;"
+psql -h localhost -U postgres -d alsama -c "SELECT DISTINCT user_id FROM device_logs;"
 ```
 
 **`invalidPunches` is high**

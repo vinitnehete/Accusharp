@@ -79,7 +79,7 @@ public class ContractorEmployeeService {
     public ContractorEmployeeResponse create(Long contractorId, ContractorEmployeeRequest request) {
         Contractor contractor = requireActiveContractor(contractorId);
 
-        if (employeeRepository.existsByUserId(request.getUserId())
+        if (employeeRepository.existsByUserIdIgnoreCase(request.getUserId())
                 || platformUserRepository.existsByUsernameIgnoreCase(request.getUserId())) {
             // A platform account's name is refused here too - a worker row would answer its login.
             // Deliberately the same message an ordinary employee create gives.

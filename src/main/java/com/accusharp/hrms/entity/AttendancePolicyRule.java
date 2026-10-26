@@ -140,7 +140,7 @@ public class AttendancePolicyRule {
      * AttendancePolicyParams} declares and bean-validated on write.
      *
      * <p>Stored as {@code text} rather than a native {@code json} column: this
-     * app runs on MySQL in production and H2 in the test suite, and the two do
+     * app runs on PostgreSQL in production and H2 in the test suite, and the two do
      * not agree on the JSON type. The column is a transport; the record is the
      * contract. It is never read as a loose map, and a blob that will not bind
      * fails generation for that employee by name rather than being skipped -

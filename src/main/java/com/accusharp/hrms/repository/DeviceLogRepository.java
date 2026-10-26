@@ -9,7 +9,7 @@ import java.util.List;
 /**
  * Read-only view of the punches the biometric device writes. Grouping into
  * days happens in the service layer rather than in SQL, so the query stays
- * portable across MySQL and H2.
+ * portable across PostgreSQL and H2.
  */
 public interface DeviceLogRepository extends JpaRepository<DeviceLog, Long> {
 

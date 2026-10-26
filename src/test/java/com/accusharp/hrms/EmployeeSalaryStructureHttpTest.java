@@ -198,7 +198,7 @@ class EmployeeSalaryStructureHttpTest {
                  "basicDA": 14000}""",
                 hrToken);
         assertThat(created.status()).isEqualTo(400);
-        assertThat(employeeRepository.existsByUserId("EMP011")).isFalse();
+        assertThat(employeeRepository.existsByUserIdIgnoreCase("EMP011")).isFalse();
     }
 
     @Test
@@ -242,7 +242,7 @@ class EmployeeSalaryStructureHttpTest {
         assertThat(derived.getBasicDA()).isEqualByComparingTo("10000.00"); // 50% of 20000
         assertThat(derived.isSalaryStructureOverridden()).isFalse();
 
-        assertThat(employeeRepository.existsByUserId("EMP022")).isFalse();
+        assertThat(employeeRepository.existsByUserIdIgnoreCase("EMP022")).isFalse();
     }
 
     @Test

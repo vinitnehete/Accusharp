@@ -45,7 +45,7 @@ public class CompanyOnboardingService {
         if (companyRepository.existsByCompanyCode(request.getCompanyCode())) {
             throw new ConflictException("Company already exists with code " + request.getCompanyCode());
         }
-        if (employeeRepository.existsByUserId(request.getAdminUserId())
+        if (employeeRepository.existsByUserIdIgnoreCase(request.getAdminUserId())
                 || platformUserRepository.existsByUsernameIgnoreCase(request.getAdminUserId())) {
             throw new ConflictException("Employee already exists with userId " + request.getAdminUserId());
         }

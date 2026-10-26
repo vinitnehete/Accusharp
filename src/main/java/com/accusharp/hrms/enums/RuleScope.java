@@ -47,7 +47,7 @@ public enum RuleScope {
 
     /**
      * The {@code scope_ref} sentinel for the two scopes that do not name
-     * anything. Not null: MySQL and H2 both treat nulls in a unique index as
+     * anything. Not null: PostgreSQL and H2 both treat nulls in a unique index as
      * distinct, so a nullable {@code scope_ref} would let two company-scoped
      * rules of the same type and date coexist - exactly the concurrent
      * duplicate-insert race {@code SalaryRule}'s Javadoc already documents a

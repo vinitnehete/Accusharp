@@ -13,14 +13,16 @@ import java.util.Optional;
 
 public interface EmployeeRepository extends JpaRepository<Employee, Long> {
 
-    Optional<Employee> findByUserId(String userId);
+    /** Keep login/business-key lookup stable on PostgreSQL's case-sensitive text columns. */
+    @Query("select e from Employee e where lower(e.userId) = lower(:userId)")
+    Optional<Employee> findByUserId(@Param("userId") String userId);
 
     /** employeeCode is unique per company, not globally - see Employee's uk_employee_company_code. */
     Optional<Employee> findByEmployeeCodeAndCompanyId(String employeeCode, Long companyId);
 
     Optional<Employee> findByEmployeeCodeAndCompanyIsNull(String employeeCode);
 
-    boolean existsByUserId(String userId);
+    boolean existsByUserIdIgnoreCase(String userId);
 
     boolean existsByEmployeeCodeAndCompanyId(String employeeCode, Long companyId);
 
@@ -75,8 +77,8 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
             select e from Employee e
             where e.recordStatus = com.accusharp.hrms.enums.RecordStatus.ACTIVE
               and e.dateOfBirth is not null
-              and function('month', e.dateOfBirth) = :month
-            order by function('day', e.dateOfBirth)
+              and month(e.dateOfBirth) = :month
+            order by day(e.dateOfBirth)
             """)
     List<Employee> findBirthdaysInMonth(@Param("month") int month);
 
@@ -84,9 +86,9 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
             select e from Employee e
             where e.recordStatus = com.accusharp.hrms.enums.RecordStatus.ACTIVE
               and e.joiningDate is not null
-              and function('month', e.joiningDate) = :month
+              and month(e.joiningDate) = :month
               and e.joiningDate < :monthStart
-            order by function('day', e.joiningDate)
+            order by day(e.joiningDate)
             """)
     List<Employee> findWorkAnniversariesInMonth(@Param("month") int month,
                                                @Param("monthStart") LocalDate monthStart);
