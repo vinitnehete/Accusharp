@@ -1,0 +1,19 @@
+.git
+.github
+.idea
+.vscode
+.codex
+.agents
+
+target
+*.iml
+*.log
+
+# Local configuration and credentials must never enter a Docker build context.
+.env
+.env.*
+!.env.example
+
+# Documentation and local-only artifacts are not needed to compile the jar.
+docs
+*.md
