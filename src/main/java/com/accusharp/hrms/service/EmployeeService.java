@@ -244,13 +244,16 @@ public class EmployeeService {
         employee.setConveyanceAllowance(salaryCalculationService.scaled(request.getConveyanceAllowance()));
         employee.setEducationAllowance(salaryCalculationService.scaled(request.getEducationAllowance()));
 
-        // Optional on this request, and null means "leave as it is" - the
-        // single-employee endpoint has only ever sent the four components above.
+        // Optional on this request, and null means "leave as it is" - callers
+        // that send only the four components above keep their existing inputs.
         if (request.getMedicalAllowance() != null) {
             employee.setMedicalAllowance(salaryCalculationService.scaled(request.getMedicalAllowance()));
         }
         if (request.getOtherAllowance() != null) {
             employee.setOtherAllowance(salaryCalculationService.scaled(request.getOtherAllowance()));
+        }
+        if (request.getPfBasic() != null) {
+            employee.setPfBasic(salaryCalculationService.scaled(request.getPfBasic()));
         }
         // A correction of what gross is, not a raise: no SalaryRevision row is
         // written, so payroll reads the new figure as having applied throughout
@@ -522,20 +525,20 @@ public class EmployeeService {
     }
 
     /**
-     * The seven figures and the frozen flag, as they stood before a change.
+     * The eight figures and the frozen flag, as they stood before a change.
      * Taken by value: the {@link Employee} it came from is about to be mutated
      * in place, so holding a reference would record the new state twice.
      */
     private record StructureSnapshot(BigDecimal basicDA, BigDecimal hra,
                                      BigDecimal conveyanceAllowance, BigDecimal educationAllowance,
                                      BigDecimal medicalAllowance, BigDecimal otherAllowance,
-                                     BigDecimal grossSalary, boolean overridden) {
+                                     BigDecimal pfBasic, BigDecimal grossSalary, boolean overridden) {
 
         static StructureSnapshot of(Employee employee) {
             return new StructureSnapshot(employee.getBasicDA(), employee.getHra(),
                     employee.getConveyanceAllowance(), employee.getEducationAllowance(),
                     employee.getMedicalAllowance(), employee.getOtherAllowance(),
-                    employee.getGrossSalary(), employee.isSalaryStructureOverridden());
+                    employee.getPfBasic(), employee.getGrossSalary(), employee.isSalaryStructureOverridden());
         }
 
         /** A one-line before/after for the audit log's detail column. */
@@ -546,6 +549,7 @@ public class EmployeeService {
                     + ", education " + educationAllowance + "->" + after.getEducationAllowance()
                     + ", medical " + medicalAllowance + "->" + after.getMedicalAllowance()
                     + ", other " + otherAllowance + "->" + after.getOtherAllowance()
+                    + ", pfBasic " + pfBasic + "->" + after.getPfBasic()
                     + ", gross " + grossSalary + "->" + after.getGrossSalary()
                     + ", overridden " + overridden + "->" + after.isSalaryStructureOverridden();
         }
@@ -563,6 +567,7 @@ public class EmployeeService {
                 .previousEducationAllowance(before.educationAllowance())
                 .previousMedicalAllowance(before.medicalAllowance())
                 .previousOtherAllowance(before.otherAllowance())
+                .previousPfBasic(before.pfBasic())
                 .previousGrossSalary(before.grossSalary())
                 .previouslyOverridden(before.overridden())
                 .newBasicDA(after.getBasicDA())
@@ -571,6 +576,7 @@ public class EmployeeService {
                 .newEducationAllowance(after.getEducationAllowance())
                 .newMedicalAllowance(after.getMedicalAllowance())
                 .newOtherAllowance(after.getOtherAllowance())
+                .newPfBasic(after.getPfBasic())
                 .newGrossSalary(after.getGrossSalary())
                 .nowOverridden(after.isSalaryStructureOverridden())
                 .revisedBy(revisedBy)
@@ -1279,6 +1285,9 @@ public class EmployeeService {
         // off" statement rather than the absence of one.
         if (request.getWeekOffDays() != null) {
             employee.setWeekOffDays(request.getWeekOffDays());
+        }
+        if (request.getAttendanceExempt() != null) {
+            employee.setAttendanceExempt(request.getAttendanceExempt());
         }
         applyStructureOverride(employee, request);
     }

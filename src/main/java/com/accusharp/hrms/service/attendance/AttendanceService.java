@@ -1,5 +1,7 @@
 package com.accusharp.hrms.service.attendance;
 
+import com.accusharp.hrms.dto.AttendanceBulkUploadResponse;
+import com.accusharp.hrms.dto.AttendanceBulkUploadRow;
 import com.accusharp.hrms.dto.AttendanceCorrectionRequest;
 import com.accusharp.hrms.dto.AttendanceGenerationRequest;
 import com.accusharp.hrms.dto.AttendanceGenerationResponse;
@@ -689,6 +691,41 @@ public class AttendanceService {
     }
 
     /**
+     * One day for an employee who does not punch at all: what the roster says
+     * the day was, with no punch-derived figures on it.
+     *
+     * <p>Deliberately written as {@link AttendanceRecordStatus#GENERATED} by
+     * the caller rather than {@code MANUAL} - nobody corrected anything, the
+     * run derived it. That layering is what lets a bulk upload's {@code
+     * MANUAL} rows (a day the director was actually absent) survive the next
+     * regeneration while the ordinary days stay recomputable.
+     */
+    private void applyRosterOnlyDay(DailyAttendance record, String userId, ShiftSchedule schedule,
+                                    boolean holiday, boolean onLeave) {
+        record.setUserId(userId);
+        record.setAttendanceDate(schedule.getShiftDate());
+        record.setShiftCode(schedule.getShift().getShiftCode());
+        record.setWeekOff(schedule.isWeekOff());
+        record.setHoliday(holiday);
+        record.setInvalidPunch(false);
+
+        // Same precedence the punch path uses in resolveNonWorkingStatus: leave
+        // explains an absence, a holiday outranks a week off, and only what is
+        // left over is a day actually worked.
+        AttendanceStatus status;
+        if (onLeave) {
+            status = AttendanceStatus.ON_LEAVE;
+        } else if (holiday) {
+            status = AttendanceStatus.HOLIDAY;
+        } else if (schedule.isWeekOff()) {
+            status = AttendanceStatus.WEEKLY_OFF;
+        } else {
+            status = AttendanceStatus.PRESENT;
+        }
+        applyForcedStatus(record, schedule, status);
+    }
+
+    /**
      * A day with no punches at all to correct. Hours follow the shift, because
      * declaring someone present means declaring they worked the shift.
      *
@@ -717,6 +754,151 @@ public class AttendanceService {
         record.setOvertimeHours(zeroHours());
         record.setLateMinutes(0);
         record.setEarlyExitMinutes(0);
+    }
+
+    // ---- bulk upload -------------------------------------------------------
+
+    /**
+     * Declares a stretch of days outright, for one employee, without any punch
+     * times - the bulk form of {@link #correctDay}'s forced-status mode.
+     *
+     * <p>Exists for the people the biometric device never sees. Senior staff
+     * marked {@link Employee#isAttendanceExempt()} are already handled by
+     * generation and need nothing uploaded; this is the override on top of
+     * that - a day one of them was genuinely absent - and the fallback for
+     * anybody else when the device was down for a week.
+     *
+     * <p>Four kinds of day are reported back rather than written, because each
+     * would be a wrong salary if it were silently overwritten:
+     * <ul>
+     *   <li><b>locked</b> - payroll already ran; unlock the month first, exactly
+     *       as {@link #correctDay} refuses;</li>
+     *   <li><b>approved leave</b> - the leave workflow already decided that day,
+     *       and a blanket "present all month" must not erase a deduction
+     *       somebody approved;</li>
+     *   <li><b>week off or holiday</b> - a range spanning a month would
+     *       otherwise turn every Sunday into a working day. Recording work on
+     *       one is a deliberate single-day act, so it stays with
+     *       {@link #correctDay};</li>
+     *   <li><b>not rostered</b> - no shift to declare hours against.</li>
+     * </ul>
+     *
+     * <p>Rows land as {@link AttendanceRecordStatus#MANUAL} and so survive the
+     * next regeneration, the same as any hand correction.
+     */
+    @Transactional
+    public AttendanceBulkUploadResponse uploadDays(AttendanceBulkUploadRow row) {
+        assertActorCan(row.getUploadedBy(), PermissionCode.ATTENDANCE_CORRECT, "Uploading attendance");
+        Employee employee = employeeService.getEntityByUserId(row.getUserId());
+        employeeService.assertManages(employee.getUserId());
+
+        LocalDate from = row.getFromDate();
+        LocalDate to = row.effectiveToDate();
+        if (to.isBefore(from)) {
+            throw new BusinessRuleException("toDate must be on or after fromDate");
+        }
+
+        String userId = employee.getUserId();
+        Long companyId = employee.getCompany() == null ? null : employee.getCompany().getId();
+
+        // A partial upload must not make omitted days disappear from payroll's
+        // denominator. Establish the complete month through normal generation
+        // first, preserving every locked/manual day, then apply the range.
+        for (YearMonth month = YearMonth.from(from); !month.isAfter(YearMonth.from(to));
+             month = month.plusMonths(1)) {
+            if (!workPolicyResolver.tracksAttendance(employee, month.atEndOfMonth())) {
+                throw new BusinessRuleException("Attendance is not tracked for " + userId + " in " + month
+                        + " under the work policy");
+            }
+            generateFor(employee, month, row.getUploadedBy(), false, false, true,
+                    resolveCompanyContext(companyId, month.atDay(1), month.atEndOfMonth()));
+        }
+
+        Set<LocalDate> holidays = holidayService.mandatoryHolidayDates(companyId, from, to);
+        Map<LocalDate, LeaveCalculationService.LeaveDay> leaveDays =
+                leaveCalculationService.approvedLeaveDaysBetween(userId, from, to);
+
+        List<ShiftSchedule> stored = shiftScheduleRepository
+                .findAllByUserIdAndShiftDateBetweenOrderByShiftDateAsc(userId, from, to);
+        Map<LocalDate, ShiftSchedule> roster = defaultRosterResolver.merge(employee, stored, from, to).stream()
+                .collect(Collectors.toMap(ShiftSchedule::getShiftDate, Function.identity(), (a, b) -> a));
+        Map<LocalDate, DailyAttendance> existing = indexByDate(dailyAttendanceRepository
+                .findAllByUserIdAndAttendanceDateBetweenOrderByAttendanceDateAsc(userId, from, to));
+
+        List<DailyAttendance> toSave = new ArrayList<>();
+        List<AttendanceBulkUploadResponse.SkippedDay> skipped = new ArrayList<>();
+        Set<YearMonth> touchedMonths = new HashSet<>();
+
+        for (LocalDate date = from; !date.isAfter(to); date = date.plusDays(1)) {
+            ShiftSchedule schedule = roster.get(date);
+            if (schedule == null) {
+                skipped.add(skip(userId, date, AttendanceBulkUploadResponse.Reason.NOT_ROSTERED,
+                        "No shift rostered for this date"));
+                continue;
+            }
+            if (schedule.isWeekOff() || holidays.contains(date)) {
+                skipped.add(skip(userId, date, AttendanceBulkUploadResponse.Reason.NON_WORKING_DAY,
+                        schedule.isWeekOff() ? "Weekly off" : "Holiday"));
+                continue;
+            }
+            if (leaveDays.containsKey(date)) {
+                skipped.add(skip(userId, date, AttendanceBulkUploadResponse.Reason.ON_LEAVE,
+                        "Approved leave already covers this day"));
+                continue;
+            }
+            DailyAttendance current = existing.get(date);
+            if (current != null && current.isLocked()) {
+                skipped.add(skip(userId, date, AttendanceBulkUploadResponse.Reason.LOCKED,
+                        "Payroll has been generated - unlock the month first"));
+                continue;
+            }
+
+            DailyAttendance record = current != null ? current : new DailyAttendance();
+            record.setUserId(userId);
+            record.setAttendanceDate(date);
+            record.setShiftCode(schedule.getShift().getShiftCode());
+            record.setWeekOff(false);
+            record.setConfiguredWeekOff(employee.hasConfiguredWeekOffOn(date));
+            record.setHoliday(false);
+            record.setInvalidPunch(false);
+            applyForcedStatus(record, schedule, row.effectiveStatus());
+
+            record.setRecordStatus(AttendanceRecordStatus.MANUAL);
+            record.setRemarks(row.getRemarks());
+            record.setUpdatedBy(row.getUploadedBy());
+            record.setUpdatedAt(Instant.now());
+            if (record.getGeneratedAt() == null) {
+                // A legacy/manual row preserved by baseline generation may
+                // still have no generation stamp.
+                record.setGeneratedAt(Instant.now());
+                record.setGeneratedBy(row.getUploadedBy());
+            }
+
+            toSave.add(record);
+            touchedMonths.add(YearMonth.from(date));
+        }
+
+        List<DailyAttendance> saved = dailyAttendanceRepository.saveAll(toSave);
+        if (!saved.isEmpty()) {
+            policyApplicationRepository.deleteByUserIdAndAttendanceDateIn(userId,
+                    saved.stream().map(DailyAttendance::getAttendanceDate).toList());
+        }
+        touchedMonths.forEach(month -> rebuildSummary(employee, month));
+
+        log.info("attendance.bulkUpload userId={} from={} to={} status={} applied={} skipped={} by={}",
+                userId, from, to, row.effectiveStatus(), saved.size(), skipped.size(), row.getUploadedBy());
+        auditService.record("ATTENDANCE_BULK_UPLOAD", "DailyAttendance", userId + " " + from + ".." + to,
+                AuditOutcome.SUCCESS, "status=" + row.effectiveStatus() + " applied=" + saved.size()
+                        + " skipped=" + skipped.size() + " remarks=" + row.getRemarks());
+
+        return new AttendanceBulkUploadResponse(1, saved.size(), skipped.size(),
+                saved.stream().map(AttendanceRecordResponse::of).toList(), skipped, List.of());
+    }
+
+    private AttendanceBulkUploadResponse.SkippedDay skip(String userId, LocalDate date,
+                                                          AttendanceBulkUploadResponse.Reason reason,
+                                                          String detail) {
+        return new AttendanceBulkUploadResponse.SkippedDay(userId, date, reason, detail);
     }
 
     // ---- locking -----------------------------------------------------------
@@ -1150,6 +1332,16 @@ public class AttendanceService {
             AttendanceRule rule, List<AttendancePolicyRule> policyRules) {
         ShiftSchedule schedule = window.schedule();
         LocalDate date = schedule.getShiftDate();
+
+        if (employee.isAttendanceExempt()) {
+            // This branch is shared by generation and every read-only preview:
+            // an exempt employee's day follows the roster, not missing punches.
+            DailyAttendance record = new DailyAttendance();
+            applyRosterOnlyDay(record, employee.getUserId(), schedule, holidays.contains(date),
+                    leaveDays.containsKey(date));
+            return new AttendanceCalculationService.PolicyAwareDay(toDailyResponse(record), List.of(),
+                    BigDecimal.ZERO, BigDecimal.ZERO);
+        }
 
         ResolvedPolicy policy = attendancePolicyResolver.resolve(policyRules, employee, date);
 

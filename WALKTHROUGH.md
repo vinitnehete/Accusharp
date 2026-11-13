@@ -632,8 +632,8 @@ reduced from 25 days to 24. Subtracting it again would charge her twice for the
 same missing day - it appears on the slip purely so the employee can see what
 the absent day cost.
 
-To run everyone at once (uses zero for all manual deductions, so generate people
-with advances individually):
+To run everyone at once (scheduled recoveries apply automatically; bonus,
+incentive, TDS and canteen default to zero):
 
 ```bash
 curl -X POST "http://localhost:8080/api/payroll/generate-all?month=9&year=2026" -H "Authorization: Bearer $TOKEN"
@@ -784,3 +784,21 @@ regeneration preserves them.
    `POST /api/employees/salary-structure/regenerate-all` after changing it.
 6. **Use `/regenerate`, not `/generate`, to correct a month.** Generate is
    deliberately one-shot.
+
+## Recoveries and attendance addendum — 2026-10-10
+
+The worked figures above are the original captured scenario. The advance in
+its payroll body is an explicit period override; omitting `advanceDeduction`,
+`loanDeduction`, `fine` and `otherDeduction` now uses the employee's scheduled
+outstanding recoveries. An explicit zero skips that type for the period. Issue
+a loan or advance through `/api/recoveries` independently of the payroll run;
+see [README.md](README.md#9-loans-advances-and-fines) for date defaults, balances
+and repayment history. Issuing it does not rewrite an existing payslip.
+
+A biometric-exempt employee still needs an explicit or derived roster. Their
+automatic days follow that roster, while approved leave and manual absences
+remain effective. Bulk upload establishes each affected complete month before
+applying the declared range, preserving locked/manual baseline rows and
+reporting approved leave, holidays, weekly offs and missing shifts as skipped.
+Unpaid leave stays in LOP. A `NOT_TRACKED` / `FIXED_MONTHLY` work policy instead
+pays without attendance and remains separate. See [Attendance.md](Attendance.md#61-bulk-upload-declaring-days-without-punches).

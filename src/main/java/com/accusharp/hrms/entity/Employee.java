@@ -359,6 +359,35 @@ public class Employee {
                 ? status == EmployeeStatus.PERMANENT
                 : employmentType.isAutoRosterDefaultShift();
     }
+    /**
+     * This employee does not punch the biometric device, and their attendance
+     * must not be derived from the absence of punches.
+     *
+     * <p>For senior staff who are not on the eSSL at all. Without it,
+     * generation reads every rostered working day as having fewer than two
+     * punches and marks it {@link com.accusharp.hrms.enums.AttendanceStatus#ABSENT}
+     * (see {@code AttendanceCalculationService.calculateDay}), which turns a
+     * whole month into loss of pay and hands a director a near-zero net
+     * salary. A flag rather than a monthly upload because "does not punch" is
+     * a standing property of the person, not a recurring event - and a
+     * process that pays correctly only when somebody remembers to upload a
+     * sheet will eventually not.
+     *
+     * <p>Generation instead reads the day straight off the roster: week off,
+     * holiday, approved leave, or otherwise present for the shift's own
+     * hours, with no overtime and no late/early-exit minutes - there is no
+     * clock-in to measure them against. Punches are ignored entirely, even if
+     * the employee happens to make some.
+     *
+     * <p>Orthogonal to {@link #overtimeEligible}: an exempt employee earns
+     * zero overtime hours regardless, so payroll's own eligibility check
+     * never has anything to pay on. Intended for salaried staff -
+     * {@code DAY_WISE} is paid per attended day, so exempting one means
+     * paying them for every rostered day without any record of attendance.
+     */
+    @Column(name = "attendance_exempt", nullable = false)
+    @Builder.Default
+    private boolean attendanceExempt = false;
 
     // ---- authentication -----------------------------------------------------
     // userId doubles as the login username. Never serialized to any response DTO.

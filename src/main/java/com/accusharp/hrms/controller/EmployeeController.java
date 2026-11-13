@@ -143,10 +143,9 @@ public class EmployeeController {
 
     /**
      * Manually overrides basicDA/hra/conveyance/education for this employee,
-     * in place of whatever {@code SalaryRule} would otherwise derive - the
-     * rest of the salary structure (grossSalary, pfBasic, medical/other
-     * allowance) is still edited via the regular {@link #update}. Sticky
-     * across future updates and rule changes until {@link
+     * in place of whatever {@code SalaryRule} would otherwise derive. Optional
+     * medical/other allowances and PF basic are updated in the same request when
+     * supplied. Sticky across future updates and rule changes until {@link
      * #regenerateSalaryStructure} is called.
      */
     @PreAuthorize("@authz.can('EMPLOYEE_UPDATE')")

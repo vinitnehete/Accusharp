@@ -1081,3 +1081,17 @@ document that was approved.
   `company`.** Rules left behind by one suite broke the *next* suite's
   `companyRepository.deleteAll()`, in its `setUp`, where the cause is least
   obvious.
+
+## Restoration addendum — 2026-10-10
+
+The existing typed policy engine, sandwich-leave evaluation, effective-date
+resolution and immutable payroll snapshots remain in place. A biometric-exempt
+employee's automatic day follows the roster without punch-derived penalties;
+ordinary employees retain the policy-aware calculation path. Bulk attendance
+first generates each affected complete month, preserving locked and manual
+rows, then declares eligible days as manual corrections and rebuilds the
+summary. Replaced days no longer retain obsolete generated policy traces.
+Loan recoveries operate on payroll balances after attendance has been priced,
+so they do not add effects to the policy catalog. See
+[Attendance.md](../../Attendance.md#61-bulk-upload-declaring-days-without-punches)
+and [ARCHITECTURE.md](../../ARCHITECTURE.md#recoveries-loans-advances-and-fines).

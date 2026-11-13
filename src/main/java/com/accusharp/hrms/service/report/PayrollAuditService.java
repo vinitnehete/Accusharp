@@ -147,9 +147,21 @@ public class PayrollAuditService {
                 payroll.getTds(),
                 payroll.getAdvanceDeduction(),
                 payroll.getLoanDeduction(),
+                payroll.getFine(),
+                payroll.getOtherDeduction(),
                 payroll.getCanteen(),
                 payroll.getLopDeduction(),
                 payroll.getTotalDeduction(),
+
+                payroll.getLoanOpeningBalance(),
+                payroll.getLoanClosingBalance(),
+                payroll.getAdvanceOpeningBalance(),
+                payroll.getAdvanceClosingBalance(),
+                payroll.getFineOpeningBalance(),
+                payroll.getFineClosingBalance(),
+                payroll.getOtherOpeningBalance(),
+                payroll.getOtherClosingBalance(),
+                payroll.getRecoveryCarriedForward(),
 
                 payroll.getNetSalary(),
                 payroll.getRevision(),
@@ -431,6 +443,8 @@ public class PayrollAuditService {
                 new PayrollAuditDtos.DeductionTotal("TDS", sum(rows, PayrollAuditDtos.AuditRow::tds, MONEY_SCALE)),
                 new PayrollAuditDtos.DeductionTotal("Advance", sum(rows, PayrollAuditDtos.AuditRow::advanceDeduction, MONEY_SCALE)),
                 new PayrollAuditDtos.DeductionTotal("Loan", sum(rows, PayrollAuditDtos.AuditRow::loanDeduction, MONEY_SCALE)),
+                new PayrollAuditDtos.DeductionTotal("Fine", sum(rows, PayrollAuditDtos.AuditRow::fine, MONEY_SCALE)),
+                new PayrollAuditDtos.DeductionTotal("Other Deduction", sum(rows, PayrollAuditDtos.AuditRow::otherDeduction, MONEY_SCALE)),
                 new PayrollAuditDtos.DeductionTotal("Canteen", sum(rows, PayrollAuditDtos.AuditRow::canteen, MONEY_SCALE)));
 
         return new PayrollAuditDtos.CompanySummary(
@@ -497,8 +511,10 @@ public class PayrollAuditService {
                 "Earned Other", "Earned Gross", "Bonus", "Incentive", "Total Earnings",
                 "Per Day Rate", "Per Hour Rate", "OT Eligible", "Standard Hours/Day", "OT Multiplier",
                 "OT Hours", "OT Amount", "Regular Hours", "Total Hours",
-                "PF", "ESIC", "Professional Tax", "MLWF", "TDS", "Advance", "Loan", "Canteen",
-                "LOP Value", "Total Deductions", "Net Salary", "Revision");
+                "PF", "ESIC", "Professional Tax", "MLWF", "TDS", "Advance", "Loan", "Fine",
+                "Other Deduction", "Canteen", "LOP Value", "Total Deductions",
+                "Loan Opening", "Loan Balance", "Advance Opening", "Advance Balance",
+                "Carried Forward", "Net Salary", "Revision");
 
         for (PayrollAuditDtos.AuditRow row : rows) {
             csv.row(row.employeeCode(), row.userId(), row.employeeName(), row.departmentName(),
@@ -516,8 +532,11 @@ public class PayrollAuditService {
                     row.overtimeRateMultiplier(), row.overtimeHours(), row.otAllowance(),
                     row.regularHours(), row.totalHours(),
                     row.pfDeduction(), row.esic(), row.professionalTax(), row.mlwf(), row.tds(),
-                    row.advanceDeduction(), row.loanDeduction(), row.canteen(),
-                    row.lopDeduction(), row.totalDeduction(), row.netSalary(), row.revision());
+                    row.advanceDeduction(), row.loanDeduction(), row.fine(), row.otherDeduction(),
+                    row.canteen(), row.lopDeduction(), row.totalDeduction(),
+                    row.loanOpeningBalance(), row.loanClosingBalance(),
+                    row.advanceOpeningBalance(), row.advanceClosingBalance(),
+                    row.recoveryCarriedForward(), row.netSalary(), row.revision());
         }
 
         PayrollAuditDtos.CompanySummary summary = companySummary(month, year, filter);

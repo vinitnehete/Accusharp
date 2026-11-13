@@ -67,6 +67,8 @@ public record EmployeeResponse(
          * employees, no weekly off at all for everyone else.
          */
         boolean autoRostersDefaultShift,
+        /** Does not punch the biometric device; attendance is read from the roster. */
+        boolean attendanceExempt,
         boolean salaryStructureOverridden
 ) {
 
@@ -76,6 +78,6 @@ public record EmployeeResponse(
                 designationName, categoryName, employmentTypeId, employmentTypeName, supervisorUserId,
                 supervisorName, joiningDate, dateOfBirth, gender, status, recordStatus, role, email, phone,
                 null, null, null, null, null, null, null, null, null, null, null, null, null,
-                overtimeEligible, weekOffDays, autoRostersDefaultShift, salaryStructureOverridden);
+                overtimeEligible, weekOffDays, autoRostersDefaultShift, attendanceExempt, salaryStructureOverridden);
     }
 }

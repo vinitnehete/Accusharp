@@ -15,7 +15,7 @@ team), **Phase 15** (custom roles effective end to end) and **Phase 16**
 (data scope as a grantable permission), **Phase 17** (the admin is a company
 account) and **Phase 18** (platform account names are reserved) of a multi-phase
 security rollout. Read this
-alongside [README.md](README.md) §13 and [ARCHITECTURE.md](ARCHITECTURE.md)
+alongside [README.md](README.md) §14 and [ARCHITECTURE.md](ARCHITECTURE.md)
 "Roles".
 
 **[SECURITY_AUDIT.md](SECURITY_AUDIT.md)** is a full audit of everything
@@ -110,12 +110,15 @@ grants are fixed at startup by `PermissionSeeder`, not editable at runtime.
 | `SHIFT_SCHEDULE_MANAGE` | ✓ | ✓ | ✓ (own team, enforced in service) | - | - |
 | `SHIFT_SCHEDULE_READ`, `ATTENDANCE_READ` | ✓ | ✓ | ✓ | ✓ | - |
 | `ATTENDANCE_GENERATE/CORRECT/UNLOCK` | ✓ | ✓ | - | - | - |
+| `ATTENDANCE_CORRECT` also gates the bulk upload (`POST /api/attendance/bulk-upload`) - declaring days is a correction, held to the same bar | ✓ | ✓ | - | - | - |
 | `LEAVE_APPLY`, `LEAVE_READ`, `LEAVE_BALANCE_READ` | ✓ | ✓ | ✓ | ✓ | - |
 | `LEAVE_SUPERVISOR_APPROVE` | ✓ | ✓ | ✓ (own team, enforced in service) | - | - |
 | `LEAVE_APPROVE` (approve/reject/cancel) | ✓ | ✓ | - | - | - |
 | `LEAVE_BALANCE_MANAGE`, `SALARY_RULE_READ/MANAGE`, `PAYROLL_PROCESS` | ✓ | ✓ | - | - | - |
 | `WORK_POLICY_READ/MANAGE` (who is tracked, who is paid a fixed salary) | ✓ | ✓ | - | - | - |
+| `RECOVERY_MANAGE` (issue/waive/adjust a loan, advance or fine) | ✓ | ✓ | - | - | - |
 | `PAYROLL_READ`, `REPORT_READ`, `DASHBOARD_READ` | ✓ | ✓ | ✓ | - | - |
+| `RECOVERY_READ` | ✓ | ✓ | ✓ | ✓ (own balances only) | - |
 | `SALARY_SLIP_READ` | ✓ | ✓ | ✓ | ✓ | - |
 
 Full grant lists are in `PermissionSeeder`. Two gaps in the pre-existing
@@ -168,7 +171,7 @@ entity/{Employee,PlatformUser,RefreshToken,Permission,RolePermission}
 When `hrms.seed.enabled=true` (the default), every seeded employee
 (`HR001`, `SUP001`, `EMP001`, `EMP002`) and a platform account
 (`platform_owner`) get the password **`Accusharp@123`**. Disable seeding
-(`hrms.seed.enabled=false`) before loading real data - see README §13.
+(`hrms.seed.enabled=false`) before loading real data - see README §14.
 
 ## Multi-tenant isolation (Phase 3)
 
@@ -1286,3 +1289,23 @@ it can only make a rule not apply. Roster self-assignment is unchanged, as befor
 
 See the original security analysis in this repository's PR/session history
 for the full phased plan.
+
+## Recovery and attendance restoration — 2026-10-10
+
+`RECOVERY_MANAGE` controls issue, schedule updates, waivers, adjustments and
+cancellation; `RECOVERY_READ` controls reads. Those capabilities do not widen
+the caller's population: writes require a managed employee and reads retain
+scoped pay visibility (`PAY_READ` for another person's compensation). An
+employee may read their own balances, while HR may not alter their own
+recoveries. Company admin accounts and contractor workers are not recovery
+subjects. Issue dates and repayment start periods describe the ledger; neither
+changes access checks or rewrites an existing payroll.
+
+JSON and CSV bulk attendance use `ATTENDANCE_CORRECT` and the existing
+managed-target checks, with the authenticated caller recorded as the actor.
+The normal full-month baseline is generated before manual overrides, retaining
+locked/manual rows and approved unpaid leave. The exemption flag affects
+roster-based attendance only; existing work-policy and salary privacy behavior
+remains in force. No authentication or security configuration is changed.
+See [README.md](README.md#9-loans-advances-and-fines) and
+[Attendance.md](Attendance.md#61-bulk-upload-declaring-days-without-punches).

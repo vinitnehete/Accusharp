@@ -288,3 +288,13 @@ client.
 Recommended order: **A → B → C.** Every one of them is additive, and each ships
 with the same guarantee as the first document — a company that configures
 nothing produces byte-identical output.
+
+## Implementation addendum — 2026-10-10
+
+The restored loan/advance/fine ledger is orthogonal to `PayBasis` and
+`OvertimeBasis`: it recovers outstanding balances after statutory and fixed
+deductions, without introducing a new salary formula. `attendanceExempt` is a
+roster-based input choice, whereas a `NOT_TRACKED` / `FIXED_MONTHLY` work policy
+bypasses attendance entirely. Neither replaces configurable employment types
+or this document's legacy fallback. See [ARCHITECTURE.md](../../ARCHITECTURE.md)
+for the implemented recovery and attendance flows.

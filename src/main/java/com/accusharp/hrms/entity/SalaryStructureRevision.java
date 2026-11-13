@@ -73,6 +73,10 @@ public class SalaryStructureRevision {
     @Column(name = "previous_other_allowance", precision = 15, scale = 2)
     private BigDecimal previousOtherAllowance;
 
+    /** Null on history rows recorded before PF basic was included in the snapshot. */
+    @Column(name = "previous_pf_basic", precision = 15, scale = 2)
+    private BigDecimal previousPfBasic;
+
     @Column(name = "previous_gross_salary", precision = 15, scale = 2)
     private BigDecimal previousGrossSalary;
 
@@ -99,6 +103,9 @@ public class SalaryStructureRevision {
 
     @Column(name = "new_other_allowance", precision = 15, scale = 2)
     private BigDecimal newOtherAllowance;
+
+    @Column(name = "new_pf_basic", precision = 15, scale = 2)
+    private BigDecimal newPfBasic;
 
     @Column(name = "new_gross_salary", precision = 15, scale = 2)
     private BigDecimal newGrossSalary;

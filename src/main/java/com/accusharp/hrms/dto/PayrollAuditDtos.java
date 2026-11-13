@@ -108,10 +108,25 @@ public final class PayrollAuditDtos {
             BigDecimal tds,
             BigDecimal advanceDeduction,
             BigDecimal loanDeduction,
+            BigDecimal fine,
+            BigDecimal otherDeduction,
             BigDecimal canteen,
             /** Value of the unpaid days - shown for transparency, already reflected in the prorated earnings rather than deducted again. */
             BigDecimal lopDeduction,
             BigDecimal totalDeduction,
+
+            // ---- recovery balances ----
+            /** What was owed either side of this period, per type. Null on a payroll generated before recoveries were tracked. */
+            BigDecimal loanOpeningBalance,
+            BigDecimal loanClosingBalance,
+            BigDecimal advanceOpeningBalance,
+            BigDecimal advanceClosingBalance,
+            BigDecimal fineOpeningBalance,
+            BigDecimal fineClosingBalance,
+            BigDecimal otherOpeningBalance,
+            BigDecimal otherClosingBalance,
+            /** Due this period but unaffordable under the net-pay floor - still owed, taken next period. */
+            BigDecimal recoveryCarriedForward,
 
             BigDecimal netSalary,
             int revision,

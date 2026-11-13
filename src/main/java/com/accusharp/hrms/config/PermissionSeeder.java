@@ -98,6 +98,10 @@ public class PermissionSeeder {
                 PermissionCode.SALARY_RULE_READ, PermissionCode.SALARY_RULE_MANAGE,
                 PermissionCode.PAYROLL_PROCESS, PermissionCode.PAYROLL_READ,
                 PermissionCode.PAY_READ,
+                // Issuing a loan and running the payroll that recovers it are the
+                // same job here, so RECOVERY_MANAGE sits with PAYROLL_PROCESS
+                // rather than being held back the way AUDIT_READ is.
+                PermissionCode.RECOVERY_READ, PermissionCode.RECOVERY_MANAGE,
                 PermissionCode.SALARY_SLIP_READ,
                 PermissionCode.REPORT_READ,
                 PermissionCode.DASHBOARD_READ,
@@ -134,6 +138,9 @@ public class PermissionSeeder {
                 PermissionCode.LEAVE_SUPERVISOR_APPROVE,
                 PermissionCode.LEAVE_BALANCE_READ,
                 PermissionCode.PAYROLL_READ,
+                // Their own balance is always readable; another employee's
+                // balance also requires PAY_READ and the caller's data scope.
+                PermissionCode.RECOVERY_READ,
                 PermissionCode.SALARY_SLIP_READ,
                 PermissionCode.REPORT_READ,
                 PermissionCode.DASHBOARD_READ,
@@ -153,6 +160,9 @@ public class PermissionSeeder {
                 PermissionCode.HOLIDAY_READ,
                 PermissionCode.LEAVE_APPLY, PermissionCode.LEAVE_READ,
                 PermissionCode.LEAVE_BALANCE_READ,
+                // An employee can see what they owe on their own loan - the
+                // same self-service scoping their salary slip already has.
+                PermissionCode.RECOVERY_READ,
                 PermissionCode.SALARY_SLIP_READ));
 
         grants.put(PlatformRole.PLATFORM_OWNER.name(), EnumSet.of(

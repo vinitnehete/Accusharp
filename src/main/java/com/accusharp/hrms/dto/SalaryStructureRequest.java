@@ -32,10 +32,9 @@ public class SalaryStructureRequest {
     private BigDecimal educationAllowance;
 
     /**
-     * The three below are optional, and null means "leave as it is". They exist
-     * so a bulk upload can carry a complete salary picture in one row, while the
-     * single-employee endpoint - which has only ever sent the four components
-     * above - keeps working unchanged.
+     * The fixed salary inputs below are optional, and null means "leave as it
+     * is", so existing callers that send only the four components above keep
+     * working unchanged.
      *
      * <p>Medical and other allowances are fixed amounts: no rule derives them,
      * so an override never touched them and setting them here is simply setting
@@ -46,6 +45,10 @@ public class SalaryStructureRequest {
 
     @DecimalMin(value = "0")
     private BigDecimal otherAllowance;
+
+    /** PF's deduction base, separate from the six earnings summed into grossSalaryWage. */
+    @DecimalMin(value = "0")
+    private BigDecimal pfBasic;
 
     /**
      * The headline gross. Setting it here is a <em>correction</em> of what the

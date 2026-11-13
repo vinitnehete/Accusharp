@@ -116,6 +116,9 @@ public enum PermissionCode {
      * grant this through a custom role where someone should (a director).
      */
     PAY_READ,
+    /** Loans, salary advances, fines and other recoverable amounts - see {@code RecoveryController}. */
+    RECOVERY_READ,
+    RECOVERY_MANAGE,
 
     SALARY_SLIP_READ,
 

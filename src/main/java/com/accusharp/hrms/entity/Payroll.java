@@ -250,8 +250,60 @@ public class Payroll {
     @Column(name = "loan_deduction", precision = 15, scale = 2)
     private BigDecimal loanDeduction;
 
+    /** A penalty recovered this period - see {@link com.accusharp.hrms.enums.RecoveryType#FINE}. */
+    @Column(precision = 15, scale = 2)
+    private BigDecimal fine;
+
+    /** Anything recoverable that is not a loan, advance, fine or canteen bill. */
+    @Column(name = "other_deduction", precision = 15, scale = 2)
+    private BigDecimal otherDeduction;
+
     @Column(precision = 15, scale = 2)
     private BigDecimal canteen;
+
+    // ---- recovery balances -------------------------------------------------
+    /**
+     * What was owed before this period ran and what is left after it, per
+     * recovery type - snapshotted for the same reason every other figure on
+     * this row is: a slip reprinted a year later has to show the balance as
+     * it stood then, not as {@code EmployeeRecovery} stands today.
+     *
+     * <p>Null on any payroll generated before recoveries were tracked, which
+     * is why every reader treats null as "not applicable" rather than zero.
+     */
+    @Column(name = "loan_opening_balance", precision = 15, scale = 2)
+    private BigDecimal loanOpeningBalance;
+
+    @Column(name = "loan_closing_balance", precision = 15, scale = 2)
+    private BigDecimal loanClosingBalance;
+
+    @Column(name = "advance_opening_balance", precision = 15, scale = 2)
+    private BigDecimal advanceOpeningBalance;
+
+    @Column(name = "advance_closing_balance", precision = 15, scale = 2)
+    private BigDecimal advanceClosingBalance;
+
+    @Column(name = "fine_opening_balance", precision = 15, scale = 2)
+    private BigDecimal fineOpeningBalance;
+
+    @Column(name = "fine_closing_balance", precision = 15, scale = 2)
+    private BigDecimal fineClosingBalance;
+
+    @Column(name = "other_opening_balance", precision = 15, scale = 2)
+    private BigDecimal otherOpeningBalance;
+
+    @Column(name = "other_closing_balance", precision = 15, scale = 2)
+    private BigDecimal otherClosingBalance;
+
+    /**
+     * What this period was due to recover but could not afford without
+     * pushing net pay below the floor - still owed, and taken from the next
+     * period. Stored rather than inferred so a short recovery is visible on
+     * the slip and in the register instead of only showing up as a balance
+     * that mysteriously failed to move.
+     */
+    @Column(name = "recovery_carried_forward", precision = 15, scale = 2)
+    private BigDecimal recoveryCarriedForward;
 
     /** Value of the unpaid days, shown on the slip for transparency. */
     @Column(name = "lop_deduction", precision = 15, scale = 2)
@@ -282,6 +334,10 @@ public class Payroll {
 
     @Column(name = "rule_overtime_rate_multiplier", precision = 4, scale = 2)
     private BigDecimal ruleOvertimeRateMultiplier;
+
+    /** The share of total earnings recoveries were not allowed to eat into, at generation time. */
+    @Column(name = "rule_recovery_minimum_net_percent", precision = 6, scale = 2)
+    private BigDecimal ruleRecoveryMinimumNetPercent;
 
     @Column(name = "generated_at", nullable = false)
     private Instant generatedAt;

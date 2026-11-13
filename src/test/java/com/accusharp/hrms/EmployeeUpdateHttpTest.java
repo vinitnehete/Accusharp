@@ -121,6 +121,27 @@ class EmployeeUpdateHttpTest {
         assertThat(employeeRepository.findByUserId("UPD-PLAIN").orElseThrow().getRole()).isEqualTo(Role.EMPLOYEE);
         assertThat(employeeRepository.findByUserId("UPD-PLAIN").orElseThrow().getRecordStatus())
                 .isEqualTo(RecordStatus.ACTIVE);
+        assertThat(employeeRepository.findByUserId("UPD-PLAIN").orElseThrow().isAttendanceExempt()).isFalse();
+    }
+
+    @Test
+    @DisplayName("an old client's update preserves attendance exemption unless it explicitly changes the flag")
+    void attendanceExemptionIsPreservedWhenOmitted() {
+        long id = create("UPD-EXEMPT", "\"attendanceExempt\": true,");
+
+        for (String extraFields : new String[]{"", "\"attendanceExempt\": null,"}) {
+            Resp updated = send("PUT", "/api/employees/" + id,
+                    body("UPD-EXEMPT", "Exempt Employee", extraFields), hrToken);
+
+            assertThat(updated.status()).isEqualTo(200);
+            assertThat(updated.body().get("attendanceExempt").asBoolean()).isTrue();
+            assertThat(employeeRepository.findById(id).orElseThrow().isAttendanceExempt()).isTrue();
+        }
+
+        Resp cleared = send("PUT", "/api/employees/" + id,
+                body("UPD-EXEMPT", "Exempt Employee", "\"attendanceExempt\": false,"), hrToken);
+        assertThat(cleared.status()).isEqualTo(200);
+        assertThat(cleared.body().get("attendanceExempt").asBoolean()).isFalse();
     }
 
     @Test

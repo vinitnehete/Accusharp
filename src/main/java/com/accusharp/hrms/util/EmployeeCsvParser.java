@@ -23,7 +23,7 @@ import java.util.Set;
  * supervisorUserId, joiningDate, dateOfBirth, gender, status, recordStatus, role, email, phone,
  * uanNo, esicIpNo, bankAccountNo, bankIfscNo,
  * grossSalary, pfBasic, medicalAllowance, otherAllowance, overtimeEligible,
- * weekOffDays, basicDA, hra, conveyanceAllowance, educationAllowance}. {@code categoryId}, {@code gender}
+ * weekOffDays, attendanceExempt, basicDA, hra, conveyanceAllowance, educationAllowance}. {@code categoryId}, {@code gender}
  * and the four statutory/bank columns are all optional, same as every other non-required column.
  * {@code companyId} is ignored for a company-scoped caller - {@code
  * EmployeeController} always overwrites it with the caller's own company, the
@@ -78,6 +78,7 @@ public final class EmployeeCsvParser {
         request.setOtherAllowance(parseDecimal(record, "otherAllowance", true));
         request.setOvertimeEligible(CsvRowParser.parseBoolean(record, "overtimeEligible"));
         request.setWeekOffDays(parseWeekOffDays(record));
+        request.setAttendanceExempt(CsvRowParser.parseBoolean(record, "attendanceExempt"));
         request.setBasicDA(parseDecimal(record, "basicDA", false));
         request.setHra(parseDecimal(record, "hra", false));
         request.setConveyanceAllowance(parseDecimal(record, "conveyanceAllowance", false));

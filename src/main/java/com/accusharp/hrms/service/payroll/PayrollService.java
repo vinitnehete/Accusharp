@@ -12,6 +12,7 @@ import com.accusharp.hrms.enums.AuditOutcome;
 import com.accusharp.hrms.enums.PayrollMode;
 import com.accusharp.hrms.enums.PayrollStatus;
 import com.accusharp.hrms.enums.StatutoryDeduction;
+import com.accusharp.hrms.enums.RecoveryType;
 import com.accusharp.hrms.exception.ConflictException;
 import com.accusharp.hrms.exception.NotFoundException;
 import com.accusharp.hrms.repository.PayrollRepository;
@@ -25,6 +26,8 @@ import com.accusharp.hrms.service.calculation.LopCalculationService;
 import com.accusharp.hrms.service.calculation.SalaryCalculationService;
 import com.accusharp.hrms.service.leave.LeaveAccrualService;
 import com.accusharp.hrms.service.policy.WorkPolicyResolver;
+import com.accusharp.hrms.service.recovery.RecoveryPlan;
+import com.accusharp.hrms.service.recovery.RecoveryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -39,6 +42,7 @@ import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,6 +69,14 @@ import java.util.stream.Collectors;
  *       the generated attendance found. Overtime is still computed and shown
  *       as its own line, never part of this proration.</li>
  * </ul>
+ *
+ * <p>Loan, advance, fine and other recoveries are not numbers this receives -
+ * they are read from the employee's balance (see {@code RecoveryService}) and
+ * clamped to what the period can afford, with the shortfall left outstanding
+ * for the next one. That is why {@link #regenerate} has to hand back what the
+ * superseded revision recovered before recomputing: immutable payroll history
+ * and a mutable balance only stay consistent if every superseded recovery is
+ * explicitly reversed.
  */
 @Service
 @RequiredArgsConstructor
@@ -82,6 +94,7 @@ public class PayrollService {
     private final DeductionCalculationService deductionCalculationService;
     private final LopCalculationService lopCalculationService;
     private final PayBehaviourResolver payBehaviourResolver;
+    private final RecoveryService recoveryService;
     private final AuditService auditService;
     private final LeaveAccrualService leaveAccrualService;
     private final WorkPolicyResolver workPolicyResolver;
@@ -129,6 +142,18 @@ public class PayrollService {
 
         current.setStatus(PayrollStatus.SUPERSEDED);
         payrollRepository.save(current);
+
+        // Give back whatever the superseded revision recovered against the
+        // employee's loans, advances and fines before the replacement runs -
+        // otherwise every regeneration collects the same instalment a second
+        // time, and a CSV bulk run with regenerate=true does it across the
+        // whole company at once. Reverses the recorded amounts rather than
+        // recomputing them: what a period actually took depends on what it
+        // could afford, which an attendance correction or a mid-period salary
+        // revision changes. Safe to do before build(): this method is one
+        // transaction, so a failure below rolls the restored balances back
+        // with everything else.
+        recoveryService.reverseForPayroll(current, request.getGeneratedBy());
 
         log.info("payroll.regenerate employeeId={} period={}/{} previousRevision={}",
                 request.getEmployeeId(), request.getMonth(), request.getYear(), current.getRevision());
@@ -249,13 +274,24 @@ public class PayrollService {
         Map<String, Employee> employeesByUserId = employeeService.getAllEntities().stream()
                 .collect(Collectors.toMap(Employee::getUserId, Function.identity(), (a, b) -> a));
 
+        // Total still owed right now, so the debug row can show the live
+        // balance beside the closing balance this payroll snapshotted - the
+        // drift that says "a loan was issued, waived or recovered elsewhere
+        // after this run". Batched for the whole period rather than read per
+        // row, same as the already-generated lookup in
+        // pendingGenerationEmployeeIds.
+        Map<String, BigDecimal> liveOutstanding = recoveryService.outstandingByEmployee(
+                period.stream().map(Payroll::getEmployeeId).collect(Collectors.toSet()));
+
         return period.stream()
                 .sorted(Comparator.comparing(Payroll::getEmployeeId))
-                .map(payroll -> toDebugRow(payroll, employeesByUserId.get(payroll.getEmployeeId())))
+                .map(payroll -> toDebugRow(payroll, employeesByUserId.get(payroll.getEmployeeId()),
+                        liveOutstanding.getOrDefault(payroll.getEmployeeId(),
+                                BigDecimal.ZERO.setScale(SCALE, RoundingMode.HALF_UP))))
                 .toList();
     }
 
-    private PayrollDebugRow toDebugRow(Payroll p, Employee employee) {
+    private PayrollDebugRow toDebugRow(Payroll p, Employee employee, BigDecimal liveTotalOutstanding) {
         BigDecimal liveGrossSalary = employee == null ? null : employee.getGrossSalary();
         BigDecimal livePfBasic = employee == null ? null : employee.getPfBasic();
         SalaryRule liveRule = employee == null ? null
@@ -269,7 +305,8 @@ public class PayrollService {
                     || differs(p.getRuleEsicPercent(), liveRule.getEsicPercent())
                     || differsInt(p.getRuleDayWiseDaysInMonth(), liveRule.getDayWiseDaysInMonth())
                     || differs(p.getRuleStandardHoursPerDay(), liveRule.getStandardHoursPerDay())
-                    || differs(p.getRuleOvertimeRateMultiplier(), liveRule.getOvertimeRateMultiplier()));
+                    || differs(p.getRuleOvertimeRateMultiplier(), liveRule.getOvertimeRateMultiplier())
+                    || differs(p.getRuleRecoveryMinimumNetPercent(), liveRule.getRecoveryMinimumNetPercent()));
 
         return new PayrollDebugRow(
                 p.getId(), p.getEmployeeId(), p.getEmployeeName(), p.getEmployeeCode(), p.getCompanyName(),
@@ -286,8 +323,14 @@ public class PayrollService {
                 p.getTotalEarnings(),
 
                 p.getPf(), p.getEarnPf(), p.getPfDeduction(), p.getEsic(), p.getProfessionalTax(), p.getMlwf(),
-                p.getTds(), p.getAdvanceDeduction(), p.getLoanDeduction(), p.getCanteen(), p.getLopDeduction(),
-                p.getTotalDeduction(), p.getNetSalary(),
+                p.getTds(), p.getAdvanceDeduction(), p.getLoanDeduction(), p.getFine(), p.getOtherDeduction(),
+                p.getCanteen(), p.getLopDeduction(), p.getTotalDeduction(), p.getNetSalary(),
+
+                p.getLoanOpeningBalance(), p.getLoanClosingBalance(),
+                p.getAdvanceOpeningBalance(), p.getAdvanceClosingBalance(),
+                p.getFineOpeningBalance(), p.getFineClosingBalance(),
+                p.getOtherOpeningBalance(), p.getOtherClosingBalance(),
+                p.getRecoveryCarriedForward(), liveTotalOutstanding,
 
                 p.getGrossSalary(), liveGrossSalary, p.getPfBasic(), livePfBasic,
 
@@ -297,6 +340,8 @@ public class PayrollService {
                 p.getRuleDayWiseDaysInMonth(), liveRule == null ? null : liveRule.getDayWiseDaysInMonth(),
                 p.getRuleStandardHoursPerDay(), liveRule == null ? null : liveRule.getStandardHoursPerDay(),
                 p.getRuleOvertimeRateMultiplier(), liveRule == null ? null : liveRule.getOvertimeRateMultiplier(),
+                p.getRuleRecoveryMinimumNetPercent(),
+                liveRule == null ? null : liveRule.getRecoveryMinimumNetPercent(),
 
                 masterDataDrifted, ruleDrifted);
     }
@@ -527,8 +572,6 @@ public class PayrollService {
         payroll.setMlwf(unlessExcluded(excluded, StatutoryDeduction.MLWF,
                 deductionCalculationService.calculateMlwf(request.getMonth(), rule)));
         payroll.setTds(salaryCalculationService.scaled(request.getTds()));
-        payroll.setAdvanceDeduction(salaryCalculationService.scaled(request.getAdvanceDeduction()));
-        payroll.setLoanDeduction(salaryCalculationService.scaled(request.getLoanDeduction()));
         payroll.setCanteen(salaryCalculationService.scaled(request.getCanteen()));
 
         // Reported for transparency only - the earnings above were already
@@ -536,9 +579,25 @@ public class PayrollService {
         payroll.setLopDeduction(deductionCalculationService.calculateLopDeduction(
                 employee.getGrossSalaryWage(), totalDays, lopDays));
 
-        BigDecimal totalDeduction = deductionCalculationService.sum(
+        // ---- recoveries ----------------------------------------------------
+        // Statutory and fixed deductions are settled first and in full: PF,
+        // ESIC, PT, MLWF, TDS and the canteen bill are obligations, not
+        // negotiable against a loan instalment. Whatever is left above the
+        // net-pay floor is the budget the recoveries compete for, in
+        // RecoveryType order, and whatever doesn't fit stays outstanding for
+        // the next period - which is what makes an unaffordable month a
+        // deferral rather than a write-off.
+        BigDecimal fixedDeductions = deductionCalculationService.sum(
                 payroll.getPfDeduction(), payroll.getEsic(), payroll.getProfessionalTax(), payroll.getMlwf(),
-                payroll.getTds(), payroll.getAdvanceDeduction(), payroll.getLoanDeduction(), payroll.getCanteen());
+                payroll.getTds(), payroll.getCanteen());
+        BigDecimal recoveryBudget = recoveryBudget(totalEarnings, fixedDeductions, rule);
+
+        RecoveryPlan recoveries = recoveryService.plan(
+                employee.getUserId(), period, requestedRecoveries(request), recoveryBudget);
+        applyRecoveries(payroll, recoveries);
+
+        BigDecimal totalDeduction = fixedDeductions.add(recoveries.totalApplied())
+                .setScale(SCALE, RoundingMode.HALF_UP);
         payroll.setTotalDeduction(totalDeduction);
 
         payroll.setNetSalary(totalEarnings.subtract(totalDeduction).setScale(SCALE, RoundingMode.HALF_UP));
@@ -565,10 +624,91 @@ public class PayrollService {
                     + " for " + payroll.getMonth() + "/" + payroll.getYear()
                     + " - use the regenerate endpoint");
         }
+        // Only now can the ledger point at this payroll: the amounts had to be
+        // known while the row was still being built (they set totalDeduction
+        // and netSalary), but a REPAYMENT row needs the saved row's id to be
+        // reversible if this revision is later superseded. Same transaction
+        // throughout, so the balances and the payroll commit or roll back
+        // together - a failed generation never leaves a loan half-recovered.
+        recoveryService.commit(saved, recoveries, request.getGeneratedBy());
+
         auditService.record("PAYROLL_GENERATE", "Payroll", employee.getUserId(), AuditOutcome.SUCCESS,
                 "period=" + payroll.getMonth() + "/" + payroll.getYear() + " revision=" + revision);
 
         return saved;
+    }
+
+    /**
+     * What the period can spare for recoveries: everything earned, less the
+     * deductions that are not negotiable, less the floor that protects the
+     * employee's take-home ({@code SalaryRule.recoveryMinimumNetPercent} -
+     * zero by default, which still means net pay can never go negative).
+     *
+     * <p>Never negative itself: a month whose statutory deductions already
+     * exceed the floor recovers nothing at all rather than recovering a
+     * negative amount, and the whole outstanding rolls to the next period.
+     */
+    private BigDecimal recoveryBudget(BigDecimal totalEarnings, BigDecimal fixedDeductions, SalaryRule rule) {
+        BigDecimal floorPercent = rule.getRecoveryMinimumNetPercent() == null
+                ? BigDecimal.ZERO
+                : rule.getRecoveryMinimumNetPercent();
+        BigDecimal floor = salaryCalculationService.percentOf(totalEarnings, floorPercent);
+        return totalEarnings.subtract(fixedDeductions).subtract(floor)
+                .max(BigDecimal.ZERO).setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * The caller's per-period overrides, keyed by type. A null entry is not
+     * zero - it means "no override, use whatever the ledger schedules" (see
+     * {@link PayrollRequest}), which is exactly what {@code generate-all} and
+     * a CSV row with the column omitted send, and why those now recover
+     * against outstanding loans instead of collecting nothing.
+     */
+    private Map<RecoveryType, BigDecimal> requestedRecoveries(PayrollRequest request) {
+        Map<RecoveryType, BigDecimal> requested = new EnumMap<>(RecoveryType.class);
+        putIfPresent(requested, RecoveryType.ADVANCE, request.getAdvanceDeduction());
+        putIfPresent(requested, RecoveryType.LOAN, request.getLoanDeduction());
+        putIfPresent(requested, RecoveryType.FINE, request.getFine());
+        putIfPresent(requested, RecoveryType.OTHER, request.getOtherDeduction());
+        return requested;
+    }
+
+    private void putIfPresent(Map<RecoveryType, BigDecimal> requested, RecoveryType type, BigDecimal amount) {
+        if (amount != null) {
+            requested.put(type, amount);
+        }
+    }
+
+    /**
+     * Writes the recovery figures onto the payroll: what was deducted, and
+     * the balance either side of it.
+     *
+     * <p>The opening and closing balances are snapshotted for the same reason
+     * every other figure on the row is - a slip reprinted next year has to
+     * show what was owed at the time, not what {@code EmployeeRecovery} says
+     * today - and {@code recoveryCarriedForward} records what the month was
+     * due to take but couldn't afford, so a short recovery is visible on the
+     * slip instead of only surfacing as a balance that mysteriously failed to
+     * move.
+     */
+    private void applyRecoveries(Payroll payroll, RecoveryPlan plan) {
+        payroll.setAdvanceDeduction(plan.applied(RecoveryType.ADVANCE));
+        payroll.setAdvanceOpeningBalance(plan.opening(RecoveryType.ADVANCE));
+        payroll.setAdvanceClosingBalance(plan.closing(RecoveryType.ADVANCE));
+
+        payroll.setLoanDeduction(plan.applied(RecoveryType.LOAN));
+        payroll.setLoanOpeningBalance(plan.opening(RecoveryType.LOAN));
+        payroll.setLoanClosingBalance(plan.closing(RecoveryType.LOAN));
+
+        payroll.setFine(plan.applied(RecoveryType.FINE));
+        payroll.setFineOpeningBalance(plan.opening(RecoveryType.FINE));
+        payroll.setFineClosingBalance(plan.closing(RecoveryType.FINE));
+
+        payroll.setOtherDeduction(plan.applied(RecoveryType.OTHER));
+        payroll.setOtherOpeningBalance(plan.opening(RecoveryType.OTHER));
+        payroll.setOtherClosingBalance(plan.closing(RecoveryType.OTHER));
+
+        payroll.setRecoveryCarriedForward(plan.totalCarriedForward());
     }
 
     /**
@@ -855,5 +995,6 @@ public class PayrollService {
         payroll.setRuleDayWiseDaysInMonth(rule.getDayWiseDaysInMonth());
         payroll.setRuleStandardHoursPerDay(rule.getStandardHoursPerDay());
         payroll.setRuleOvertimeRateMultiplier(rule.getOvertimeRateMultiplier());
+        payroll.setRuleRecoveryMinimumNetPercent(rule.getRecoveryMinimumNetPercent());
     }
 }

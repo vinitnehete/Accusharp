@@ -9,6 +9,7 @@ import com.accusharp.hrms.dto.ReportDtos;
 import com.accusharp.hrms.dto.ReportFilter;
 import com.accusharp.hrms.entity.DeviceLog;
 import com.accusharp.hrms.entity.Employee;
+import com.accusharp.hrms.entity.EmployeeRecovery;
 import com.accusharp.hrms.entity.Payroll;
 import com.accusharp.hrms.entity.Shift;
 import com.accusharp.hrms.entity.ShiftSchedule;
@@ -18,10 +19,14 @@ import com.accusharp.hrms.enums.LeaveDuration;
 import com.accusharp.hrms.enums.LeaveStatus;
 import com.accusharp.hrms.enums.LeaveType;
 import com.accusharp.hrms.enums.RecordStatus;
+import com.accusharp.hrms.enums.RecoveryStatus;
+import com.accusharp.hrms.enums.RecoveryType;
 import com.accusharp.hrms.enums.Role;
 import com.accusharp.hrms.repository.DailyAttendanceRepository;
 import com.accusharp.hrms.repository.DeviceLogRepository;
 import com.accusharp.hrms.repository.EmployeeRepository;
+import com.accusharp.hrms.repository.EmployeeRecoveryRepository;
+import com.accusharp.hrms.repository.RecoveryTransactionRepository;
 import com.accusharp.hrms.repository.LeaveBalanceRepository;
 import com.accusharp.hrms.repository.LeaveRequestRepository;
 import com.accusharp.hrms.repository.MonthlyAttendanceSummaryRepository;
@@ -45,6 +50,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.YearMonth;
@@ -72,6 +78,8 @@ class PayrollAuditReportTest {
     private static final String HR = "AUDHR100";
 
     @Autowired private EmployeeRepository employeeRepository;
+    @Autowired private EmployeeRecoveryRepository employeeRecoveryRepository;
+    @Autowired private RecoveryTransactionRepository recoveryTransactionRepository;
     @Autowired private ShiftRepository shiftRepository;
     @Autowired private ShiftScheduleRepository shiftScheduleRepository;
     @Autowired private DeviceLogRepository deviceLogRepository;
@@ -95,6 +103,8 @@ class PayrollAuditReportTest {
 
     @BeforeEach
     void setUp() {
+        recoveryTransactionRepository.deleteAll();
+        employeeRecoveryRepository.deleteAll();
         salaryRevisionRepository.deleteAll();
         payrollRepository.deleteAll();
         dailyAttendanceRepository.deleteAll();
@@ -129,6 +139,28 @@ class PayrollAuditReportTest {
             punches.add(punch(PERIOD.atDay(day).atTime(15, 0)));
         }
         deviceLogRepository.saveAll(punches);
+    }
+
+    @Test
+    @DisplayName("full and final includes a paused loan because pausing deductions does not settle its balance")
+    void fullAndFinalIncludesPausedLoanBalance() {
+        Employee employee = employeeRepository.findByUserId(EMPLOYEE).orElseThrow();
+        employee.setRelievingDate(PERIOD.atEndOfMonth());
+        employeeRepository.save(employee);
+
+        for (RecoveryStatus status : List.of(RecoveryStatus.ACTIVE, RecoveryStatus.ON_HOLD)) {
+            employeeRecoveryRepository.save(EmployeeRecovery.builder()
+                    .employeeId(EMPLOYEE).type(RecoveryType.LOAN).status(status)
+                    .principalAmount(new BigDecimal("3000")).outstandingAmount(new BigDecimal("3000"))
+                    .installmentAmount(new BigDecimal("1000"))
+                    .issuedOn(PERIOD.atDay(1)).startMonth(PERIOD.getMonthValue()).startYear(PERIOD.getYear())
+                    .createdAt(Instant.now()).build());
+        }
+
+        ReportDtos.FullAndFinalRow row = payrollRegisterService.fullAndFinalReport(
+                PERIOD.atDay(1), PERIOD.atEndOfMonth(), ReportFilter.NONE).getFirst();
+        assertThat(row.userId()).isEqualTo(EMPLOYEE);
+        assertThat(row.outstandingRecoveries()).isEqualByComparingTo("6000");
     }
 
     @Test

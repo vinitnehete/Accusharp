@@ -99,3 +99,14 @@ assinged shifts
 | 29 | admin       | 2026-06-29 | SE10285 | 0x00               |        1 |
 | 30 | admin       | 2026-06-30 | SE10285 | 0x00               |        1 |
 +----+-------------+------------+---------+--------------------+----------+
+
+
+## Sample-data note — 2026-10-10
+
+The June punches and assigned shifts above remain a diagnostic fixture. Raw
+`device_logs` are still read-only to HRMS. For staff exempt from biometric
+punching, use the employee's `attendanceExempt` flag; for a declared date range,
+use the authenticated bulk-attendance endpoints and review the generated
+complete-month baseline and skipped days before payroll. Loan balances and
+repayments belong to the recovery ledger, not to this punch fixture. See
+[Attendance.md](../../Attendance.md) and [README.md](../../README.md#9-loans-advances-and-fines).
